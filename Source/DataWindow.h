@@ -42,6 +42,9 @@ public:
     // Removes the selected samples; returns false when nothing is selected.
     bool deleteSelection();
 
+    // Removes the markers picked in the view (undoable); false when none are.
+    bool deleteSelectedMarkers();
+
     // Copy of the selected samples (empty when nothing is selected).
     juce::AudioBuffer<float> copySelection() const;
 

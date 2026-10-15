@@ -810,7 +810,9 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
         case wf::editUndo:  available = available && doc != nullptr && doc->canUndo(); break;
         case wf::editRedo:  available = available && doc != nullptr && doc->canRedo(); break;
-        case wf::editDelete: available = available && doc != nullptr && ! doc->getView().getSelection().isEmpty(); break;
+        case wf::editDelete: available = available && doc != nullptr
+                                         && (! doc->getView().getSelection().isEmpty()
+                                             || ! doc->getView().getSelectedMarkers().empty()); break;
         case wf::optStop:   available = available && isPlaying(); break;
 
         case wf::winCascade: case wf::winTile:
@@ -864,7 +866,13 @@ bool MainComponent::perform (const InvocationInfo& info)
     {
         case wf::editUndo:          releasePlaybackSource(); doc->undo(); return true;
         case wf::editRedo:          releasePlaybackSource(); doc->redo(); return true;
-        case wf::editDelete:        releasePlaybackSource(); doc->deleteSelection(); return true;
+        case wf::editDelete:
+            if (doc->deleteSelectedMarkers())   // picked markers go first; audio stays
+                return true;
+
+            releasePlaybackSource();
+            doc->deleteSelection();
+            return true;
         case wf::editSelectAll:     view.selectAll(); return true;
         case wf::insertMarker:      doc->addMarker (view.getCursor()); return true;
 

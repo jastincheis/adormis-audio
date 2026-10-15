@@ -476,6 +476,30 @@ void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRat
     audioChanged();
 }
 
+bool DataWindow::deleteSelectedMarkers()
+{
+    const auto& picked = view.getSelectedMarkers();
+    std::vector<juce::int64> kept;
+
+    for (auto m : markers)
+        if (std::find (picked.begin(), picked.end(), m) == picked.end())
+            kept.push_back (m);
+
+    if (kept.size() == markers.size())
+        return false;
+
+    // Markers aren't saved in the audio file, so this doesn't mark it modified.
+    pushUndo();
+    markers = std::move (kept);
+    view.clearMarkerSelection();
+    view.repaint();
+
+    if (onChanged)
+        onChanged();
+
+    return true;
+}
+
 void DataWindow::addMarker (juce::int64 position)
 {
     position = juce::jlimit ((juce::int64) 0, (juce::int64) buffer.getNumSamples(), position);
@@ -485,6 +509,7 @@ void DataWindow::addMarker (juce::int64 position)
         return;
 
     markers.insert (it, position);
+    view.clearMarkerSelection();
     view.repaint();
 }
 
@@ -493,6 +518,7 @@ void DataWindow::removeMarker (int index)
     if (juce::isPositiveAndBelow (index, (int) markers.size()))
     {
         markers.erase (markers.begin() + index);
+        view.clearMarkerSelection();
         view.repaint();
     }
 }
@@ -553,6 +579,7 @@ void DataWindow::audioChanged()
     modified = true;
     setName ("*" + title);
     updateInfo();
+    view.clearMarkerSelection();
     view.audioChanged();
 
     if (onChanged)

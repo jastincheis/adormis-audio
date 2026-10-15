@@ -254,8 +254,49 @@ int WaveformView::markerNear (float x) const
     return -1;
 }
 
+int WaveformView::markerAt (juce::Point<int> position) const
+{
+    if (markers == nullptr)
+        return -1;
+
+    // The numbered flag in the ruler hangs right of its line (left at the far edge).
+    if (position.y < rulerHeight)
+    {
+        const auto wave = waveArea();
+
+        for (int i = 0; i < (int) markers->size(); ++i)
+        {
+            const auto x = sampleToX ((double) (*markers)[(size_t) i]);
+            const auto flipped = x + 16.0f > (float) wave.getRight();
+            const auto left = flipped ? x - 16.0f : x;
+
+            if ((float) position.x >= left - 2.0f && (float) position.x <= left + 18.0f)
+                return i;
+        }
+    }
+
+    return markerNear ((float) position.x);
+}
+
+bool WaveformView::isMarkerSelected (juce::int64 position) const
+{
+    return std::find (selectedMarkers.begin(), selectedMarkers.end(), position) != selectedMarkers.end();
+}
+
+void WaveformView::clearMarkerSelection()
+{
+    if (selectedMarkers.empty())
+        return;
+
+    selectedMarkers.clear();
+    repaint();
+    notifyChanged();
+}
+
 void WaveformView::mouseDown (const juce::MouseEvent& e)
 {
+    pressedOnMarker = false;
+
     if (! hasAudio())
         return;
 
@@ -268,8 +309,31 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
         return;
     }
 
-    if (! waveArea().contains (e.getPosition()))
+    // A click on a marker picks it (and puts the cursor there); Delete then
+    // removes the marker, not audio.
+    if (const auto index = markerAt (e.getPosition()); index >= 0 && ! e.mods.isShiftDown())
+    {
+        const auto position = (*markers)[(size_t) index];
+        selectedMarkers = { position };
+        pressedOnMarker = true;
+        pressedInSelection = false;
+        dragAnchor = position;
+        cursor = position;
+        setSelection ({});
         return;
+    }
+
+    if (! selectedMarkers.empty())
+    {
+        selectedMarkers.clear();
+        repaint();
+    }
+
+    if (! waveArea().contains (e.getPosition()))
+    {
+        notifyChanged();
+        return;
+    }
 
     const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
 
@@ -294,7 +358,7 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
 
 void WaveformView::mouseDrag (const juce::MouseEvent& e)
 {
-    if (! hasAudio())
+    if (! hasAudio() || pressedOnMarker)
         return;
 
     if (pressedInSelection)
@@ -328,6 +392,7 @@ void WaveformView::mouseUp (const juce::MouseEvent& e)
     }
 
     pressedInSelection = false;
+    pressedOnMarker = false;
     draggingOut = false;
 }
 
@@ -383,6 +448,15 @@ void WaveformView::mouseDoubleClick (const juce::MouseEvent& e)
     if (markers == nullptr || markers->empty())
     {
         selectAll();
+        return;
+    }
+
+    // Double-click on a marker picks every marker.
+    if (markerAt (e.getPosition()) >= 0)
+    {
+        selectedMarkers = *markers;
+        repaint();
+        notifyChanged();
         return;
     }
 
@@ -579,10 +653,16 @@ void WaveformView::paintMarkers (juce::Graphics& g, juce::Rectangle<int> rulerAr
         if (x < (float) wave.getX() - 20.0f || x > (float) wave.getRight())
             continue;
 
-        // Dashed line through the waveform.
+        const auto picked = isMarkerSelected ((*markers)[(size_t) i]);
+
+        // Dashed line through the waveform; solid and thicker when picked.
         const float dashes[] = { 5.0f, 3.0f };
         g.setColour (markerColour);
-        g.drawDashedLine ({ x, (float) wave.getY(), x, (float) wave.getBottom() }, dashes, 2, 1.2f);
+
+        if (picked)
+            g.drawLine (x, (float) wave.getY(), x, (float) wave.getBottom(), 2.0f);
+        else
+            g.drawDashedLine ({ x, (float) wave.getY(), x, (float) wave.getBottom() }, dashes, 2, 1.2f);
 
         // Numbered tag hanging from the ruler, like a little flag.
         // Flags hang to the right of the line, or to the left at the far edge.
@@ -591,8 +671,17 @@ void WaveformView::paintMarkers (juce::Graphics& g, juce::Rectangle<int> rulerAr
         juce::Path flag;
         flag.addRoundedRectangle (tag.getX(), tag.getY(), tag.getWidth(), tag.getHeight(), 3.0f, 3.0f,
                                   flipped, ! flipped, flipped, ! flipped);
+        // Picked: white flag with an orange outline and number.
+        g.setColour (picked ? juce::Colours::white : markerColour);
         g.fillPath (flag);
-        g.setColour (juce::Colours::white);
+
+        if (picked)
+        {
+            g.setColour (markerColour);
+            g.strokePath (flag, juce::PathStrokeType (1.5f));
+        }
+
+        g.setColour (picked ? markerColour : juce::Colours::white);
         g.drawText (juce::String (i + 1), tag, juce::Justification::centred);
     }
 }

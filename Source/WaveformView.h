@@ -27,6 +27,11 @@ public:
     // Sorted marker positions owned by the document (may be nullptr).
     void setMarkers (const std::vector<juce::int64>* newMarkers)  { markers = newMarkers; repaint(); }
 
+    // Markers picked with a click on them (one) or a double-click (all),
+    // by position; Delete removes them instead of audio.
+    const std::vector<juce::int64>& getSelectedMarkers() const  { return selectedMarkers; }
+    void clearMarkerSelection();
+
     // Sample under a point in this view's coordinates (clamped to the file).
     juce::int64 sampleAt (juce::Point<int> position) const;
 
@@ -80,6 +85,8 @@ private:
     void paintMarkers (juce::Graphics&, juce::Rectangle<int> rulerArea, juce::Rectangle<int> waveArea);
     void paintDropPreview (juce::Graphics&, juce::Rectangle<int> waveArea);
     int markerNear (float x) const;  // index of a marker within a few pixels, or -1
+    int markerAt (juce::Point<int> position) const;  // its flag or line under the mouse, or -1
+    bool isMarkerSelected (juce::int64 position) const;
     juce::Image makeDragImage() const;
     void paintChannel (juce::Graphics&, int channel, juce::Rectangle<int> lane, juce::Rectangle<int> clip);
 
@@ -92,6 +99,8 @@ private:
     juce::int64 cursor = 0;
     juce::int64 dragAnchor = 0;
     bool pressedInSelection = false;   // a drag from here moves the selection out
+    bool pressedOnMarker = false;      // a click picked a marker; no drag-select
+    std::vector<juce::int64> selectedMarkers;
     bool draggingOut = false;
     juce::Range<juce::int64> selection;
     juce::int64 playhead = -1;
