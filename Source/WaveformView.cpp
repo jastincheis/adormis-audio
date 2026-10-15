@@ -202,9 +202,60 @@ void WaveformView::setCursor (juce::int64 sample)
     notifyChanged();
 }
 
-void WaveformView::setSelection (juce::Range<juce::int64> range)
+juce::Rectangle<int> WaveformView::laneBounds (int channel) const
+{
+    const auto area = waveArea();
+    const auto channels = hasAudio() ? buffer->getNumChannels() : 1;
+    const auto laneHeight = (area.getHeight() - laneGap * (channels - 1)) / juce::jmax (1, channels);
+    return { area.getX(), area.getY() + channel * (laneHeight + laneGap), area.getWidth(), laneHeight };
+}
+
+int WaveformView::channelZoneAt (juce::Point<int> position) const
+{
+    if (! hasAudio() || buffer->getNumChannels() < 2)
+        return -1;
+
+    const auto first = laneBounds (0);
+    const auto lastChannel = buffer->getNumChannels() - 1;
+    const auto last = laneBounds (lastChannel);
+
+    if (position.y < first.getY() + first.getHeight() / 4)
+        return 0;
+
+    if (position.y >= last.getBottom() - last.getHeight() / 4)
+        return lastChannel;
+
+    return -1;
+}
+
+void WaveformView::mouseMove (const juce::MouseEvent& e)
+{
+    // An "L" / "R" pointer shows when a drag would pick a single channel.
+    static const auto makeCursor = [] (const juce::String& letter)
+    {
+        juce::Image image (juce::Image::ARGB, 40, 48, true);
+        juce::Graphics g (image);
+        g.setColour (juce::Colours::white);
+        g.fillRect (19, 2, 2, 44);
+        g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
+        g.setColour (juce::Colours::black);
+        g.drawText (letter, 22, 1, 18, 26, juce::Justification::centred);
+        g.setColour (juce::Colours::white);
+        g.drawText (letter, 21, 0, 18, 26, juce::Justification::centred);
+        return juce::MouseCursor (juce::ScaledImage (image, 2.0), { 10, 12 });
+    };
+    static const auto leftCursor = makeCursor ("L");
+    static const auto rightCursor = makeCursor ("R");
+
+    const auto zone = waveArea().contains (e.getPosition()) && markerAt (e.getPosition()) < 0
+                          ? channelZoneAt (e.getPosition()) : -1;
+    setMouseCursor (zone == 0 ? leftCursor : zone > 0 ? rightCursor : juce::MouseCursor::NormalCursor);
+}
+
+void WaveformView::setSelection (juce::Range<juce::int64> range, int channel)
 {
     selection = range.getIntersectionWith ({ 0, totalSamples() });
+    selectedChannel = selection.isEmpty() ? -1 : channel;
     repaint();
     notifyChanged();
 }
@@ -338,7 +389,8 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
 
     // Pressing inside the selection may start dragging it out (decided on drag).
-    pressedInSelection = ! e.mods.isShiftDown() && selection.contains (sample);
+    pressedInSelection = ! e.mods.isShiftDown() && selection.contains (sample)
+                         && (selectedChannel < 0 || laneBounds (selectedChannel).contains (e.getPosition()));
     draggingOut = false;
 
     if (pressedInSelection)
@@ -347,10 +399,11 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     if (e.mods.isShiftDown())
     {
         // Shift+click extends the existing selection or cursor to the click.
-        setSelection (juce::Range<juce::int64>::between (dragAnchor, sample));
+        setSelection (juce::Range<juce::int64>::between (dragAnchor, sample), selectedChannel);
         return;
     }
 
+    dragChannel = channelZoneAt (e.getPosition());
     dragAnchor = sample;
     cursor = sample;
     setSelection ({});
@@ -377,7 +430,7 @@ void WaveformView::mouseDrag (const juce::MouseEvent& e)
 
     const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
     cursor = sample;
-    setSelection (juce::Range<juce::int64>::between (dragAnchor, sample));
+    setSelection (juce::Range<juce::int64>::between (dragAnchor, sample), dragChannel);
 }
 
 void WaveformView::mouseUp (const juce::MouseEvent& e)
@@ -432,7 +485,9 @@ juce::Image WaveformView::makeDragImage() const
 
     g.setColour (juce::Colours::white);
     g.setFont (juce::FontOptions (12.0f));
-    g.drawText ("Selection", 76, 6, 70, 16, juce::Justification::centredLeft);
+    const auto label = selectedChannel < 0 ? juce::String ("Selection")
+                     : selectedChannel == 0 ? juce::String ("Left (mono)") : juce::String ("Right (mono)");
+    g.drawText (label, 76, 6, 70, 16, juce::Justification::centredLeft);
     g.setColour (juce::Colours::white.withAlpha (0.75f));
     g.setFont (juce::FontOptions (11.0f));
     g.drawText (formatTime ((double) selection.getLength() / sampleRate).substring (3), 76, 22, 70, 14,
@@ -543,8 +598,10 @@ void WaveformView::paint (juce::Graphics& g)
 
         if (x2 > x1)
         {
+            // Only the selected channel's lane when one channel is picked.
+            const auto band = selectedChannel >= 0 ? laneBounds (selectedChannel) : area;
             g.setColour (selectionShade);
-            g.fillRect (juce::Rectangle<float> (x1, (float) area.getY(), x2 - x1, (float) area.getHeight()));
+            g.fillRect (juce::Rectangle<float> (x1, (float) band.getY(), x2 - x1, (float) band.getHeight()));
         }
     }
 
@@ -630,7 +687,7 @@ void WaveformView::paintChannel (juce::Graphics& g, int channel, juce::Rectangle
 
         const auto range = juce::FloatVectorOperations::findMinAndMax (data + juce::jmax ((juce::int64) 0, s0),
                                                                          (int) (s1 - juce::jmax ((juce::int64) 0, s0)));
-        const auto selected = selection.contains (s0);
+        const auto selected = selection.contains (s0) && (selectedChannel < 0 || selectedChannel == channel);
         g.setColour (selected ? waveSelected : waveColour);
 
         const auto top = mid - juce::jlimit (-1.0f, 1.0f, range.getEnd()) * half;

@@ -21,7 +21,9 @@ public:
     juce::int64 getCursor() const                   { return cursor; }
     juce::Range<juce::int64> getSelection() const   { return selection; }
     void setCursor (juce::int64 sample);
-    void setSelection (juce::Range<juce::int64> range);
+    // `channel` limits the selection to one channel (-1 = all channels).
+    void setSelection (juce::Range<juce::int64> range, int channel = -1);
+    int getSelectedChannel() const                  { return selectedChannel; }
     void selectAll();
 
     // Sorted marker positions owned by the document (may be nullptr).
@@ -61,6 +63,7 @@ public:
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
@@ -103,6 +106,14 @@ private:
     std::vector<juce::int64> selectedMarkers;
     bool draggingOut = false;
     juce::Range<juce::int64> selection;
+    int selectedChannel = -1;   // -1: all channels
+    int dragChannel = -1;       // channel the current drag-select started in
+
+    // Sound Forge rule for stereo: the top quarter of the first channel picks
+    // only it, the bottom quarter of the last channel picks only it, anywhere
+    // else picks all channels.
+    int channelZoneAt (juce::Point<int> position) const;
+    juce::Rectangle<int> laneBounds (int channel) const;
     juce::int64 playhead = -1;
     juce::Range<juce::int64> dropPreview;
     int dropSnappedTo = -1;

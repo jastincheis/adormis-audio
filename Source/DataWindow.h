@@ -45,7 +45,8 @@ public:
     // Removes the markers picked in the view (undoable); false when none are.
     bool deleteSelectedMarkers();
 
-    // Copy of the selected samples (empty when nothing is selected).
+    // Copy of the selected samples (empty when nothing is selected); a
+    // selection on one channel gives a mono buffer.
     juce::AudioBuffer<float> copySelection() const;
 
     // `source` converted to `rate` and `channels` (mono fans out, extra

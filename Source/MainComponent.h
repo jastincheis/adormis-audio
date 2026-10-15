@@ -63,7 +63,8 @@ private:
     void arrangeWindows (bool cascade);
     void cycleWindows (int direction);
 
-    void startPlayback (juce::Range<juce::int64> range);
+    // `soloChannel` >= 0 plays only that channel (a single-channel selection).
+    void startPlayback (juce::Range<juce::int64> range, int soloChannel = -1);
     void stopPlayback (bool returnToStart);
     void releasePlaybackSource();   // before a document's buffer is changed
 
@@ -97,7 +98,7 @@ private:
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer sourcePlayer;
     juce::AudioTransportSource transport;
-    std::unique_ptr<juce::MemoryAudioSource> memorySource;
+    std::unique_ptr<juce::PositionableAudioSource> memorySource;
     juce::Component::SafePointer<DataWindow> playingDocument;
     juce::Range<juce::int64> playRange;
     juce::int64 playStartCursor = 0;

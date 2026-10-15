@@ -173,12 +173,8 @@ std::unique_ptr<DataWindow> DataWindow::fromSelection (const DataWindow& source,
     doc->floatingPoint = source.floatingPoint;
     doc->formatName = source.formatName;
 
-    const auto channels = source.buffer.getNumChannels();
-    const auto length = (int) selection.getLength();
-    doc->buffer.setSize (channels, length);
-
-    for (int ch = 0; ch < channels; ++ch)
-        doc->buffer.copyFrom (ch, 0, source.buffer, ch, (int) selection.getStart(), length);
+    // One picked channel becomes a mono file.
+    doc->buffer = source.copySelection();
 
     doc->modified = true;
     doc->initialise (newTitle);
@@ -357,7 +353,19 @@ juce::Range<int> DataWindow::processRange() const
 void DataWindow::applyProcess (wf::Process process)
 {
     pushUndo();
-    wf::applyProcess (process, buffer, processRange());
+
+    // A selection on one channel processes only that channel.
+    if (const auto picked = view.getSelectedChannel(); picked >= 0 && picked < buffer.getNumChannels())
+    {
+        float* channel[] = { buffer.getWritePointer (picked) };
+        juce::AudioBuffer<float> one (channel, 1, buffer.getNumSamples());
+        wf::applyProcess (process, one, processRange());
+    }
+    else
+    {
+        wf::applyProcess (process, buffer, processRange());
+    }
+
     audioChanged();
 }
 
@@ -365,7 +373,8 @@ bool DataWindow::deleteSelection()
 {
     const auto selection = view.getSelection();
 
-    if (selection.isEmpty())
+    // Cutting one channel would leave the channels different lengths.
+    if (selection.isEmpty() || view.getSelectedChannel() >= 0)
         return false;
 
     const auto start = (int) selection.getStart();
@@ -403,10 +412,13 @@ bool DataWindow::deleteSelection()
 juce::AudioBuffer<float> DataWindow::copySelection() const
 {
     const auto selection = view.getSelection();
-    juce::AudioBuffer<float> copy (buffer.getNumChannels(), (int) selection.getLength());
+    const auto picked = view.getSelectedChannel();
+    const auto first = picked >= 0 ? picked : 0;
+    const auto channels = picked >= 0 ? 1 : buffer.getNumChannels();
+    juce::AudioBuffer<float> copy (channels, (int) selection.getLength());
 
-    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-        copy.copyFrom (ch, 0, buffer, ch, (int) selection.getStart(), (int) selection.getLength());
+    for (int ch = 0; ch < channels; ++ch)
+        copy.copyFrom (ch, 0, buffer, first + ch, (int) selection.getStart(), (int) selection.getLength());
 
     return copy;
 }

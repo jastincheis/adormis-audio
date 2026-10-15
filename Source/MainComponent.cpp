@@ -660,7 +660,42 @@ juce::int64 MainComponent::playPosition() const
     return 0;
 }
 
-void MainComponent::startPlayback (juce::Range<juce::int64> range)
+namespace
+{
+// Plays a document through MemoryAudioSource, optionally with only one
+// channel audible (the others silenced), for single-channel selections.
+class SoloPlaybackSource final : public juce::PositionableAudioSource
+{
+public:
+    SoloPlaybackSource (juce::AudioBuffer<float>& audio, int soloChannelIn)
+        : source (audio, false, false), soloChannel (soloChannelIn) {}
+
+    void prepareToPlay (int block, double rate) override  { source.prepareToPlay (block, rate); }
+    void releaseResources() override                      { source.releaseResources(); }
+
+    void getNextAudioBlock (const juce::AudioSourceChannelInfo& info) override
+    {
+        source.getNextAudioBlock (info);
+
+        if (soloChannel >= 0)
+            for (int ch = 0; ch < info.buffer->getNumChannels(); ++ch)
+                if (ch != soloChannel)
+                    info.buffer->clear (ch, info.startSample, info.numSamples);
+    }
+
+    void setNextReadPosition (juce::int64 position) override  { source.setNextReadPosition (position); }
+    juce::int64 getNextReadPosition() const override          { return source.getNextReadPosition(); }
+    juce::int64 getTotalLength() const override               { return source.getTotalLength(); }
+    bool isLooping() const override                           { return source.isLooping(); }
+    void setLooping (bool shouldLoop) override                { source.setLooping (shouldLoop); }
+
+private:
+    juce::MemoryAudioSource source;
+    int soloChannel;
+};
+} // namespace
+
+void MainComponent::startPlayback (juce::Range<juce::int64> range, int soloChannel)
 {
     auto* doc = activeDocument();
 
@@ -670,7 +705,7 @@ void MainComponent::startPlayback (juce::Range<juce::int64> range)
     stopPlayback (false);
 
     transport.setSource (nullptr);
-    memorySource = std::make_unique<juce::MemoryAudioSource> (doc->getBuffer(), false, false);
+    memorySource = std::make_unique<SoloPlaybackSource> (doc->getBuffer(), soloChannel);
     transport.setSource (memorySource.get(), 0, nullptr, doc->getSampleRate(), doc->getBuffer().getNumChannels());
 
     playingDocument = doc;
@@ -779,6 +814,9 @@ void MainComponent::updateStatus()
         text << "Selection " << seconds (selection.getStart()) << " - " << seconds (selection.getEnd())
              << "  (" << seconds (selection.getLength()) << ")";
 
+    if (const auto channel = doc->getView().getSelectedChannel(); channel >= 0)
+        text << (channel == 0 ? "  Left channel" : "  Right channel");
+
     statusBar.setText (text, juce::dontSendNotification);
 }
 
@@ -811,7 +849,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case wf::editUndo:  available = available && doc != nullptr && doc->canUndo(); break;
         case wf::editRedo:  available = available && doc != nullptr && doc->canRedo(); break;
         case wf::editDelete: available = available && doc != nullptr
-                                         && (! doc->getView().getSelection().isEmpty()
+                                         && ((! doc->getView().getSelection().isEmpty() && doc->getView().getSelectedChannel() < 0)
                                              || ! doc->getView().getSelectedMarkers().empty()); break;
         case wf::optStop:   available = available && isPlaying(); break;
 
@@ -896,7 +934,8 @@ bool MainComponent::perform (const InvocationInfo& info)
                 stopPlayback (true);
             else
                 startPlayback (view.getSelection().isEmpty() ? juce::Range<juce::int64> (view.getCursor(), total)
-                                                             : view.getSelection());
+                                                             : view.getSelection(),
+                               view.getSelectedChannel());
             return true;
 
         case wf::optPlayAll:
