@@ -1,4 +1,9 @@
 #include "DataWindow.h"
+#include "Mp3Encoder.h"
+
+#if WAVEFORGE_HAS_SAMPLERATE
+ #include <samplerate.h>
+#endif
 
 namespace
 {
@@ -11,6 +16,108 @@ constexpr size_t maxUndoBytes = (size_t) 768 * 1024 * 1024;
 size_t bytesOf (const juce::AudioBuffer<float>& b)
 {
     return (size_t) b.getNumChannels() * (size_t) b.getNumSamples() * sizeof (float);
+}
+
+// Integer formats: convert with the same 2^(bits-1) scale JUCE reads with, and
+// round. JUCE's own float -> int path truncates with a 2^31-1 scale, which turns
+// e.g. 16-bit 17318 into 17317, so an untouched file would not save back unchanged.
+bool writeAudio (juce::AudioFormatWriter& writer, const juce::AudioBuffer<float>& audio)
+{
+    if (writer.isFloatingPoint())
+        return writer.writeFromAudioSampleBuffer (audio, 0, audio.getNumSamples());
+
+    const auto bits = writer.getBitsPerSample();
+    const auto scale = (double) (1 << (bits - 1));
+    const auto maxValue = (1 << (bits - 1)) - 1;
+    const auto channels = audio.getNumChannels();
+    constexpr int blockSize = 8192;
+
+    juce::HeapBlock<int> data ((size_t) (channels * blockSize));
+    std::vector<const int*> pointers ((size_t) channels + 1, nullptr);
+
+    for (int c = 0; c < channels; ++c)
+        pointers[(size_t) c] = data + c * blockSize;
+
+    for (int start = 0; start < audio.getNumSamples(); start += blockSize)
+    {
+        const auto count = juce::jmin (blockSize, audio.getNumSamples() - start);
+
+        for (int c = 0; c < channels; ++c)
+        {
+            const auto* in = audio.getReadPointer (c, start);
+            auto* out = data + c * blockSize;
+
+            for (int i = 0; i < count; ++i)   // left-justified, as AudioFormatWriter::write expects
+                out[i] = (int) ((juce::uint32) juce::jlimit (-maxValue - 1, maxValue, juce::roundToInt (in[i] * scale))
+                                << (32 - bits));
+        }
+
+        if (! writer.write (pointers.data(), count))
+            return false;
+    }
+
+    return true;
+}
+
+// Resamples every channel of `in` from `fromRate` to `toRate`: libsamplerate's
+// best sinc converter when the build has it (band-limited, so going down to a
+// lower rate doesn't alias), otherwise JUCE's Lagrange interpolator.
+juce::AudioBuffer<float> resampled (const juce::AudioBuffer<float>& in, double fromRate, double toRate)
+{
+    if (juce::approximatelyEqual (fromRate, toRate) || in.getNumSamples() == 0)
+        return in;
+
+    const auto ratio = fromRate / toRate;
+    const auto outLength = (int) std::ceil (in.getNumSamples() / ratio);
+    juce::AudioBuffer<float> out (in.getNumChannels(), outLength);
+    out.clear();
+
+    for (int ch = 0; ch < in.getNumChannels(); ++ch)
+    {
+       #if WAVEFORGE_HAS_SAMPLERATE
+        std::unique_ptr<SRC_STATE, decltype (&src_delete)> state (nullptr, &src_delete);
+        int srcError = 0;
+        state.reset (src_new (SRC_SINC_BEST_QUALITY, 1, &srcError));
+
+        if (state != nullptr)
+        {
+            // In blocks, so long files don't need one huge call; the last block
+            // flushes the filter so the tail isn't cut off.
+            constexpr long blockSize = 65536;
+            long readPos = 0, written = 0;
+            bool ok = true;
+
+            while (ok && written < outLength)
+            {
+                SRC_DATA data {};
+                data.data_in = in.getReadPointer (ch) + readPos;
+                data.input_frames = juce::jmin (blockSize, (long) in.getNumSamples() - readPos);
+                data.data_out = out.getWritePointer (ch) + written;
+                data.output_frames = outLength - written;
+                data.end_of_input = readPos + data.input_frames >= in.getNumSamples() ? 1 : 0;
+                data.src_ratio = toRate / fromRate;
+
+                ok = src_process (state.get(), &data) == 0;
+                readPos += data.input_frames_used;
+                written += data.output_frames_gen;
+
+                if (data.end_of_input != 0 && data.output_frames_gen == 0)
+                    break;
+            }
+
+            if (ok)
+                continue;
+
+            out.clear (ch, 0, outLength);
+        }
+       #endif
+
+        juce::LagrangeInterpolator interpolator;
+        interpolator.process (ratio, in.getReadPointer (ch), out.getWritePointer (ch), outLength,
+                              in.getNumSamples(), 0);
+    }
+
+    return out;
 }
 
 template <typename Snapshot>
@@ -44,6 +151,7 @@ std::unique_ptr<DataWindow> DataWindow::load (const juce::File& file, juce::Audi
     doc->file = file;
     doc->sampleRate = reader->sampleRate;
     doc->bitDepth = (int) reader->bitsPerSample;
+    doc->floatingPoint = reader->usesFloatingPointData;
     doc->formatName = reader->getFormatName();
     doc->buffer.setSize (channels, (int) length);
     reader->read (&doc->buffer, 0, (int) length, 0, true, true);
@@ -62,6 +170,7 @@ std::unique_ptr<DataWindow> DataWindow::fromSelection (const DataWindow& source,
     std::unique_ptr<DataWindow> doc (new DataWindow());
     doc->sampleRate = source.sampleRate;
     doc->bitDepth = source.bitDepth;
+    doc->floatingPoint = source.floatingPoint;
     doc->formatName = source.formatName;
 
     const auto channels = source.buffer.getNumChannels();
@@ -89,6 +198,9 @@ void DataWindow::initialise (const juce::String& newTitle)
 
 bool DataWindow::isSaveExtension (const juce::String& extension)
 {
+    if (extension.equalsIgnoreCase (".mp3"))
+        return wf::mp3EncodingAvailable();
+
     return juce::StringArray { ".wav", ".flac", ".aiff", ".aif", ".ogg" }.contains (extension, true);
 }
 
@@ -100,30 +212,83 @@ bool DataWindow::canSaveInPlace() const
             || ext.equalsIgnoreCase (".aiff") || ext.equalsIgnoreCase (".aif"));
 }
 
-bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager& formats, juce::String& error)
+bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager& formats, juce::String& error,
+                         const wf::SaveFormat* chosen)
 {
+    // Another sample rate: convert first, and the document takes the converted
+    // audio over only once the file is written.
+    const auto targetRate = chosen != nullptr && chosen->sampleRate > 0.0 ? chosen->sampleRate : sampleRate;
+    const auto convert = ! juce::approximatelyEqual (targetRate, sampleRate);
+    auto converted = convert ? resampled (buffer, sampleRate, targetRate) : juce::AudioBuffer<float>();
+    const auto& audio = convert ? converted : buffer;
+
+    auto markSaved = [this, &destination, convert, targetRate, &converted] (const juce::String& newFormatName,
+                                                                           int newBitDepth, bool newFloatingPoint)
+    {
+        if (convert)
+        {
+            pushUndo();
+
+            for (auto& m : markers)
+                m = (juce::int64) std::llround ((double) m * targetRate / sampleRate);
+
+            buffer = std::move (converted);
+            sampleRate = targetRate;
+            view.setAudio (&buffer, sampleRate);
+        }
+
+        file = destination;
+        title = destination.getFileName();
+        formatName = newFormatName;
+        bitDepth = newBitDepth;
+        floatingPoint = newFloatingPoint;
+        modified = false;
+        setName (title);
+
+        if (onChanged)
+            onChanged();
+    };
+
+    // MP3 goes through LAME; JUCE can only read MP3.
+    if (destination.hasFileExtension (".mp3"))
+    {
+        if (! wf::writeMp3 (destination, audio, targetRate, chosen != nullptr && chosen->kbps > 0 ? chosen->kbps : 320, error))
+            return false;
+
+        markSaved ("MP3 file", 0, false);
+        return true;
+    }
+
     auto* format = isSaveExtension (destination.getFileExtension())
                        ? formats.findFormatForFileExtension (destination.getFileExtension()) : nullptr;
 
     if (format == nullptr)
     {
-        error = "Can't save as \"" + destination.getFileExtension() + "\". Choose WAV, FLAC, AIFF or OGG.";
+        error = "Can't save as \"" + destination.getFileExtension() + "\". Choose WAV, FLAC, AIFF, MP3 or OGG.";
         return false;
     }
 
-    // Keep the original bit depth when the format allows it, otherwise 24-bit.
+    // The chosen depth, or keep the original one when the format allows it, otherwise 24-bit.
     const auto depths = format->getPossibleBitDepths();
-    auto bits = depths.contains (bitDepth) ? bitDepth : depths.contains (24) ? 24 : depths.getLast();
+    const auto wanted = chosen != nullptr ? chosen->bitsPerSample : bitDepth;
+    auto bits = depths.contains (wanted) ? wanted : depths.contains (24) ? 24 : depths.getLast();
 
-    auto options = juce::AudioFormatWriterOptions{}.withSampleRate (sampleRate)
-                                                   .withNumChannels (buffer.getNumChannels())
+    auto options = juce::AudioFormatWriterOptions{}.withSampleRate (targetRate)
+                                                   .withNumChannels (audio.getNumChannels())
                                                    .withBitsPerSample (bits);
 
-    // Lossy formats: pick about 192 kbps.
+    // Save (no choice made) keeps float data float, as long as it stays 32-bit.
+    const auto useFloat = bits == 32 && (chosen != nullptr ? chosen->floatingPoint : floatingPoint);
+
+    if (useFloat)
+        options = options.withSampleFormat (juce::AudioFormatWriterOptions::SampleFormat::floatingPoint);
+
+    // Lossy formats: the chosen bitrate, or about 192 kbps.
     const auto qualities = format->getQualityOptions();
     if (! qualities.isEmpty())
     {
-        const auto preferred = qualities.indexOf ("192 kbps");
+        const auto wantedKbps = juce::String (chosen != nullptr && chosen->kbps > 0 ? chosen->kbps : 192) + " kbps";
+        const auto preferred = qualities.indexOf (wantedKbps);
         options = options.withQualityOptionIndex (preferred >= 0 ? preferred : qualities.size() / 2);
     }
 
@@ -139,7 +304,7 @@ bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager
 
     auto writer = format->createWriterFor (stream, options);
 
-    if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples()))
+    if (writer == nullptr || ! writeAudio (*writer, audio))
     {
         error = "Saving \"" + destination.getFileName() + "\" failed.";
         return false;
@@ -153,16 +318,7 @@ bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager
         return false;
     }
 
-    file = destination;
-    title = destination.getFileName();
-    formatName = format->getFormatName();
-    bitDepth = bits;
-    modified = false;
-    setName (title);
-
-    if (onChanged)
-        onChanged();
-
+    markSaved (format->getFormatName(), bits, useFloat);
     return true;
 }
 
@@ -235,26 +391,6 @@ juce::AudioBuffer<float> DataWindow::copySelection() const
 
 namespace
 {
-// Resamples every channel of `in` from `fromRate` to `toRate`.
-juce::AudioBuffer<float> resampled (const juce::AudioBuffer<float>& in, double fromRate, double toRate)
-{
-    if (juce::approximatelyEqual (fromRate, toRate) || in.getNumSamples() == 0)
-        return in;
-
-    const auto ratio = fromRate / toRate;
-    const auto outLength = (int) std::ceil (in.getNumSamples() / ratio);
-    juce::AudioBuffer<float> out (in.getNumChannels(), outLength);
-
-    for (int ch = 0; ch < in.getNumChannels(); ++ch)
-    {
-        juce::LagrangeInterpolator interpolator;
-        interpolator.process (ratio, in.getReadPointer (ch), out.getWritePointer (ch), outLength,
-                              in.getNumSamples(), 0);
-    }
-
-    return out;
-}
-
 // Source sample for destination channel `ch`: mono fans out to every channel,
 // and a source with more channels than the destination is averaged down.
 float sourceSample (const juce::AudioBuffer<float>& src, int ch, int destChannels, int index)
@@ -342,7 +478,7 @@ void DataWindow::removeMarker (int index)
 void DataWindow::pushUndo()
 {
     redoStack.clear();
-    undoStack.push_back ({ buffer, markers });
+    undoStack.push_back ({ buffer, markers, sampleRate });
 
     size_t total = 0;
     for (const auto& b : undoStack)
@@ -357,9 +493,16 @@ void DataWindow::pushUndo()
 
 void DataWindow::restore (Snapshot& from, std::vector<Snapshot>& saveTo)
 {
-    saveTo.push_back ({ std::move (buffer), std::move (markers) });
+    saveTo.push_back ({ std::move (buffer), std::move (markers), sampleRate });
     buffer = std::move (from.audio);
     markers = std::move (from.markers);
+
+    if (! juce::approximatelyEqual (from.rate, sampleRate))
+    {
+        sampleRate = from.rate;
+        view.setAudio (&buffer, sampleRate);
+    }
+
     audioChanged();
 }
 

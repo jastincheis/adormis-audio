@@ -3,6 +3,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Processes.h"
+#include "SaveAsDialog.h"
 #include "WaveformView.h"
 
 // One open audio file: its samples, format details, waveform and undo history.
@@ -23,14 +24,16 @@ public:
     bool isModified() const                          { return modified; }
 
     // Writes the audio to `destination` (format chosen by its extension) and,
-    // on success, makes it this document's file.
-    bool saveTo (const juce::File& destination, juce::AudioFormatManager& formats, juce::String& error);
+    // on success, makes it this document's file. Without `format`, the current
+    // bit depth is kept (Ctrl+S). A different sample rate in `format` converts
+    // the document too (undoable), so it matches what was saved.
+    bool saveTo (const juce::File& destination, juce::AudioFormatManager& formats, juce::String& error,
+                 const wf::SaveFormat* format = nullptr);
 
     // Ctrl+S can overwrite the current file only for lossless writable formats.
     bool canSaveInPlace() const;
 
     static bool isSaveExtension (const juce::String& extension);
-    static constexpr const char* saveWildcard = "*.wav;*.flac;*.aiff;*.aif;*.ogg";
 
     // Selection, or the whole file when nothing is selected (Sound Forge rule).
     juce::Range<int> processRange() const;
@@ -83,16 +86,19 @@ private:
     juce::AudioBuffer<float> buffer;
     double sampleRate = 44100.0;
     int bitDepth = 0;
+    bool floatingPoint = false;   // 32-bit float samples rather than integers
     juce::String formatName;
     bool modified = false;
 
     std::vector<juce::int64> markers;
 
-    // Undo keeps whole snapshots of the samples and markers.
+    // Undo keeps whole snapshots of the samples, markers and sample rate
+    // (Save As can convert the rate).
     struct Snapshot
     {
         juce::AudioBuffer<float> audio;
         std::vector<juce::int64> markers;
+        double rate = 44100.0;
     };
 
     void restore (Snapshot& from, std::vector<Snapshot>& saveTo);

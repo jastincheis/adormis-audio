@@ -32,9 +32,12 @@ target_sources(WaveForge PRIVATE
     Source/MainComponent.cpp
     Source/MixDialog.cpp
     Source/MixPreview.cpp
+    Source/Mp3Encoder.cpp
     Source/Commands.cpp
     Source/DataWindow.cpp
+    Source/FilePicker.cpp
     Source/Processes.cpp
+    Source/SaveAsDialog.cpp
     Source/ProcessToolbar.cpp
     Source/ShortcutsWindow.cpp
     Source/WaveformView.cpp)
@@ -44,6 +47,36 @@ target_compile_definitions(WaveForge PRIVATE
     JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:WaveForge,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:WaveForge,JUCE_VERSION>")
+
+# MP3 export through LAME (libmp3lame, LGPL). Prefer the static library so the
+# app doesn't depend on it being installed (it's bundled on macOS/Windows).
+find_path(LAME_INCLUDE_DIR lame/lame.h)
+find_library(LAME_LIBRARY NAMES libmp3lame.a mp3lame libmp3lame)
+
+if(LAME_INCLUDE_DIR AND LAME_LIBRARY)
+    message(STATUS "MP3 export enabled: ${LAME_LIBRARY}")
+    target_include_directories(WaveForge PRIVATE ${LAME_INCLUDE_DIR})
+    target_link_libraries(WaveForge PRIVATE ${LAME_LIBRARY})
+    target_compile_definitions(WaveForge PRIVATE WAVEFORGE_HAS_MP3=1)
+else()
+    message(STATUS "MP3 export disabled: libmp3lame not found")
+    target_compile_definitions(WaveForge PRIVATE WAVEFORGE_HAS_MP3=0)
+endif()
+
+# High-quality sample rate conversion (libsamplerate, BSD). Without it, Save As
+# and Mix fall back to JUCE's Lagrange interpolator.
+find_path(SAMPLERATE_INCLUDE_DIR samplerate.h)
+find_library(SAMPLERATE_LIBRARY NAMES libsamplerate.a samplerate libsamplerate)
+
+if(SAMPLERATE_INCLUDE_DIR AND SAMPLERATE_LIBRARY)
+    message(STATUS "libsamplerate enabled: ${SAMPLERATE_LIBRARY}")
+    target_include_directories(WaveForge PRIVATE ${SAMPLERATE_INCLUDE_DIR})
+    target_link_libraries(WaveForge PRIVATE ${SAMPLERATE_LIBRARY})
+    target_compile_definitions(WaveForge PRIVATE WAVEFORGE_HAS_SAMPLERATE=1)
+else()
+    message(STATUS "libsamplerate not found: sample rate conversion uses Lagrange")
+    target_compile_definitions(WaveForge PRIVATE WAVEFORGE_HAS_SAMPLERATE=0)
+endif()
 
 target_link_libraries(WaveForge
     PRIVATE

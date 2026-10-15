@@ -241,6 +241,7 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent()
 {
     mixWindow.reset();
+    saveAsWindow.reset();
     stopTimer();
     transport.stop();
     transport.setSource (nullptr);
@@ -350,15 +351,15 @@ void MainComponent::openFileDialog()
     if (auto* doc = activeDocument(); doc != nullptr && doc->getFile().existsAsFile())
         start = doc->getFile().getParentDirectory();
 
-    fileChooser = std::make_unique<juce::FileChooser> ("Open", start, formatManager.getWildcardForAllFormats());
-    fileChooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
-                                  | juce::FileBrowserComponent::canSelectMultipleItems,
-                              [this] (const juce::FileChooser& chooser)
-                              {
-                                  for (const auto& file : chooser.getResults())
-                                      if (file.existsAsFile())
-                                          loadFile (file);
-                              });
+    filePicker.launch ("Open", start, formatManager.getWildcardForAllFormats(),
+                       juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                           | juce::FileBrowserComponent::canSelectMultipleItems,
+                       [this] (const juce::Array<juce::File>& files)
+                       {
+                           for (const auto& file : files)
+                               if (file.existsAsFile())
+                                   loadFile (file);
+                       });
 }
 
 void MainComponent::closeActiveDocument()
@@ -394,36 +395,60 @@ void MainComponent::saveDocument (DataWindow* doc, bool forceSaveAs, std::functi
         return;
     }
 
-    // Suggest the same folder and name, as WAV when the original can't be written.
-    auto folder = doc->getFile().existsAsFile() ? doc->getFile().getParentDirectory()
-                                                : juce::File::getSpecialLocation (juce::File::userMusicDirectory);
-    auto name = juce::File::createLegalFileName (doc->getTitle());
+    // Save As: first the format/quality window, then the location.
+    const auto suggested = DataWindow::isSaveExtension (doc->getFile().getFileExtension())
+                               ? doc->getFile().getFileExtension() : juce::String (".wav");
 
-    if (! DataWindow::isSaveExtension (juce::File (name).getFileExtension()))
-        name = juce::File (name).getFileNameWithoutExtension() + ".wav";
+    auto onChosen = [this, doc = juce::Component::SafePointer<DataWindow> (doc), finish] (wf::SaveFormat format)
+    {
+        if (doc == nullptr)
+        {
+            finish (false, {});
+            return;
+        }
 
-    fileChooser = std::make_unique<juce::FileChooser> ("Save As", folder.getChildFile (name), DataWindow::saveWildcard);
-    fileChooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
-                                  | juce::FileBrowserComponent::warnAboutOverwriting,
-                              [this, doc = juce::Component::SafePointer<DataWindow> (doc), finish] (const juce::FileChooser& chooser)
-                              {
-                                  auto file = chooser.getResult();
+        auto folder = doc->getFile().existsAsFile() ? doc->getFile().getParentDirectory()
+                                                    : juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+        auto name = juce::File (juce::File::createLegalFileName (doc->getTitle())).getFileNameWithoutExtension()
+                  + format.extension;
 
-                                  if (file == juce::File() || doc == nullptr)
-                                  {
-                                      finish (false, {});
-                                      return;
-                                  }
+        filePicker.launch ("Save As", folder.getChildFile (name), "*" + format.extension,
+                           juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                               | juce::FileBrowserComponent::warnAboutOverwriting,
+                           [this, doc, finish, format] (const juce::Array<juce::File>& files)
+                           {
+                               auto file = files.isEmpty() ? juce::File() : files.getFirst();
 
-                                  if (file.getFileExtension().isEmpty())
-                                      file = file.withFileExtension (".wav");
+                               if (file == juce::File() || doc == nullptr)
+                               {
+                                   finish (false, {});
+                                   return;
+                               }
 
-                                  if (doc.getComponent() == playingDocument.getComponent())
-                                      stopPlayback (false);
+                               // The chosen format decides the extension.
+                               if (! file.hasFileExtension (format.extension))
+                                   file = file.withFileExtension (format.extension);
 
-                                  juce::String error;
-                                  finish (doc->saveTo (file, formatManager, error), error);
-                              });
+                               if (doc.getComponent() == playingDocument.getComponent())
+                                   stopPlayback (false);
+
+                               juce::String error;
+                               finish (doc->saveTo (file, formatManager, error, &format), error);
+                           });
+    };
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->saveAsWindow.reset();
+        });
+    };
+
+    saveAsWindow = wf::createSaveAsWindow (doc->getTitle(), suggested, doc->getSampleRate(), std::move (onChosen), std::move (onClose));
+    saveAsWindow->setVisible (true);
+    saveAsWindow->toFront (true);
 }
 
 void MainComponent::askToSaveBeforeClosing (DataWindow* doc, std::function<void (bool)> done)

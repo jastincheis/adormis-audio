@@ -3,6 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "DataWindow.h"
+#include "FilePicker.h"
 #include "MixDialog.h"
 #include "MixPreview.h"
 #include "ProcessToolbar.h"
@@ -87,7 +88,7 @@ private:
     std::unique_ptr<Workspace> workspace;
     std::unique_ptr<ProcessToolbar> toolbar;
     std::unique_ptr<ShortcutsWindow> shortcutsWindow;
-    std::unique_ptr<juce::FileChooser> fileChooser;
+    wf::FilePicker filePicker;
     juce::TooltipWindow tooltips { this, 600 };
     juce::Label statusBar;
 
@@ -104,6 +105,7 @@ private:
     int untitledCount = 0;
 
     std::unique_ptr<juce::DocumentWindow> mixWindow;
+    std::unique_ptr<juce::DocumentWindow> saveAsWindow;
     std::unique_ptr<wf::MixPreviewSource> mixPreview;
     juce::Component::SafePointer<DataWindow> mixPreviewDocument;
     juce::int64 mixPreviewOffset = 0;
