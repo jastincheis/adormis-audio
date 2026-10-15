@@ -242,6 +242,7 @@ MainComponent::~MainComponent()
 {
     mixWindow.reset();
     saveAsWindow.reset();
+    volumeWindow.reset();
     stopTimer();
     transport.stop();
     transport.setSource (nullptr);
@@ -505,6 +506,39 @@ void MainComponent::process (wf::Process process)
         releasePlaybackSource();
         doc->applyProcess (process);
     }
+}
+
+void MainComponent::showVolumeDialog()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    auto onApply = [this, safeDoc = juce::Component::SafePointer<DataWindow> (doc)] (float decibels)
+    {
+        lastVolumeDecibels = decibels;
+
+        if (auto* target = safeDoc.getComponent())
+        {
+            releasePlaybackSource();
+            target->applyVolume (decibels);
+        }
+    };
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->volumeWindow.reset();
+        });
+    };
+
+    volumeWindow = wf::createVolumeWindow (doc->getTitle() + " (" + doc->describeProcessTarget() + ")",
+                                           lastVolumeDecibels, std::move (onApply), std::move (onClose));
+    volumeWindow->setVisible (true);
+    volumeWindow->toFront (true);
 }
 
 void MainComponent::startMixPreview (DataWindow* target, const juce::AudioBuffer<float>& audio, double sourceRate,
@@ -926,8 +960,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::procReverse:       process (wf::Process::reverse); return true;
         case wf::procInvert:        process (wf::Process::invert); return true;
         case wf::procDcOffset:      process (wf::Process::dcOffset); return true;
-        case wf::procGainUp:        process (wf::Process::gainUp); return true;
-        case wf::procGainDown:      process (wf::Process::gainDown); return true;
+        case wf::procVolume:        showVolumeDialog(); return true;
 
         case wf::optPlay:
             if (isPlaying())

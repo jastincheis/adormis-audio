@@ -38,6 +38,10 @@ public:
     // Selection, or the whole file when nothing is selected (Sound Forge rule).
     juce::Range<int> processRange() const;
     void applyProcess (wf::Process process);
+    void applyVolume (float decibels);
+
+    // "Selection, left channel", "whole file"...: what a process would change.
+    juce::String describeProcessTarget() const;
 
     // Removes the selected samples; returns false when nothing is selected.
     bool deleteSelection();
@@ -88,6 +92,10 @@ private:
 
     void pushUndo();
     void audioChanged();
+
+    // Runs `fn` (undoably) on the process range of the picked channel, or of
+    // every channel when none is picked.
+    void processChannels (const std::function<void (juce::AudioBuffer<float>&, juce::Range<int>)>& fn);
 
     // Refreshes the resolution line and the Length / Cursor boxes.
     void updateInfo();

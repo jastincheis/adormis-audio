@@ -38,6 +38,7 @@ target_sources(WaveForge PRIVATE
     Source/FilePicker.cpp
     Source/Processes.cpp
     Source/SaveAsDialog.cpp
+    Source/VolumeDialog.cpp
     Source/ProcessToolbar.cpp
     Source/ShortcutsWindow.cpp
     Source/WaveformView.cpp)

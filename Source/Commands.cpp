@@ -109,8 +109,6 @@ std::vector<CommandDef> makeCommands()
         { procSmooth,       "Smooth/Enhance...",              "Process", {} },
         { procTimeStretch,  "Time Stretch...",                "Process", {} },
         { procVolume,       "Volume...",                      "Process", {} },
-        { procGainUp,       "Volume +3 dB",                   "Process", {} },
-        { procGainDown,     "Volume -3 dB",                   "Process", {} },
 
         // Effects
         { fxChorus,      "Chorus...",                         "Effects", {} },
@@ -221,7 +219,7 @@ const std::vector<TopMenu>& menuBar()
                        sub ("Fade", { C (procFadeIn), C (procFadeOut), C (procFadeGraphic) }),
                        C (procInvert), C (procMute), C (procNormalize), C (procPan), C (procResample),
                        C (procReverse), C (procSmooth), C (procTimeStretch),
-                       sub ("Volume", { C (procVolume), sep(), C (procGainUp), C (procGainDown) }) } },
+                       C (procVolume) } },
 
         { "Effects", { C (fxChorus), C (fxDelay), C (fxDistortion),
                        sub ("Dynamics", { C (fxCompressor), C (fxLimiter), C (fxGate) }),
@@ -271,8 +269,7 @@ const std::vector<CommandDef>& allCommands()
     // Commands that work so far; everything else stays greyed out in the menus.
     static const juce::CommandID implemented[] {
         fileOpen, fileClose, fileSave, fileSaveAs, fileExit, editUndo, editRedo, editDelete, editSelectAll, insertMarker,
-        procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset,
-        procGainUp, procGainDown,
+        procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume,
         winCascade, winTile, winNext, winPrev,
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,
         optPlay, optPlayAll, optPlayPause, optStop, optGoStart, optGoEnd, optAudioDevice,

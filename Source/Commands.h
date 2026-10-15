@@ -33,7 +33,6 @@ enum CommandIDs : juce::CommandID
     procAutoTrim = 0x1400, procBitDepth, procChannelConv, procDcOffset, procEqGraphic,
     procEqParametric, procFadeIn, procFadeOut, procFadeGraphic, procInvert, procMute,
     procNormalize, procPan, procResample, procReverse, procSmooth, procTimeStretch, procVolume,
-    procGainUp, procGainDown,
 
     // Effects
     fxChorus = 0x1500, fxDelay, fxDistortion, fxCompressor, fxLimiter, fxGate, fxFlange,

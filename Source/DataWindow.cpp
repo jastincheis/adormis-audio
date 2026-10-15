@@ -350,7 +350,7 @@ juce::Range<int> DataWindow::processRange() const
     return { (int) selection.getStart(), (int) selection.getEnd() };
 }
 
-void DataWindow::applyProcess (wf::Process process)
+void DataWindow::processChannels (const std::function<void (juce::AudioBuffer<float>&, juce::Range<int>)>& fn)
 {
     pushUndo();
 
@@ -359,14 +359,33 @@ void DataWindow::applyProcess (wf::Process process)
     {
         float* channel[] = { buffer.getWritePointer (picked) };
         juce::AudioBuffer<float> one (channel, 1, buffer.getNumSamples());
-        wf::applyProcess (process, one, processRange());
+        fn (one, processRange());
     }
     else
     {
-        wf::applyProcess (process, buffer, processRange());
+        fn (buffer, processRange());
     }
 
     audioChanged();
+}
+
+void DataWindow::applyProcess (wf::Process process)
+{
+    processChannels ([process] (auto& audio, auto range) { wf::applyProcess (process, audio, range); });
+}
+
+void DataWindow::applyVolume (float decibels)
+{
+    processChannels ([decibels] (auto& audio, auto range) { wf::applyVolume (audio, range, decibels); });
+}
+
+juce::String DataWindow::describeProcessTarget() const
+{
+    const auto channel = view.getSelectedChannel();
+    const auto channelText = channel < 0 ? juce::String()
+                           : channel == 0 ? juce::String (", left channel") : juce::String (", right channel");
+
+    return (view.getSelection().isEmpty() ? juce::String ("whole file") : juce::String ("selection")) + channelText;
 }
 
 bool DataWindow::deleteSelection()

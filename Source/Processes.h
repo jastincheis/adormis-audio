@@ -13,10 +13,11 @@ enum class Process
     normalize,   // peak to -0.1 dBFS
     reverse,
     invert,
-    dcOffset,    // remove the average offset
-    gainUp,      // +3 dB
-    gainDown     // -3 dB
+    dcOffset     // remove the average offset
 };
 
 void applyProcess (Process process, juce::AudioBuffer<float>& buffer, juce::Range<int> range);
+
+// Process > Volume: changes the level by `decibels` (negative = quieter).
+void applyVolume (juce::AudioBuffer<float>& buffer, juce::Range<int> range, float decibels);
 } // namespace wf

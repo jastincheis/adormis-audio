@@ -166,28 +166,24 @@ void iconDcOffset (juce::Graphics& g, juce::Rectangle<float> a)
     fillIcon (g, arrowHead ({ 12.0f, 17.0f }, juce::MathConstants<float>::pi, 3.4f), a);
 }
 
-void iconGain (juce::Graphics& g, juce::Rectangle<float> a, bool up)
+// Volume: a speaker with sound waves (asks for the dB amount).
+void iconVolume (juce::Graphics& g, juce::Rectangle<float> a)
 {
-    juce::Path bars;
-    bars.addRoundedRectangle (3.5f, 13.0f, 3.0f, 7.0f, 1.2f);
-    bars.addRoundedRectangle (8.0f, 9.0f, 3.0f, 11.0f, 1.2f);
-    fillIcon (g, bars, a);
+    juce::Path speaker;
+    speaker.startNewSubPath (3.5f, 9.5f);
+    speaker.lineTo (7.5f, 9.5f);
+    speaker.lineTo (12.5f, 5.0f);
+    speaker.lineTo (12.5f, 19.0f);
+    speaker.lineTo (7.5f, 14.5f);
+    speaker.lineTo (3.5f, 14.5f);
+    speaker.closeSubPath();
+    fillIcon (g, speaker, a);
 
-    juce::Path sign;
-    sign.startNewSubPath (13.5f, 8.0f);
-    sign.lineTo (21.0f, 8.0f);
-
-    if (up)
-    {
-        sign.startNewSubPath (17.25f, 4.25f);
-        sign.lineTo (17.25f, 11.75f);
-    }
-
-    strokeIcon (g, sign, a, 2.2f);
+    juce::Path waves;
+    waves.addCentredArc (13.0f, 12.0f, 3.5f, 3.5f, 0.0f, 0.75f, 2.39f, true);
+    waves.addCentredArc (13.0f, 12.0f, 7.0f, 7.0f, 0.0f, 0.75f, 2.39f, true);
+    strokeIcon (g, waves, a, 1.8f);
 }
-
-void iconGainUp (juce::Graphics& g, juce::Rectangle<float> a)    { iconGain (g, a, true); }
-void iconGainDown (juce::Graphics& g, juce::Rectangle<float> a)  { iconGain (g, a, false); }
 
 // Group tints.
 const juce::Colour transportTint (0xff3f7f5f);
@@ -252,8 +248,7 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     addButton (wf::procMute,       fadeTint,      iconMute);
     addGap();
     addButton (wf::procNormalize,  levelTint,     iconNormalize);
-    addButton (wf::procGainUp,     levelTint,     iconGainUp);
-    addButton (wf::procGainDown,   levelTint,     iconGainDown);
+    addButton (wf::procVolume,     levelTint,     iconVolume);
     addButton (wf::procDcOffset,   levelTint,     iconDcOffset);
     addGap();
     addButton (wf::procReverse,    shapeTint,     iconReverse);

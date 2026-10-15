@@ -7,6 +7,7 @@
 #include "MixDialog.h"
 #include "MixPreview.h"
 #include "ProcessToolbar.h"
+#include "VolumeDialog.h"
 
 class ShortcutsWindow;
 
@@ -60,6 +61,7 @@ private:
     void saveDocument (DataWindow* doc, bool forceSaveAs, std::function<void (bool saved)> done = {});
     void askToSaveBeforeClosing (DataWindow* doc, std::function<void (bool okToClose)> done);
     void process (wf::Process process);
+    void showVolumeDialog();
     void arrangeWindows (bool cascade);
     void cycleWindows (int direction);
 
@@ -107,6 +109,8 @@ private:
 
     std::unique_ptr<juce::DocumentWindow> mixWindow;
     std::unique_ptr<juce::DocumentWindow> saveAsWindow;
+    std::unique_ptr<juce::DocumentWindow> volumeWindow;
+    float lastVolumeDecibels = 0.0f;   // the Volume window starts from the last value used
     std::unique_ptr<wf::MixPreviewSource> mixPreview;
     juce::Component::SafePointer<DataWindow> mixPreviewDocument;
     juce::int64 mixPreviewOffset = 0;

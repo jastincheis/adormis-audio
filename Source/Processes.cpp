@@ -85,14 +85,14 @@ void applyProcess (Process process, juce::AudioBuffer<float>& buffer, juce::Rang
                 juce::FloatVectorOperations::add (data, (float) (-sum / length), length);
             }
             break;
-
-        case Process::gainUp:
-            applyGain (buffer, range, juce::Decibels::decibelsToGain (3.0f));
-            break;
-
-        case Process::gainDown:
-            applyGain (buffer, range, juce::Decibels::decibelsToGain (-3.0f));
-            break;
     }
+}
+
+void applyVolume (juce::AudioBuffer<float>& buffer, juce::Range<int> range, float decibels)
+{
+    range = range.getIntersectionWith ({ 0, buffer.getNumSamples() });
+
+    if (range.getLength() > 0)
+        applyGain (buffer, range, juce::Decibels::decibelsToGain (decibels, -1000.0f));
 }
 } // namespace wf
