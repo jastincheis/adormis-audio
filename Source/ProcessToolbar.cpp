@@ -185,7 +185,25 @@ void iconVolume (juce::Graphics& g, juce::Rectangle<float> a)
     strokeIcon (g, waves, a, 1.8f);
 }
 
+// New: a blank page with a beat grid (markers) on it.
+void iconNew (juce::Graphics& g, juce::Rectangle<float> a)
+{
+    juce::Path page;
+    page.addRoundedRectangle (4.0f, 3.5f, 16.0f, 17.0f, 2.0f);
+    strokeIcon (g, page, a, 1.6f);
+
+    juce::Path grid;
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto x = 7.0f + (float) i * 3.3f;
+        grid.startNewSubPath (x, i % 2 == 0 ? 7.5f : 10.0f);
+        grid.lineTo (x, 17.0f);
+    }
+    strokeIcon (g, grid, a, 1.4f);
+}
+
 // Group tints.
+const juce::Colour fileTint      (0xff5d7682);
 const juce::Colour transportTint (0xff3f7f5f);
 const juce::Colour historyTint   (0xff5a6378);
 const juce::Colour fadeTint      (0xffb0703a);
@@ -237,6 +255,8 @@ private:
 ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     : commands (manager)
 {
+    addButton (wf::fileNew,        fileTint,      iconNew);
+    addGap();
     addButton (wf::optPlay,        transportTint, iconPlay);
     addButton (wf::optStop,        transportTint, iconStop);
     addGap();

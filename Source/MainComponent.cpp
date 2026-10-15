@@ -251,6 +251,7 @@ MainComponent::~MainComponent()
     mixWindow.reset();
     saveAsWindow.reset();
     volumeWindow.reset();
+    templateWindow.reset();
     stopTimer();
     transport.stop();
     transport.setSource (nullptr);
@@ -514,6 +515,33 @@ void MainComponent::process (wf::Process process)
         releasePlaybackSource();
         doc->applyProcess (process);
     }
+}
+
+void MainComponent::showNewFileDialog()
+{
+    auto onCreate = [this] (wf::TemplateSettings settings)
+    {
+        lastTemplate = settings;
+        const auto bpm = juce::String (settings.bpm, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd (".");
+        const auto title = "Untitled " + juce::String (++untitledCount) + " (" + bpm + " BPM, 1/"
+                         + juce::String (settings.division) + ")";
+
+        addDocument (DataWindow::createSilent (title, settings.sampleRate, settings.channels,
+                                               settings.lengthInSamples(), settings.markerPositions()));
+    };
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->templateWindow.reset();
+        });
+    };
+
+    templateWindow = wf::createTemplateWindow (lastTemplate, std::move (onCreate), std::move (onClose));
+    templateWindow->setVisible (true);
+    templateWindow->toFront (true);
 }
 
 void MainComponent::showVolumeDialog()
@@ -884,7 +912,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
     switch (id)
     {
-        case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice:
+        case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice:
         case wf::helpShortcuts: case wf::helpAbout:
             break;
 
@@ -921,6 +949,7 @@ bool MainComponent::perform (const InvocationInfo& info)
 
     switch (info.commandID)
     {
+        case wf::fileNew:           showNewFileDialog(); return true;
         case wf::fileOpen:          openFileDialog(); return true;
         case wf::fileClose:         closeActiveDocument(); return true;
         case wf::fileSave:          saveDocument (doc, false); return true;

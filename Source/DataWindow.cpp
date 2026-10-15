@@ -428,6 +428,24 @@ bool DataWindow::deleteSelection()
     return true;
 }
 
+std::unique_ptr<DataWindow> DataWindow::createSilent (const juce::String& newTitle, double rate, int channels,
+                                                      juce::int64 numSamples, std::vector<juce::int64> newMarkers)
+{
+    if (numSamples <= 0 || numSamples > std::numeric_limits<int>::max() || channels < 1)
+        return nullptr;
+
+    std::unique_ptr<DataWindow> doc (new DataWindow());
+    doc->sampleRate = rate;
+    doc->bitDepth = 16;
+    doc->formatName = "WAV file";
+    doc->buffer.setSize (channels, (int) numSamples);
+    doc->buffer.clear();
+    doc->markers = std::move (newMarkers);
+    doc->modified = true;
+    doc->initialise (newTitle);
+    return doc;
+}
+
 juce::AudioBuffer<float> DataWindow::copySelection() const
 {
     const auto selection = view.getSelection();

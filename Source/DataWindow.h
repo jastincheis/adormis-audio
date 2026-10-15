@@ -16,6 +16,10 @@ public:
     // A new, unsaved document holding a copy of `source`'s selection.
     static std::unique_ptr<DataWindow> fromSelection (const DataWindow& source, const juce::String& title);
 
+    // A new, unsaved, silent 16-bit document with the given markers (File > New).
+    static std::unique_ptr<DataWindow> createSilent (const juce::String& title, double sampleRate, int channels,
+                                                     juce::int64 numSamples, std::vector<juce::int64> markers);
+
     WaveformView& getView()                          { return view; }
     juce::AudioBuffer<float>& getBuffer()            { return buffer; }
     const juce::File& getFile() const                { return file; }

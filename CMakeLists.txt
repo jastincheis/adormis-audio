@@ -41,6 +41,7 @@ target_sources(WaveForge PRIVATE
     Source/VolumeDialog.cpp
     Source/ProcessToolbar.cpp
     Source/ShortcutsWindow.cpp
+    Source/TemplateDialog.cpp
     Source/WaveformView.cpp)
 
 target_compile_definitions(WaveForge PRIVATE

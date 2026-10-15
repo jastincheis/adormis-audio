@@ -512,7 +512,9 @@ void WaveformView::mouseDoubleClick (const juce::MouseEvent& e)
     // In the "L" / "R" zone the double-click selects only that channel.
     const auto channel = waveArea().contains (e.getPosition()) ? channelZoneAt (e.getPosition()) : -1;
 
-    if (markers == nullptr || markers->empty())
+    // Triple-click selects the whole file (JUCE calls this again with 3 clicks);
+    // without markers a double-click already does.
+    if (e.getNumberOfClicks() >= 3 || markers == nullptr || markers->empty())
     {
         dragAnchor = 0;
         setSelection ({ 0, totalSamples() }, channel);
