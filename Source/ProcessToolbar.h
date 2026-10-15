@@ -16,12 +16,17 @@ public:
 
     static constexpr int preferredHeight = 46;
 
+    // The Volume button opens a quick list (-10 ... +10 dB); picking one calls
+    // this. "Custom..." in that list opens the Volume window instead.
+    std::function<void (float decibels)> onQuickVolume;
+
 private:
     class IconButton;
     using IconPainter = std::function<void (juce::Graphics&, juce::Rectangle<float>)>;
 
     void addButton (juce::CommandID id, juce::Colour tint, IconPainter painter);
     void addGap();
+    void showVolumeMenu (juce::Component& button);
     void refreshEnabled();
 
     void applicationCommandInvoked (const juce::ApplicationCommandTarget::InvocationInfo&) override {}

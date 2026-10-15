@@ -258,6 +258,41 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     refreshEnabled();
 }
 
+void ProcessToolbar::showVolumeMenu (juce::Component& button)
+{
+    // Two columns: quieter (-1 ... -10 dB) on the left, louder (+1 ... +10 dB)
+    // on the right. Item ids are 1..20; the value comes from the id.
+    constexpr int customId = 1000;
+    juce::PopupMenu menu;
+
+    for (int db = 1; db <= 10; ++db)
+        menu.addItem (10 + db, juce::String::fromUTF8 ("\xe2\x88\x92") + juce::String (db) + " dB");   // U+2212 minus
+
+    menu.addSeparator();
+    menu.addItem (customId, "Custom...");
+    menu.addColumnBreak();
+
+    for (int db = 1; db <= 10; ++db)
+        menu.addItem (db, "+" + juce::String (db) + " dB");
+
+    const juce::Component::SafePointer<ProcessToolbar> safeThis (this);
+    // Drawn inside the main window rather than as its own window: Hyprland
+    // (focus follows mouse) moves focus onto a separate menu window, and JUCE
+    // then closes the menu as soon as the mouse slips off it.
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&button)
+                                                  .withParentComponent (getTopLevelComponent()),
+                        [safeThis] (int result)
+                        {
+                            if (safeThis == nullptr || result == 0)
+                                return;
+
+                            if (result == customId)
+                                safeThis->commands.invokeDirectly (wf::procVolume, true);
+                            else if (safeThis->onQuickVolume != nullptr)
+                                safeThis->onQuickVolume (result > 10 ? (float) -(result - 10) : (float) result);
+                        });
+}
+
 ProcessToolbar::~ProcessToolbar()
 {
     commands.removeListener (this);
@@ -272,7 +307,10 @@ void ProcessToolbar::addButton (juce::CommandID id, juce::Colour tint, IconPaint
         name << "  (" << wf::shortcutText (*def) << ")";
 
     auto button = std::make_unique<IconButton> (name, tint, std::move (painter));
-    button->onClick = [this, id] { commands.invokeDirectly (id, true); };
+    if (id == wf::procVolume)
+        button->onClick = [this, b = button.get()] { showVolumeMenu (*b); };
+    else
+        button->onClick = [this, id] { commands.invokeDirectly (id, true); };
     button->setComponentID (juce::String (id));
     addAndMakeVisible (*button);
     buttons.push_back (std::move (button));

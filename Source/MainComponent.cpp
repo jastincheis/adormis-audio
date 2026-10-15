@@ -223,6 +223,14 @@ MainComponent::MainComponent()
     addAndMakeVisible (*workspace);
 
     toolbar = std::make_unique<ProcessToolbar> (commandManager);
+    toolbar->onQuickVolume = [this] (float decibels)
+    {
+        if (auto* doc = activeDocument())
+        {
+            releasePlaybackSource();
+            doc->applyVolume (decibels);
+        }
+    };
     addAndMakeVisible (*toolbar);
 
     statusBar.setColour (juce::Label::backgroundColourId, panelColour);
