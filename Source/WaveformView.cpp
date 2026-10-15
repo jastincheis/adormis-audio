@@ -500,18 +500,22 @@ void WaveformView::mouseDoubleClick (const juce::MouseEvent& e)
     if (! hasAudio())
         return;
 
-    if (markers == nullptr || markers->empty())
-    {
-        selectAll();
-        return;
-    }
-
     // Double-click on a marker picks every marker.
-    if (markerAt (e.getPosition()) >= 0)
+    if (markers != nullptr && markerAt (e.getPosition()) >= 0)
     {
         selectedMarkers = *markers;
         repaint();
         notifyChanged();
+        return;
+    }
+
+    // In the "L" / "R" zone the double-click selects only that channel.
+    const auto channel = waveArea().contains (e.getPosition()) ? channelZoneAt (e.getPosition()) : -1;
+
+    if (markers == nullptr || markers->empty())
+    {
+        dragAnchor = 0;
+        setSelection ({ 0, totalSamples() }, channel);
         return;
     }
 
@@ -528,7 +532,7 @@ void WaveformView::mouseDoubleClick (const juce::MouseEvent& e)
 
     dragAnchor = start;
     cursor = start;
-    setSelection ({ start, end });
+    setSelection ({ start, end }, channel);
 }
 
 void WaveformView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
