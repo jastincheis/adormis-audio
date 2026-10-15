@@ -1,0 +1,397 @@
+#include "DataWindow.h"
+
+namespace
+{
+// Whole files are edited in memory; refuse anything that would need > 2 GB.
+constexpr juce::int64 maxBufferBytes = (juce::int64) 2 * 1024 * 1024 * 1024;
+
+// Undo keeps full snapshots; drop the oldest ones beyond this budget.
+constexpr size_t maxUndoBytes = (size_t) 768 * 1024 * 1024;
+
+size_t bytesOf (const juce::AudioBuffer<float>& b)
+{
+    return (size_t) b.getNumChannels() * (size_t) b.getNumSamples() * sizeof (float);
+}
+
+template <typename Snapshot>
+size_t bytesOf (const Snapshot& s)
+{
+    return bytesOf (s.audio);
+}
+} // namespace
+
+std::unique_ptr<DataWindow> DataWindow::load (const juce::File& file, juce::AudioFormatManager& formats, juce::String& error)
+{
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+
+    if (reader == nullptr)
+    {
+        error = "Can't open \"" + file.getFileName() + "\": unsupported or damaged file.";
+        return nullptr;
+    }
+
+    const auto length = reader->lengthInSamples;
+    const auto channels = (int) reader->numChannels;
+
+    if (length <= 0 || channels <= 0 || length > std::numeric_limits<int>::max()
+        || length * channels * (juce::int64) sizeof (float) > maxBufferBytes)
+    {
+        error = "\"" + file.getFileName() + "\" is empty or too large to edit.";
+        return nullptr;
+    }
+
+    std::unique_ptr<DataWindow> doc (new DataWindow());
+    doc->file = file;
+    doc->sampleRate = reader->sampleRate;
+    doc->bitDepth = (int) reader->bitsPerSample;
+    doc->formatName = reader->getFormatName();
+    doc->buffer.setSize (channels, (int) length);
+    reader->read (&doc->buffer, 0, (int) length, 0, true, true);
+
+    doc->initialise (file.getFileName());
+    return doc;
+}
+
+std::unique_ptr<DataWindow> DataWindow::fromSelection (const DataWindow& source, const juce::String& newTitle)
+{
+    const auto selection = source.view.getSelection();
+
+    if (selection.isEmpty())
+        return nullptr;
+
+    std::unique_ptr<DataWindow> doc (new DataWindow());
+    doc->sampleRate = source.sampleRate;
+    doc->bitDepth = source.bitDepth;
+    doc->formatName = source.formatName;
+
+    const auto channels = source.buffer.getNumChannels();
+    const auto length = (int) selection.getLength();
+    doc->buffer.setSize (channels, length);
+
+    for (int ch = 0; ch < channels; ++ch)
+        doc->buffer.copyFrom (ch, 0, source.buffer, ch, (int) selection.getStart(), length);
+
+    doc->modified = true;
+    doc->initialise (newTitle);
+    return doc;
+}
+
+void DataWindow::initialise (const juce::String& newTitle)
+{
+    title = newTitle;
+    setName (modified ? "*" + title : title);
+    view.setAudio (&buffer, sampleRate);
+    view.onCursorOrSelectionChanged = [this] { if (onChanged) onChanged(); };
+    view.onRemoveMarker = [this] (int index) { removeMarker (index); };
+    view.setMarkers (&markers);
+    addAndMakeVisible (view);
+}
+
+bool DataWindow::isSaveExtension (const juce::String& extension)
+{
+    return juce::StringArray { ".wav", ".flac", ".aiff", ".aif", ".ogg" }.contains (extension, true);
+}
+
+bool DataWindow::canSaveInPlace() const
+{
+    const auto ext = file.getFileExtension();
+    return file.existsAsFile()
+        && (ext.equalsIgnoreCase (".wav") || ext.equalsIgnoreCase (".flac")
+            || ext.equalsIgnoreCase (".aiff") || ext.equalsIgnoreCase (".aif"));
+}
+
+bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager& formats, juce::String& error)
+{
+    auto* format = isSaveExtension (destination.getFileExtension())
+                       ? formats.findFormatForFileExtension (destination.getFileExtension()) : nullptr;
+
+    if (format == nullptr)
+    {
+        error = "Can't save as \"" + destination.getFileExtension() + "\". Choose WAV, FLAC, AIFF or OGG.";
+        return false;
+    }
+
+    // Keep the original bit depth when the format allows it, otherwise 24-bit.
+    const auto depths = format->getPossibleBitDepths();
+    auto bits = depths.contains (bitDepth) ? bitDepth : depths.contains (24) ? 24 : depths.getLast();
+
+    auto options = juce::AudioFormatWriterOptions{}.withSampleRate (sampleRate)
+                                                   .withNumChannels (buffer.getNumChannels())
+                                                   .withBitsPerSample (bits);
+
+    // Lossy formats: pick about 192 kbps.
+    const auto qualities = format->getQualityOptions();
+    if (! qualities.isEmpty())
+    {
+        const auto preferred = qualities.indexOf ("192 kbps");
+        options = options.withQualityOptionIndex (preferred >= 0 ? preferred : qualities.size() / 2);
+    }
+
+    // Write to a temporary file first so a failed save never damages the original.
+    juce::TemporaryFile temp (destination);
+    std::unique_ptr<juce::OutputStream> stream = temp.getFile().createOutputStream();
+
+    if (stream == nullptr)
+    {
+        error = "Can't write to \"" + destination.getFullPathName() + "\".";
+        return false;
+    }
+
+    auto writer = format->createWriterFor (stream, options);
+
+    if (writer == nullptr || ! writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples()))
+    {
+        error = "Saving \"" + destination.getFileName() + "\" failed.";
+        return false;
+    }
+
+    writer.reset();   // flushes and closes the stream
+
+    if (! temp.overwriteTargetFileWithTemporary())
+    {
+        error = "Can't replace \"" + destination.getFullPathName() + "\".";
+        return false;
+    }
+
+    file = destination;
+    title = destination.getFileName();
+    formatName = format->getFormatName();
+    bitDepth = bits;
+    modified = false;
+    setName (title);
+
+    if (onChanged)
+        onChanged();
+
+    return true;
+}
+
+juce::Range<int> DataWindow::processRange() const
+{
+    const auto selection = view.getSelection();
+
+    if (selection.isEmpty())
+        return { 0, buffer.getNumSamples() };
+
+    return { (int) selection.getStart(), (int) selection.getEnd() };
+}
+
+void DataWindow::applyProcess (wf::Process process)
+{
+    pushUndo();
+    wf::applyProcess (process, buffer, processRange());
+    audioChanged();
+}
+
+bool DataWindow::deleteSelection()
+{
+    const auto selection = view.getSelection();
+
+    if (selection.isEmpty())
+        return false;
+
+    const auto start = (int) selection.getStart();
+    const auto removed = (int) selection.getLength();
+    const auto remaining = buffer.getNumSamples() - removed;
+
+    pushUndo();
+
+    juce::AudioBuffer<float> result (buffer.getNumChannels(), remaining);
+
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+    {
+        result.copyFrom (ch, 0, buffer, ch, 0, start);
+        result.copyFrom (ch, start, buffer, ch, start + removed, remaining - start);
+    }
+
+    buffer = std::move (result);
+
+    // Markers inside the cut go away; later ones move back with the audio.
+    std::vector<juce::int64> kept;
+
+    for (auto m : markers)
+    {
+        if (m < start)                    kept.push_back (m);
+        else if (m >= start + removed)    kept.push_back (m - removed);
+    }
+
+    markers = std::move (kept);
+    view.setSelection ({});
+    view.setCursor (start);
+    audioChanged();
+    return true;
+}
+
+juce::AudioBuffer<float> DataWindow::copySelection() const
+{
+    const auto selection = view.getSelection();
+    juce::AudioBuffer<float> copy (buffer.getNumChannels(), (int) selection.getLength());
+
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        copy.copyFrom (ch, 0, buffer, ch, (int) selection.getStart(), (int) selection.getLength());
+
+    return copy;
+}
+
+namespace
+{
+// Resamples every channel of `in` from `fromRate` to `toRate`.
+juce::AudioBuffer<float> resampled (const juce::AudioBuffer<float>& in, double fromRate, double toRate)
+{
+    if (juce::approximatelyEqual (fromRate, toRate) || in.getNumSamples() == 0)
+        return in;
+
+    const auto ratio = fromRate / toRate;
+    const auto outLength = (int) std::ceil (in.getNumSamples() / ratio);
+    juce::AudioBuffer<float> out (in.getNumChannels(), outLength);
+
+    for (int ch = 0; ch < in.getNumChannels(); ++ch)
+    {
+        juce::LagrangeInterpolator interpolator;
+        interpolator.process (ratio, in.getReadPointer (ch), out.getWritePointer (ch), outLength,
+                              in.getNumSamples(), 0);
+    }
+
+    return out;
+}
+
+// Source sample for destination channel `ch`: mono fans out to every channel,
+// and a source with more channels than the destination is averaged down.
+float sourceSample (const juce::AudioBuffer<float>& src, int ch, int destChannels, int index)
+{
+    const auto srcChannels = src.getNumChannels();
+
+    if (srcChannels == 1)
+        return src.getSample (0, index);
+
+    if (destChannels == 1)
+    {
+        float sum = 0.0f;
+        for (int c = 0; c < srcChannels; ++c)
+            sum += src.getSample (c, index);
+        return sum / (float) srcChannels;
+    }
+
+    return ch < srcChannels ? src.getSample (ch, index) : 0.0f;
+}
+} // namespace
+
+void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRate, juce::int64 position,
+                        float sourceGain, float destGain)
+{
+    const auto src = resampled (source, sourceRate, sampleRate);
+    const auto start = (int) juce::jlimit ((juce::int64) 0, (juce::int64) buffer.getNumSamples(), position);
+    const auto length = src.getNumSamples();
+
+    if (length == 0)
+        return;
+
+    pushUndo();
+
+    if (start + length > buffer.getNumSamples())
+        buffer.setSize (buffer.getNumChannels(), start + length, true, true);
+
+    const auto channels = buffer.getNumChannels();
+
+    for (int ch = 0; ch < channels; ++ch)
+    {
+        auto* dest = buffer.getWritePointer (ch, start);
+
+        for (int i = 0; i < length; ++i)
+            dest[i] = dest[i] * destGain + sourceSample (src, ch, channels, i) * sourceGain;
+    }
+
+    view.setSelection ({ start, start + length });
+    audioChanged();
+}
+
+void DataWindow::addMarker (juce::int64 position)
+{
+    position = juce::jlimit ((juce::int64) 0, (juce::int64) buffer.getNumSamples(), position);
+    const auto it = std::lower_bound (markers.begin(), markers.end(), position);
+
+    if (it != markers.end() && *it == position)
+        return;
+
+    markers.insert (it, position);
+    view.repaint();
+}
+
+void DataWindow::removeMarker (int index)
+{
+    if (juce::isPositiveAndBelow (index, (int) markers.size()))
+    {
+        markers.erase (markers.begin() + index);
+        view.repaint();
+    }
+}
+
+void DataWindow::pushUndo()
+{
+    redoStack.clear();
+    undoStack.push_back ({ buffer, markers });
+
+    size_t total = 0;
+    for (const auto& b : undoStack)
+        total += bytesOf (b);
+
+    while (undoStack.size() > 1 && total > maxUndoBytes)
+    {
+        total -= bytesOf (undoStack.front());
+        undoStack.erase (undoStack.begin());
+    }
+}
+
+void DataWindow::restore (Snapshot& from, std::vector<Snapshot>& saveTo)
+{
+    saveTo.push_back ({ std::move (buffer), std::move (markers) });
+    buffer = std::move (from.audio);
+    markers = std::move (from.markers);
+    audioChanged();
+}
+
+void DataWindow::undo()
+{
+    if (undoStack.empty())
+        return;
+
+    auto snapshot = std::move (undoStack.back());
+    undoStack.pop_back();
+    restore (snapshot, redoStack);
+}
+
+void DataWindow::redo()
+{
+    if (redoStack.empty())
+        return;
+
+    auto snapshot = std::move (redoStack.back());
+    redoStack.pop_back();
+    restore (snapshot, undoStack);
+}
+
+void DataWindow::audioChanged()
+{
+    modified = true;
+    setName ("*" + title);
+    view.audioChanged();
+
+    if (onChanged)
+        onChanged();
+}
+
+juce::String DataWindow::describeFormat() const
+{
+    // Compressed formats decode to float, so their "bit depth" is meaningless.
+    const auto lossy = formatName.containsIgnoreCase ("MP3") || formatName.containsIgnoreCase ("Ogg")
+                    || formatName.containsIgnoreCase ("Opus");
+    const auto channels = buffer.getNumChannels();
+
+    juce::String text;
+    text << juce::String (juce::roundToInt (sampleRate)) << " Hz, "
+         << (lossy ? formatName.upToFirstOccurrenceOf (" ", false, false) + ", "
+                   : bitDepth > 0 ? juce::String (bitDepth) + "-bit, " : juce::String())
+         << (channels == 1 ? "Mono" : channels == 2 ? "Stereo" : juce::String (channels) + " ch") << ", "
+         << WaveformView::formatTime ((double) buffer.getNumSamples() / sampleRate);
+    return text;
+}

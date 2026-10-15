@@ -1,0 +1,22 @@
+#pragma once
+
+#include <juce_audio_basics/juce_audio_basics.h>
+
+// Destructive processes applied in place to a range of samples on all channels.
+namespace wf
+{
+enum class Process
+{
+    fadeIn,
+    fadeOut,
+    mute,
+    normalize,   // peak to -0.1 dBFS
+    reverse,
+    invert,
+    dcOffset,    // remove the average offset
+    gainUp,      // +3 dB
+    gainDown     // -3 dB
+};
+
+void applyProcess (Process process, juce::AudioBuffer<float>& buffer, juce::Range<int> range);
+} // namespace wf
