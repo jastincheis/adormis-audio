@@ -31,6 +31,7 @@ target_sources(WaveForge PRIVATE
     Source/BackgroundPattern.cpp
     Source/MainComponent.cpp
     Source/MixDialog.cpp
+    Source/MixPreview.cpp
     Source/Commands.cpp
     Source/DataWindow.cpp
     Source/Processes.cpp

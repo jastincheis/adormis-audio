@@ -276,10 +276,24 @@ float sourceSample (const juce::AudioBuffer<float>& src, int ch, int destChannel
 }
 } // namespace
 
+juce::AudioBuffer<float> DataWindow::prepareForMix (const juce::AudioBuffer<float>& source, double sourceRate,
+                                                    double rate, int channels)
+{
+    const auto src = resampled (source, sourceRate, rate);
+    juce::AudioBuffer<float> out (channels, src.getNumSamples());
+
+    for (int ch = 0; ch < channels; ++ch)
+        for (int i = 0; i < src.getNumSamples(); ++i)
+            out.setSample (ch, i, sourceSample (src, ch, channels, i));
+
+    return out;
+}
+
 void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRate, juce::int64 position,
                         float sourceGain, float destGain)
 {
-    const auto src = resampled (source, sourceRate, sampleRate);
+    const auto channels = buffer.getNumChannels();
+    const auto src = prepareForMix (source, sourceRate, sampleRate, channels);
     const auto start = (int) juce::jlimit ((juce::int64) 0, (juce::int64) buffer.getNumSamples(), position);
     const auto length = src.getNumSamples();
 
@@ -289,16 +303,15 @@ void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRat
     pushUndo();
 
     if (start + length > buffer.getNumSamples())
-        buffer.setSize (buffer.getNumChannels(), start + length, true, true);
-
-    const auto channels = buffer.getNumChannels();
+        buffer.setSize (channels, start + length, true, true);
 
     for (int ch = 0; ch < channels; ++ch)
     {
         auto* dest = buffer.getWritePointer (ch, start);
+        const auto* in = src.getReadPointer (ch);
 
         for (int i = 0; i < length; ++i)
-            dest[i] = dest[i] * destGain + sourceSample (src, ch, channels, i) * sourceGain;
+            dest[i] = dest[i] * destGain + in[i] * sourceGain;
     }
 
     view.setSelection ({ start, start + length });

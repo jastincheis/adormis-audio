@@ -42,6 +42,11 @@ public:
     // Copy of the selected samples (empty when nothing is selected).
     juce::AudioBuffer<float> copySelection() const;
 
+    // `source` converted to `rate` and `channels` (mono fans out, extra
+    // channels are averaged down), ready to be added sample by sample.
+    static juce::AudioBuffer<float> prepareForMix (const juce::AudioBuffer<float>& source, double sourceRate,
+                                                   double rate, int channels);
+
     // Mixes `source` (at `sourceRate`) into this file starting at `position`,
     // scaling the incoming audio by `sourceGain` and the existing audio it
     // overlaps by `destGain`. The file grows if the source runs past its end.

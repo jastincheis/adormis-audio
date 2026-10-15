@@ -3,6 +3,8 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "DataWindow.h"
+#include "MixDialog.h"
+#include "MixPreview.h"
 #include "ProcessToolbar.h"
 
 class ShortcutsWindow;
@@ -63,6 +65,14 @@ private:
     void startPlayback (juce::Range<juce::int64> range);
     void stopPlayback (bool returnToStart);
     void releasePlaybackSource();   // before a document's buffer is changed
+
+    // Mix dialog preview: plays the mix result without touching the file.
+    void startMixPreview (DataWindow* target, const juce::AudioBuffer<float>& audio, double sourceRate,
+                          juce::int64 position, std::shared_ptr<wf::MixGains> gains);
+    void stopMixPreview();
+    bool isMixPreviewing() const;
+    void openMixWindow (const juce::String& description, std::shared_ptr<wf::MixGains> gains,
+                        wf::MixDialogCallbacks callbacks);
     bool isPlaying() const  { return transport.isPlaying(); }
     juce::int64 playPosition() const;
 
@@ -92,6 +102,11 @@ private:
     juce::int64 playStartCursor = 0;
 
     int untitledCount = 0;
+
+    std::unique_ptr<juce::DocumentWindow> mixWindow;
+    std::unique_ptr<wf::MixPreviewSource> mixPreview;
+    juce::Component::SafePointer<DataWindow> mixPreviewDocument;
+    juce::int64 mixPreviewOffset = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainComponent)
 };

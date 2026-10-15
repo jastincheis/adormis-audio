@@ -102,18 +102,38 @@ public:
                                + " from \"" + sourceDoc->getTitle() + "\"\ninto \"" + targetDoc->getTitle() + "\" at "
                                + WaveformView::formatTime ((double) position / targetDoc->getSampleRate()) + ".";
 
-        wf::showMixDialog (description, [this, target = juce::Component::SafePointer<DataWindow> (targetDoc),
-                                         audio, sourceRate, position] (wf::MixSettings settings)
+        auto gains = std::make_shared<wf::MixGains>();
+        const juce::Component::SafePointer<DataWindow> target (targetDoc);
+
+        wf::MixDialogCallbacks callbacks;
+        callbacks.onOk = [this, target, audio, sourceRate, position, gains]
         {
             if (auto* doc = target.getComponent())
             {
                 owner.releasePlaybackSource();
-                doc->mixIn (*audio, sourceRate, position, settings.sourceGain, settings.destGain);
+                doc->mixIn (*audio, sourceRate, position, gains->source, gains->dest);
                 setActiveDocument (doc);
 
                 if (auto* window = getWindowFor (doc))
                     window->toFront (true);
             }
+        };
+        callbacks.onPreview = [this, target, audio, sourceRate, position, gains] (bool play)
+        {
+            if (play)
+                owner.startMixPreview (target.getComponent(), *audio, sourceRate, position, gains);
+            else
+                owner.stopMixPreview();
+        };
+        callbacks.isPreviewing = [this] { return owner.isMixPreviewing(); };
+
+        // Open it once the drag has fully finished: opening it from inside the
+        // drop handler can leave the drag's mouse capture stuck on the window.
+        juce::MessageManager::callAsync ([safeOwner = juce::Component::SafePointer<MainComponent> (&owner),
+                                          description, gains, callbacks = std::move (callbacks)]() mutable
+        {
+            if (auto* main = safeOwner.getComponent())
+                main->openMixWindow (description, gains, std::move (callbacks));
         });
     }
 
@@ -220,6 +240,7 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    mixWindow.reset();
     stopTimer();
     transport.stop();
     transport.setSource (nullptr);
@@ -461,8 +482,89 @@ void MainComponent::process (wf::Process process)
     }
 }
 
+void MainComponent::startMixPreview (DataWindow* target, const juce::AudioBuffer<float>& audio, double sourceRate,
+                                     juce::int64 position, std::shared_ptr<wf::MixGains> gains)
+{
+    if (target == nullptr)
+        return;
+
+    releasePlaybackSource();
+
+    // Play from a little before the drop point to a little after the mix ends.
+    const auto rate = target->getSampleRate();
+    const auto& dest = target->getBuffer();
+    auto prepared = DataWindow::prepareForMix (audio, sourceRate, rate, dest.getNumChannels());
+
+    const auto regionStart = juce::jmax ((juce::int64) 0, position - (juce::int64) (1.5 * rate));
+    const auto mixEnd = position + prepared.getNumSamples();
+    const auto regionEnd = juce::jmin ((juce::int64) dest.getNumSamples(), mixEnd + (juce::int64) (0.5 * rate));
+
+    juce::AudioBuffer<float> region (dest.getNumChannels(), (int) juce::jmax ((juce::int64) 0, regionEnd - regionStart));
+
+    for (int ch = 0; ch < dest.getNumChannels(); ++ch)
+        region.copyFrom (ch, 0, dest, ch, (int) regionStart, region.getNumSamples());
+
+    mixPreview = std::make_unique<wf::MixPreviewSource> (std::move (region), std::move (prepared),
+                                                          (int) (position - regionStart), std::move (gains));
+    mixPreviewDocument = target;
+    mixPreviewOffset = regionStart;
+
+    transport.setSource (mixPreview.get(), 0, nullptr, rate, dest.getNumChannels());
+    transport.setPosition (0.0);
+    transport.start();
+    startTimerHz (30);
+}
+
+void MainComponent::openMixWindow (const juce::String& description, std::shared_ptr<wf::MixGains> gains,
+                                   wf::MixDialogCallbacks callbacks)
+{
+    // One Mix window at a time: a new drop replaces the previous one.
+    stopMixPreview();
+    mixWindow.reset();
+
+    callbacks.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        // Deleted asynchronously: we are still inside one of its button callbacks.
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->stopMixPreview();
+                main->mixWindow.reset();
+            }
+        });
+    };
+
+    mixWindow = wf::createMixWindow (description, std::move (gains), std::move (callbacks));
+    mixWindow->setVisible (true);
+    mixWindow->toFront (true);
+}
+
+void MainComponent::stopMixPreview()
+{
+    if (mixPreview == nullptr)
+        return;
+
+    transport.stop();
+    transport.setSource (nullptr);
+    mixPreview.reset();
+
+    if (auto* doc = mixPreviewDocument.getComponent())
+        doc->getView().setPlayhead (-1);
+
+    mixPreviewDocument = nullptr;
+    stopTimer();
+}
+
+bool MainComponent::isMixPreviewing() const
+{
+    return mixPreview != nullptr && transport.isPlaying();
+}
+
 void MainComponent::releasePlaybackSource()
 {
+    stopMixPreview();
+
     // The memory source points straight at a document's samples, so detach it
     // (under the audio callback lock) before any buffer is modified or reallocated.
     stopPlayback (false);
@@ -583,6 +685,21 @@ void MainComponent::stopPlayback (bool returnToStart)
 
 void MainComponent::timerCallback()
 {
+    if (mixPreview != nullptr)
+    {
+        const auto position = mixPreview->getNextReadPosition();
+        auto* target = mixPreviewDocument.getComponent();
+
+        if (target == nullptr || ! transport.isPlaying() || position >= mixPreview->getTotalLength())
+        {
+            stopMixPreview();
+            return;
+        }
+
+        target->getView().setPlayhead (juce::jmin (mixPreviewOffset + position, (juce::int64) target->getBuffer().getNumSamples()));
+        return;
+    }
+
     auto* doc = playingDocument.getComponent();
     const auto position = playPosition();
 
