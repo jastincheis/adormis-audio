@@ -68,10 +68,14 @@ public:
 
     juce::String describeFormat() const;
 
+    // "44,100 Hz, 16-bit, Stereo": the top-left line of the window.
+    juce::String describeResolution() const;
+
     // Called after the audio or the cursor/selection changes.
     std::function<void()> onChanged;
 
-    void resized() override  { view.setBounds (getLocalBounds()); }
+    void resized() override;
+    void paint (juce::Graphics&) override;
 
 private:
     DataWindow() = default;
@@ -80,6 +84,9 @@ private:
 
     void pushUndo();
     void audioChanged();
+
+    // Refreshes the resolution line and the Length / Cursor boxes.
+    void updateInfo();
 
     juce::File file;                 // empty for documents never saved
     juce::String title;
@@ -105,6 +112,9 @@ private:
 
     std::vector<Snapshot> undoStack, redoStack;
     WaveformView view;
+
+    // Top-left resolution; bottom-right file length and cursor position.
+    juce::Label resolutionLabel, lengthBox, cursorBox;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DataWindow)
 };

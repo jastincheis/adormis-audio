@@ -39,6 +39,7 @@ public:
     void setDropPreview (juce::Range<juce::int64> range, int snappedTo);
 
     void setPlayhead (juce::int64 sample);  // -1 hides it
+    juce::int64 getPlayhead() const                 { return playhead; }
     void ensureVisible (juce::int64 sample);
 
     void zoomIn();
@@ -47,6 +48,7 @@ public:
     void zoomToSelection();
 
     std::function<void()> onCursorOrSelectionChanged;
+    std::function<void()> onPlayheadMoved;
     std::function<void (int markerIndex)> onRemoveMarker;
 
     void paint (juce::Graphics&) override;

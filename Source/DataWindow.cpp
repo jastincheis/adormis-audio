@@ -190,10 +190,31 @@ void DataWindow::initialise (const juce::String& newTitle)
     title = newTitle;
     setName (modified ? "*" + title : title);
     view.setAudio (&buffer, sampleRate);
-    view.onCursorOrSelectionChanged = [this] { if (onChanged) onChanged(); };
+    view.onCursorOrSelectionChanged = [this] { updateInfo(); if (onChanged) onChanged(); };
+    view.onPlayheadMoved = [this] { updateInfo(); };
     view.onRemoveMarker = [this] (int index) { removeMarker (index); };
     view.setMarkers (&markers);
     addAndMakeVisible (view);
+
+    for (auto* label : { &resolutionLabel, &lengthBox, &cursorBox })
+    {
+        label->setFont (juce::FontOptions (14.0f));
+        label->setColour (juce::Label::textColourId, juce::Colours::black);
+        label->setMinimumHorizontalScale (1.0f);
+        label->setInterceptsMouseClicks (false, false);
+        addAndMakeVisible (label);
+    }
+
+    for (auto* box : { &lengthBox, &cursorBox })
+    {
+        box->setJustificationType (juce::Justification::centredRight);
+        box->setColour (juce::Label::backgroundColourId, juce::Colours::white);
+        box->setColour (juce::Label::outlineColourId, juce::Colour (0xff808080));
+    }
+
+    lengthBox.setTooltip ("Length of the file");
+    cursorBox.setTooltip ("Cursor position");
+    updateInfo();
 }
 
 bool DataWindow::isSaveExtension (const juce::String& extension)
@@ -244,6 +265,7 @@ bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager
         floatingPoint = newFloatingPoint;
         modified = false;
         setName (title);
+        updateInfo();
 
         if (onChanged)
             onChanged();
@@ -530,10 +552,71 @@ void DataWindow::audioChanged()
 {
     modified = true;
     setName ("*" + title);
+    updateInfo();
     view.audioChanged();
 
     if (onChanged)
         onChanged();
+}
+
+namespace
+{
+constexpr int infoBarHeight = 22;
+const juce::Colour infoBarColour (0xffd4d0c8);
+}
+
+void DataWindow::resized()
+{
+    auto area = getLocalBounds();
+
+    auto top = area.removeFromTop (infoBarHeight);
+    resolutionLabel.setBounds (top.reduced (4, 0));
+
+    auto bottom = area.removeFromBottom (infoBarHeight).reduced (3, 2);
+    cursorBox.setBounds (bottom.removeFromRight (170));
+    bottom.removeFromRight (6);
+    lengthBox.setBounds (bottom.removeFromRight (170));
+
+    view.setBounds (area);
+}
+
+void DataWindow::paint (juce::Graphics& g)
+{
+    g.fillAll (infoBarColour);
+}
+
+void DataWindow::updateInfo()
+{
+    auto time = [this] (juce::int64 samples) { return WaveformView::formatTime ((double) samples / sampleRate); };
+
+    resolutionLabel.setText (describeResolution(), juce::dontSendNotification);
+    lengthBox.setText ("Length  " + time (buffer.getNumSamples()), juce::dontSendNotification);
+    // While playing, the box follows the playhead in real time.
+    const auto playhead = view.getPlayhead();
+    cursorBox.setText ("Cursor  " + time (playhead >= 0 ? playhead : view.getCursor()), juce::dontSendNotification);
+}
+
+juce::String DataWindow::describeResolution() const
+{
+    const auto lossy = formatName.containsIgnoreCase ("MP3") || formatName.containsIgnoreCase ("Ogg")
+                    || formatName.containsIgnoreCase ("Opus");
+    const auto channels = buffer.getNumChannels();
+
+    juce::String text;
+    // 44100 -> "44,100"
+    auto rate = juce::String (juce::roundToInt (sampleRate));
+    for (int i = rate.length() - 3; i > 0; i -= 3)
+        rate = rate.substring (0, i) + "," + rate.substring (i);
+
+    text << rate << " Hz, ";
+
+    if (lossy)
+        text << formatName.upToFirstOccurrenceOf (" ", false, false) << ", ";
+    else if (bitDepth > 0)
+        text << bitDepth << "-bit" << (floatingPoint ? " float" : "") << ", ";
+
+    text << (channels == 1 ? "Mono" : channels == 2 ? "Stereo" : juce::String (channels) + " channels");
+    return text;
 }
 
 juce::String DataWindow::describeFormat() const

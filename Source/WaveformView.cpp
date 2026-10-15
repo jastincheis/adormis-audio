@@ -230,6 +230,9 @@ void WaveformView::setPlayhead (juce::int64 sample)
     repaintAt (playhead);
     playhead = sample;
     repaintAt (playhead);
+
+    if (onPlayheadMoved)
+        onPlayheadMoved();
 }
 
 void WaveformView::notifyChanged()
