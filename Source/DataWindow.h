@@ -101,6 +101,34 @@ public:
     // False when nothing, or only one channel, is selected.
     bool trimToSelection();
 
+    // Insert > Silence: `seconds` of silence at `position` (undoable).
+    void insertSilence (juce::int64 position, double seconds);
+
+    // Process > Resample: converts the whole file to `newRate` (undoable).
+    void resample (double newRate);
+
+    // Process > Bit-Depth Converter: 8, 16, 24 or 32 (float). Rounds the
+    // samples to the new depth, with TPDF dither when `dither` (undoable).
+    void convertBitDepth (int bits, bool dither);
+    int getBitDepth() const      { return bitDepth; }
+    bool isFloatingPoint() const { return floatingPoint; }
+
+    // Process > Channel Converter.
+    enum class ChannelConversion { stereoToMono, monoToStereo, swap, leftOnly, rightOnly };
+    bool convertChannels (ChannelConversion);
+
+    // Process > Auto Trim/Crop: removes the start and end quieter than
+    // `thresholdDb`; false when there's nothing to trim (or it's all quiet).
+    bool autoTrim (float thresholdDb);
+
+    // Tools > Detect Clipping: a marker at the start of every stretch of at
+    // least `minRun` samples at or above `levelDb`; returns how many.
+    int markClipping (float levelDb, int minRun);
+
+    // Tools > Copy Other Channel: the selected channel's selection gets the
+    // other channel's audio (stereo only; undoable).
+    bool copyOtherChannel();
+
     // Removes the markers picked in the view (undoable); false when none are.
     bool deleteSelectedMarkers();
 
@@ -184,7 +212,10 @@ private:
         juce::AudioBuffer<float> audio;
         std::vector<juce::int64> markers, barStarts;
         double rate = 44100.0;
+        int bitDepth = 0, resolutionBits = 0;
+        bool floatingPoint = false;
     };
+
 
     void restore (Snapshot& from, std::vector<Snapshot>& saveTo);
 

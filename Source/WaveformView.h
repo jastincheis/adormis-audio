@@ -59,6 +59,10 @@ public:
     void ensureVisible (juce::int64 sample);
 
     void zoomIn();
+    // View > Level Zoom: magnifies the waveform vertically (x1 .. x64) to see quiet parts.
+    void levelZoomIn();
+    void levelZoomOut();
+    float getLevelZoom() const   { return levelZoom; }
     void zoomOut();
     void zoomToFit();
     void zoomToSelection();
@@ -108,6 +112,7 @@ private:
     juce::String emptyText { "No file open" };
     double sampleRate = 44100.0;
     double samplesPerPixel = 1.0;
+    float levelZoom = 1.0f;
     double viewStart = 0.0;            // first visible sample
 
     juce::int64 cursor = 0;

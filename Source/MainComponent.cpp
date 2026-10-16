@@ -603,7 +603,15 @@ void MainComponent::process (wf::Process process)
     {
         releasePlaybackSource();
         doc->applyProcess (process);
+        rememberAction ("process", [process] (DataWindow& d) { d.applyProcess (process); });
     }
+}
+
+void MainComponent::rememberAction (const juce::String& name, std::function<void (DataWindow&)> action)
+{
+    lastActionName = name;
+    lastAction = std::move (action);
+    commandManager.commandStatusChanged();
 }
 
 void MainComponent::showNewFileDialog()
@@ -649,6 +657,7 @@ void MainComponent::showVolumeDialog()
         {
             releasePlaybackSource();
             target->applyVolume (decibels);
+            rememberAction ("Volume", [decibels] (DataWindow& d) { d.applyVolume (decibels); });
         }
     };
 
@@ -665,6 +674,325 @@ void MainComponent::showVolumeDialog()
                                            lastVolumeDecibels, std::move (onApply), std::move (onClose));
     volumeWindow->setVisible (true);
     volumeWindow->toFront (true);
+}
+
+void MainComponent::showForm (const juce::String& title, const juce::String& info, std::vector<wf::FormField> fields,
+                              const juce::String& hint, std::function<void (DataWindow&, const juce::StringArray&)> onOk)
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    auto apply = [this, safeDoc = juce::Component::SafePointer<DataWindow> (doc), onOk = std::move (onOk)] (const juce::StringArray& values)
+    {
+        if (auto* target = safeDoc.getComponent())
+        {
+            releasePlaybackSource();
+            onOk (*target, values);
+            updateStatus();
+            updateTitle();
+            commandManager.commandStatusChanged();
+        }
+    };
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->formWindow.reset();
+        });
+    };
+
+    formWindow = wf::createFormWindow (title, info, std::move (fields), hint, std::move (apply), std::move (onClose));
+    formWindow->setVisible (true);
+    formWindow->toFront (true);
+}
+
+namespace
+{
+bool isSeconds (const juce::String& t)
+{
+    const auto v = wf::parseTime (t);
+    return v.has_value() && *v > 0.0 && *v <= 3600.0;
+}
+
+bool isTime (const juce::String& t)   { return wf::parseTime (t).has_value(); }
+
+juce::String secondsText (double seconds)
+{
+    return WaveformView::formatTime (seconds);
+}
+} // namespace
+
+void MainComponent::showInsertSilence()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    showForm ("Insert Silence", "Insert silence into: " + doc->getTitle(),
+              { { "Length:", "1", {}, "seconds", isSeconds },
+                { "Where:", "At the cursor", { "At the cursor", "At the start", "At the end" }, {}, {} } },
+              "Length in seconds (1.5) or as minutes:seconds (1:30).",
+              [] (DataWindow& d, const juce::StringArray& v)
+              {
+                  const auto where = v[1] == "At the start" ? (juce::int64) 0
+                                   : v[1] == "At the end"   ? (juce::int64) d.getBuffer().getNumSamples()
+                                                            : d.getView().getCursor();
+                  d.insertSilence (where, *wf::parseTime (v[0]));
+              });
+}
+
+void MainComponent::showResample()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    const juce::StringArray rates { "8000", "11025", "16000", "22050", "32000", "44100", "48000", "88200", "96000", "176400", "192000" };
+    const auto now = juce::String (juce::roundToInt (doc->getSampleRate()));
+
+    showForm ("Resample", doc->getTitle() + " is now " + now + " Hz",
+              { { "New sample rate:", now == "44100" ? "48000" : "44100", rates, {}, {} } },
+              "Converts the whole file (best-quality sinc). The pitch and length stay the same.",
+              [this] (DataWindow& d, const juce::StringArray& v)
+              {
+                  const auto rate = v[0].getDoubleValue();
+                  d.resample (rate);
+                  rememberAction ("Resample", [rate] (DataWindow& x) { x.resample (rate); });
+              });
+}
+
+void MainComponent::showBitDepth()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    const auto now = doc->isFloatingPoint() ? juce::String ("32-bit float") : juce::String (doc->getBitDepth()) + "-bit";
+
+    showForm ("Bit-Depth Converter", doc->getTitle() + " is now " + now,
+              { { "New bit depth:", "16-bit", { "8-bit", "16-bit", "24-bit", "32-bit float" }, {}, {} },
+                { "Dither:", "Yes (TPDF)", { "Yes (TPDF)", "No" }, {}, {} } },
+              "Dither adds a very faint noise that hides the rounding\n(use it when going down to 16 or 8 bits).",
+              [this] (DataWindow& d, const juce::StringArray& v)
+              {
+                  const auto bits = v[0].getIntValue();
+                  const auto dither = v[1].startsWith ("Yes");
+                  d.convertBitDepth (bits, dither);
+                  rememberAction ("Bit-Depth Converter", [bits, dither] (DataWindow& x) { x.convertBitDepth (bits, dither); });
+              });
+}
+
+void MainComponent::showChannelConverter()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    using CC = DataWindow::ChannelConversion;
+    const auto stereo = doc->getBuffer().getNumChannels() == 2;
+    const juce::StringArray choices = stereo
+        ? juce::StringArray { "Stereo to mono (mix L + R)", "Left channel only (mono)", "Right channel only (mono)", "Swap left and right" }
+        : juce::StringArray { "Mono to stereo (same sound in both)" };
+
+    showForm ("Channel Converter", doc->getTitle() + " is now " + (stereo ? "stereo" : "mono"),
+              { { "Convert:", choices[0], choices, {}, {} } }, {},
+              [this] (DataWindow& d, const juce::StringArray& v)
+              {
+                  const auto c = v[0].startsWith ("Stereo") ? CC::stereoToMono : v[0].startsWith ("Left") ? CC::leftOnly
+                               : v[0].startsWith ("Right") ? CC::rightOnly : v[0].startsWith ("Swap") ? CC::swap : CC::monoToStereo;
+                  d.convertChannels (c);
+              });
+}
+
+void MainComponent::showAutoTrim()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    showForm ("Auto Trim/Crop", "Remove the quiet start and end of: " + doc->getTitle(),
+              { { "Quieter than:", "-60", {}, "dB", [] (const juce::String& t)
+                  { const auto v = wf::parseNumber (t); return v.has_value() && *v <= 0.0 && *v >= -120.0; } } },
+              "Everything before the first and after the last sound louder\nthan this is cut off (undo with Ctrl+Z).",
+              [this] (DataWindow& d, const juce::StringArray& v)
+              {
+                  if (! d.autoTrim ((float) *wf::parseNumber (v[0])))
+                      juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::NoIcon, "Auto Trim/Crop",
+                                                              "Nothing to trim: the file starts and ends above " + v[0] + " dB\n(or is quieter than that everywhere).");
+              });
+}
+
+void MainComponent::showSetSelection()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    const auto rate = doc->getSampleRate();
+    const auto sel = doc->getView().getSelection();
+    const auto start = sel.isEmpty() ? doc->getView().getCursor() : sel.getStart();
+    const auto end = sel.isEmpty() ? (juce::int64) doc->getBuffer().getNumSamples() : sel.getEnd();
+
+    showForm ("Set Selection", "Select a stretch of: " + doc->getTitle()
+                                   + "  (" + secondsText ((double) doc->getBuffer().getNumSamples() / rate) + " long)",
+              { { "Start:", secondsText ((double) start / rate), {}, {}, isTime },
+                { "End:", secondsText ((double) end / rate), {}, {}, isTime } },
+              "Times as hh:mm:ss.ms, m:ss or seconds (12.5).",
+              [] (DataWindow& d, const juce::StringArray& v)
+              {
+                  const auto r = d.getSampleRate();
+                  const auto total = (juce::int64) d.getBuffer().getNumSamples();
+                  auto a = juce::jlimit ((juce::int64) 0, total, (juce::int64) std::llround (*wf::parseTime (v[0]) * r));
+                  auto b = juce::jlimit ((juce::int64) 0, total, (juce::int64) std::llround (*wf::parseTime (v[1]) * r));
+
+                  if (b < a)
+                      std::swap (a, b);
+
+                  d.getView().setSelection ({ a, b });
+                  d.getView().zoomToSelection();
+              });
+}
+
+void MainComponent::showGoTo()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    showForm ("Go To", "Move the cursor in: " + doc->getTitle(),
+              { { "Position:", secondsText ((double) doc->getView().getCursor() / doc->getSampleRate()), {}, {}, isTime } },
+              "Time as hh:mm:ss.ms, m:ss or seconds (12.5).",
+              [] (DataWindow& d, const juce::StringArray& v)
+              {
+                  const auto total = (juce::int64) d.getBuffer().getNumSamples();
+                  const auto at = juce::jlimit ((juce::int64) 0, total, (juce::int64) std::llround (*wf::parseTime (v[0]) * d.getSampleRate()));
+                  d.getView().setSelection ({});
+                  d.getView().setCursor (at);
+                  d.getView().ensureVisible (at);
+              });
+}
+
+void MainComponent::showDetectClipping()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    showForm ("Detect Clipping", "Find the distorted (clipped) places in: " + doc->getTitle(),
+              { { "Level at or above:", "-0.1", {}, "dB", [] (const juce::String& t)
+                  { const auto v = wf::parseNumber (t); return v.has_value() && *v <= 0.0 && *v >= -20.0; } },
+                { "For at least:", "3", {}, "samples in a row", [] (const juce::String& t)
+                  { const auto v = wf::parseNumber (t); return v.has_value() && *v >= 1.0 && *v <= 1000.0; } } },
+              "Each clipped place gets a marker (M markers; double-click\nbetween two to select).",
+              [] (DataWindow& d, const juce::StringArray& v)
+              {
+                  const auto found = d.markClipping ((float) *wf::parseNumber (v[0]), (int) *wf::parseNumber (v[1]));
+                  juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::NoIcon, "Detect Clipping",
+                                                          found == 0 ? juce::String ("No clipping found.")
+                                                                     : juce::String (found) + (found == 1 ? " clipped place, marked." : " clipped places, marked."));
+              });
+}
+
+void MainComponent::mixClipboard()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || ! hasClipboard())
+        return;
+
+    const juce::Component::SafePointer<DataWindow> target (doc);
+    const auto position = doc->getView().getSelection().isEmpty() ? doc->getView().getCursor() : doc->getView().getSelection().getStart();
+    auto audio = std::make_shared<juce::AudioBuffer<float>> (clipboard.audio);
+    const auto sourceRate = clipboard.sampleRate;
+    auto gains = std::make_shared<wf::MixGains>();
+
+    const auto description = "Mix " + WaveformView::formatTime ((double) audio->getNumSamples() / sourceRate).substring (3)
+                           + " of copied audio\ninto \"" + doc->getTitle() + "\" at "
+                           + WaveformView::formatTime ((double) position / doc->getSampleRate()) + ".";
+
+    wf::MixDialogCallbacks callbacks;
+    callbacks.onOk = [this, target, audio, sourceRate, position, gains]
+    {
+        if (auto* d = target.getComponent())
+        {
+            releasePlaybackSource();
+            d->mixIn (*audio, sourceRate, position, gains->source, gains->dest);
+        }
+    };
+    callbacks.onPreview = [this, target, audio, sourceRate, position, gains] (bool play)
+    {
+        if (play)
+            startMixPreview (target.getComponent(), *audio, sourceRate, position, gains);
+        else
+            stopMixPreview();
+    };
+    callbacks.isPreviewing = [this] { return isMixPreviewing(); };
+
+    openMixWindow (description, gains, std::move (callbacks));
+}
+
+void MainComponent::saveAll (std::vector<juce::Component::SafePointer<DataWindow>> remaining)
+{
+    // One after the other: a file never saved asks where to go first.
+    while (! remaining.empty() && (remaining.front().getComponent() == nullptr || ! remaining.front()->isModified()))
+        remaining.erase (remaining.begin());
+
+    if (remaining.empty())
+        return;
+
+    auto* doc = remaining.front().getComponent();
+    remaining.erase (remaining.begin());
+
+    saveDocument (doc, false, [safeThis = juce::Component::SafePointer<MainComponent> (this), remaining] (bool saved)
+    {
+        if (auto* main = safeThis.getComponent(); main != nullptr && saved)
+            main->saveAll (remaining);
+    });
+}
+
+void MainComponent::markInOut (bool in)
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    // While playing, I / O mark where the sound is (Sound Forge); else the cursor.
+    auto& view = doc->getView();
+    const auto at = isPlaying() && doc == playingDocument.getComponent() ? playPosition() : view.getCursor();
+    const auto sel = view.getSelection();
+
+    if (in)
+    {
+        markInPosition = at;
+
+        if (! sel.isEmpty() && at < sel.getEnd())
+            view.setSelection ({ at, sel.getEnd() });
+        else if (! isPlaying())
+            view.setCursor (at);
+    }
+    else
+    {
+        const auto start = ! sel.isEmpty() ? sel.getStart() : juce::jmax ((juce::int64) 0, markInPosition);
+
+        if (at > start)
+            view.setSelection ({ start, at });
+    }
+
+    updateStatus();
+    commandManager.commandStatusChanged();
 }
 
 namespace
@@ -1425,9 +1753,43 @@ public:
     void prepareToPlay (int block, double rate) override  { source.prepareToPlay (block, rate); }
     void releaseResources() override                      { source.releaseResources(); }
 
+    // Transport > Loop Playback: playback jumps back to the start of `range`
+    // at its end (seamlessly, here on the audio thread). Empty = no loop.
+    void setLoopRange (juce::Range<juce::int64> range)
+    {
+        loopStart = range.getStart();
+        loopEnd = range.getEnd();
+    }
+
     void getNextAudioBlock (const juce::AudioSourceChannelInfo& info) override
     {
-        source.getNextAudioBlock (info);
+        const auto start = loopStart.load(), end = loopEnd.load();
+
+        if (end > start)
+        {
+            // Fill the block piece by piece, wrapping at the loop end.
+            int done = 0;
+
+            while (done < info.numSamples)
+            {
+                auto position = source.getNextReadPosition();
+
+                if (position >= end || position < start)
+                {
+                    source.setNextReadPosition (start);
+                    position = start;
+                }
+
+                const auto n = (int) juce::jmin ((juce::int64) (info.numSamples - done), end - position);
+                juce::AudioSourceChannelInfo part (info.buffer, info.startSample + done, n);
+                source.getNextAudioBlock (part);
+                done += n;
+            }
+        }
+        else
+        {
+            source.getNextAudioBlock (info);
+        }
 
         // A mono file is heard in the centre: the same signal in every speaker.
         if (mono)
@@ -1450,8 +1812,19 @@ private:
     juce::MemoryAudioSource source;
     int soloChannel;
     bool mono;
+    std::atomic<juce::int64> loopStart { 0 }, loopEnd { 0 };
 };
 } // namespace
+
+void MainComponent::setLooping (bool shouldLoop)
+{
+    loopPlayback = shouldLoop;
+
+    if (auto* solo = dynamic_cast<SoloPlaybackSource*> (memorySource.get()))
+        solo->setLoopRange (loopPlayback ? playRange : juce::Range<juce::int64>());
+
+    commandManager.commandStatusChanged();
+}
 
 void MainComponent::startPlayback (juce::Range<juce::int64> range, int soloChannel)
 {
@@ -1464,7 +1837,12 @@ void MainComponent::startPlayback (juce::Range<juce::int64> range, int soloChann
     stopToolPreview();
 
     transport.setSource (nullptr);
-    memorySource = std::make_unique<SoloPlaybackSource> (doc->getBuffer(), soloChannel);
+    auto solo = std::make_unique<SoloPlaybackSource> (doc->getBuffer(), soloChannel);
+
+    if (loopPlayback)
+        solo->setLoopRange (range);
+
+    memorySource = std::move (solo);
     // At least two channels, so a mono file played at another rate than the
     // device's still reaches both speakers through the resampler.
     transport.setSource (memorySource.get(), 0, nullptr, doc->getSampleRate(), juce::jmax (2, doc->getBuffer().getNumChannels()));
@@ -1524,7 +1902,7 @@ void MainComponent::timerCallback()
     auto* doc = playingDocument.getComponent();
     const auto position = playPosition();
 
-    if (doc == nullptr || ! transport.isPlaying() || position >= playRange.getEnd())
+    if (doc == nullptr || ! transport.isPlaying() || (position >= playRange.getEnd() && ! loopPlayback))
     {
         stopPlayback (true);
         return;
@@ -1626,6 +2004,30 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
         case wf::editPaste:      available = available && doc != nullptr && hasClipboard(); break;
         case wf::editPasteToNew: available = available && hasClipboard(); break;
+        case wf::editMix:        available = available && doc != nullptr && hasClipboard() && mixWindow == nullptr; break;
+        case wf::editRepeat:
+            available = available && doc != nullptr && lastAction != nullptr;
+            if (lastAction != nullptr)
+                info.shortName = "Repeat " + lastActionName;
+            break;
+
+        case wf::fileNewNoDialog: break;
+        case wf::fileSaveAll:     available = available && numDocuments > 0; break;
+
+        case wf::optLoop:
+            info.setTicked (loopPlayback);
+            break;
+
+        // Conversions change the whole file: not while a tool works on a copy of it.
+        case wf::procResample: case wf::procBitDepth: case wf::procChannelConv: case wf::procAutoTrim:
+        case wf::insertSilence:
+            available = available && doc != nullptr && ! toolWindowOpen() && job == nullptr && ! doc->isEmpty();
+            break;
+
+        case wf::toolsRepairCopyChannel:
+            available = available && doc != nullptr && doc->getBuffer().getNumChannels() == 2
+                        && doc->getView().getSelectedChannel() >= 0;
+            break;
 
         // Bass Finder works on a copy of the audio and can write it back, so
         // the file mustn't be stretched meanwhile: one or the other.
@@ -1691,6 +2093,28 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::winPrev:           cycleWindows (-1); return true;
         case wf::optStop:           stopPlayback (true); return true;
 
+        case wf::fileNewNoDialog:
+        {
+            const auto& t = lastTemplate;
+            addDocument (DataWindow::createSilent ("Untitled " + juce::String (++untitledCount), t.sampleRate, t.channels,
+                                                   t.lengthInSamples(), t.markerPositions(), t.barStartPositions(), t.bits));
+            return true;
+        }
+
+        case wf::fileSaveAll:
+        {
+            std::vector<juce::Component::SafePointer<DataWindow>> docs;
+
+            for (int i = 0; i < workspace->getNumDocuments(); ++i)
+                if (auto* d = dynamic_cast<DataWindow*> (workspace->getDocument (i)))
+                    docs.emplace_back (d);
+
+            saveAll (std::move (docs));
+            return true;
+        }
+
+        case wf::optLoop:           setLooping (! loopPlayback); return true;
+
         case wf::editPasteToNew:
             if (hasClipboard())
                 addDocument (DataWindow::fromAudio ("Untitled " + juce::String (++untitledCount), clipboard.sampleRate,
@@ -1743,6 +2167,31 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::editTrim:
             releasePlaybackSource();
             doc->trimToSelection();
+            return true;
+
+        case wf::editMix:           mixClipboard(); return true;
+        case wf::editRepeat:
+            if (lastAction != nullptr)
+            {
+                releasePlaybackSource();
+                lastAction (*doc);
+            }
+            return true;
+        case wf::editSetSelection:  showSetSelection(); return true;
+        case wf::editGoTo:          showGoTo(); return true;
+        case wf::editMarkIn:        markInOut (true); return true;
+        case wf::editMarkOut:       markInOut (false); return true;
+        case wf::viewLevelIn:       view.levelZoomIn(); return true;
+        case wf::viewLevelOut:      view.levelZoomOut(); return true;
+        case wf::insertSilence:     showInsertSilence(); return true;
+        case wf::procResample:      showResample(); return true;
+        case wf::procBitDepth:      showBitDepth(); return true;
+        case wf::procChannelConv:   showChannelConverter(); return true;
+        case wf::procAutoTrim:      showAutoTrim(); return true;
+        case wf::toolsClipDetect:   showDetectClipping(); return true;
+        case wf::toolsRepairCopyChannel:
+            releasePlaybackSource();
+            doc->copyOtherChannel();
             return true;
 
         case wf::editSelectAll:     view.selectAll(); return true;

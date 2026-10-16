@@ -655,10 +655,19 @@ void WaveformView::paintChannel (juce::Graphics& g, int channel, juce::Rectangle
     const auto* data = buffer->getReadPointer (channel);
     const auto total = totalSamples();
     const auto mid = (float) lane.getCentreY();
-    const auto half = (float) lane.getHeight() * 0.5f - 1.0f;
+    const auto lanes = (float) lane.getHeight() * 0.5f - 1.0f;
+    const auto half = lanes * levelZoom;
 
     g.setColour (juce::Colours::white.withAlpha (0.25f));
     g.drawHorizontalLine (lane.getCentreY(), (float) clip.getX(), (float) clip.getRight());
+
+    if (levelZoom > 1.0f)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.7f));
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText ("Level x" + juce::String ((int) levelZoom), lane.getX() + 4, lane.getY() + 2, 70, 14,
+                    juce::Justification::centredLeft);
+    }
 
     if (samplesPerPixel <= 1.0)
     {
@@ -670,7 +679,7 @@ void WaveformView::paintChannel (juce::Graphics& g, int channel, juce::Rectangle
 
         for (auto s = first; s <= last; ++s)
         {
-            const juce::Point<float> p (sampleToX ((double) s), mid - data[s] * half);
+            const juce::Point<float> p (sampleToX ((double) s), mid - juce::jlimit (-lanes, lanes, data[s] * half));
             if (s == first) path.startNewSubPath (p); else path.lineTo (p);
         }
 
@@ -679,7 +688,7 @@ void WaveformView::paintChannel (juce::Graphics& g, int channel, juce::Rectangle
 
         if (samplesPerPixel <= 0.25)
             for (auto s = first; s <= last; ++s)
-                g.fillEllipse (sampleToX ((double) s) - 2.0f, mid - data[s] * half - 2.0f, 4.0f, 4.0f);
+                g.fillEllipse (sampleToX ((double) s) - 2.0f, mid - juce::jlimit (-lanes, lanes, data[s] * half) - 2.0f, 4.0f, 4.0f);
 
         return;
     }
@@ -697,8 +706,8 @@ void WaveformView::paintChannel (juce::Graphics& g, int channel, juce::Rectangle
         const auto selected = selection.contains (s0) && (selectedChannel < 0 || selectedChannel == channel);
         g.setColour (selected ? waveSelected : waveColour);
 
-        const auto top = mid - juce::jlimit (-1.0f, 1.0f, range.getEnd()) * half;
-        const auto bottom = mid - juce::jlimit (-1.0f, 1.0f, range.getStart()) * half;
+        const auto top = mid - juce::jlimit (-lanes, lanes, range.getEnd() * half);
+        const auto bottom = mid - juce::jlimit (-lanes, lanes, range.getStart() * half);
         g.fillRect ((float) x, top, 1.0f, juce::jmax (1.0f, bottom - top));
     }
 }
@@ -838,4 +847,16 @@ void WaveformView::paintRuler (juce::Graphics& g, juce::Rectangle<int> area)
         g.setColour (juce::Colours::black.withAlpha (0.3f));
         g.drawVerticalLine (juce::roundToInt (sampleToX (t * sampleRate)), (float) area.getBottom() - 4.0f, (float) area.getBottom());
     }
+}
+
+void WaveformView::levelZoomIn()
+{
+    levelZoom = juce::jmin (64.0f, levelZoom * 2.0f);
+    repaint();
+}
+
+void WaveformView::levelZoomOut()
+{
+    levelZoom = juce::jmax (1.0f, levelZoom * 0.5f);
+    repaint();
 }

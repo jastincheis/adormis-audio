@@ -80,6 +80,7 @@ target_sources(WaveForge PRIVATE
     Source/Processes.cpp
     Source/SaveAsDialog.cpp
     Source/VolumeDialog.cpp
+    Source/FormDialog.cpp
     Source/ProcessToolbar.cpp
     Source/Recorder.cpp
     Source/ShortcutsWindow.cpp

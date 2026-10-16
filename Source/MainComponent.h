@@ -14,6 +14,7 @@
 #include "StretchDialog.h"
 #include "TemplateDialog.h"
 #include "VolumeDialog.h"
+#include "FormDialog.h"
 
 class ShortcutsWindow;
 
@@ -73,6 +74,27 @@ private:
     void askToSaveBeforeClosing (DataWindow* doc, std::function<void (bool okToClose)> done);
     void process (wf::Process process);
     void showVolumeDialog();
+
+    // Package A: small commands with a settings window (FormDialog).
+    void showForm (const juce::String& title, const juce::String& info, std::vector<wf::FormField> fields,
+                   const juce::String& hint, std::function<void (DataWindow&, const juce::StringArray&)> onOk);
+    void showInsertSilence();
+    void showResample();
+    void showBitDepth();
+    void showChannelConverter();
+    void showAutoTrim();
+    void showSetSelection();
+    void showGoTo();
+    void showDetectClipping();
+    void mixClipboard();
+    void saveAll (std::vector<juce::Component::SafePointer<DataWindow>> remaining);
+    void markInOut (bool in);
+
+    // Edit > Repeat Last Process (Ctrl+Y) runs this again on the active file.
+    void rememberAction (const juce::String& name, std::function<void (DataWindow&)> action);
+    std::function<void (DataWindow&)> lastAction;
+    juce::String lastActionName;
+    juce::int64 markInPosition = -1;
     void showStretchDialog();
     void runStretch (DataWindow* doc, juce::Range<int> range, wf::StretchSettings settings);
     void showBassFinder();
@@ -115,6 +137,8 @@ private:
     void startPlayback (juce::Range<juce::int64> range, int soloChannel = -1);
     void stopPlayback (bool returnToStart);
     void releasePlaybackSource();   // before a document's buffer is changed
+    void setLooping (bool shouldLoop);
+    bool loopPlayback = false;
 
     // Mix dialog preview: plays the mix result without touching the file.
     void startMixPreview (DataWindow* target, const juce::AudioBuffer<float>& audio, double sourceRate,
@@ -168,6 +192,7 @@ private:
     std::unique_ptr<juce::DocumentWindow> mixWindow;
     std::unique_ptr<juce::DocumentWindow> saveAsWindow;
     std::unique_ptr<juce::DocumentWindow> volumeWindow;
+    std::unique_ptr<juce::DocumentWindow> formWindow;
     std::unique_ptr<juce::DocumentWindow> templateWindow;
     std::unique_ptr<juce::DocumentWindow> stretchWindow;
     std::unique_ptr<juce::DocumentWindow> bassFinderWindow;

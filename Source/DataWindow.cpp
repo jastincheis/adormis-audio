@@ -799,6 +799,184 @@ bool DataWindow::trimToSelection()
     return true;
 }
 
+void DataWindow::insertSilence (juce::int64 position, double seconds)
+{
+    const auto length = (int) std::llround (seconds * sampleRate);
+
+    if (length <= 0)
+        return;
+
+    juce::AudioBuffer<float> silence (buffer.getNumChannels(), length);
+    silence.clear();
+    view.setSelection ({});
+    view.setCursor (juce::jlimit ((juce::int64) 0, (juce::int64) buffer.getNumSamples(), position));
+    pasteAudio (silence, sampleRate);
+}
+
+void DataWindow::resample (double newRate)
+{
+    if (newRate <= 0.0 || juce::approximatelyEqual (newRate, sampleRate))
+        return;
+
+    pushUndo();
+    const auto ratio = newRate / sampleRate;
+    buffer = resampled (buffer, sampleRate, newRate);
+    remapMarkers ([ratio] (juce::int64 m) { return std::optional<juce::int64> (std::llround ((double) m * ratio)); });
+    sampleRate = newRate;
+    view.setAudio (&buffer, sampleRate);
+    audioChanged();
+}
+
+void DataWindow::convertBitDepth (int bits, bool dither)
+{
+    pushUndo();
+
+    if (bits < 32)
+    {
+        const auto steps = (float) (1 << (bits - 1));
+
+        if (dither)
+        {
+            // TPDF dither: two uniform randoms, one step peak to peak each.
+            juce::Random random (0x5eed);
+
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            {
+                auto* d = buffer.getWritePointer (ch);
+
+                for (int i = 0; i < buffer.getNumSamples(); ++i)
+                    d[i] += (random.nextFloat() - random.nextFloat()) / steps;
+            }
+        }
+
+        quantize (buffer, 0, buffer.getNumSamples(), bits);
+    }
+
+    setResolution (bits);
+    audioChanged();
+}
+
+bool DataWindow::convertChannels (ChannelConversion conversion)
+{
+    const auto channels = buffer.getNumChannels();
+    const auto n = buffer.getNumSamples();
+
+    if ((conversion == ChannelConversion::monoToStereo) != (channels == 1) || channels > 2)
+        return false;
+
+    juce::AudioBuffer<float> result;
+
+    switch (conversion)
+    {
+        case ChannelConversion::stereoToMono:
+            result.setSize (1, n);
+            result.copyFrom (0, 0, buffer, 0, 0, n);
+            result.addFrom (0, 0, buffer, 1, 0, n);
+            result.applyGain (0.5f);
+            break;
+
+        case ChannelConversion::monoToStereo:
+            result.setSize (2, n);
+            result.copyFrom (0, 0, buffer, 0, 0, n);
+            result.copyFrom (1, 0, buffer, 0, 0, n);
+            break;
+
+        case ChannelConversion::swap:
+            result.setSize (2, n);
+            result.copyFrom (0, 0, buffer, 1, 0, n);
+            result.copyFrom (1, 0, buffer, 0, 0, n);
+            break;
+
+        case ChannelConversion::leftOnly:
+        case ChannelConversion::rightOnly:
+            result.setSize (1, n);
+            result.copyFrom (0, 0, buffer, conversion == ChannelConversion::leftOnly ? 0 : 1, 0, n);
+            break;
+    }
+
+    pushUndo();
+    buffer = std::move (result);
+    view.setSelection ({});
+    view.setAudio (&buffer, sampleRate);
+    audioChanged();
+    return true;
+}
+
+bool DataWindow::autoTrim (float thresholdDb)
+{
+    const auto level = juce::Decibels::decibelsToGain (thresholdDb);
+    const auto n = buffer.getNumSamples();
+
+    auto loud = [&] (int i)
+    {
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            if (std::abs (buffer.getSample (ch, i)) > level)
+                return true;
+
+        return false;
+    };
+
+    int first = 0, last = n - 1;
+    while (first < n && ! loud (first))   ++first;
+    while (last > first && ! loud (last)) --last;
+
+    if (first >= n || (first == 0 && last == n - 1))
+        return false;
+
+    view.setSelection ({ first, last + 1 });
+    return trimToSelection();
+}
+
+int DataWindow::markClipping (float levelDb, int minRun)
+{
+    const auto level = juce::Decibels::decibelsToGain (levelDb) - 1.0e-6f;
+    const auto n = buffer.getNumSamples();
+    const auto mergeGap = (int) (sampleRate * 0.05);   // clips closer than 50 ms count as one
+    int found = 0;
+    juce::int64 lastMarked = -mergeGap - 1;
+
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+    {
+        const auto* d = buffer.getReadPointer (ch);
+        int run = 0;
+
+        for (int i = 0; i < n; ++i)
+        {
+            run = std::abs (d[i]) >= level ? run + 1 : 0;
+
+            if (run == minRun)
+            {
+                const auto start = (juce::int64) (i - minRun + 1);
+                const auto near = std::any_of (markers.begin(), markers.end(),
+                                               [&] (juce::int64 m) { return std::abs (m - start) <= mergeGap; });
+
+                if (! near && std::abs (start - lastMarked) > mergeGap)
+                {
+                    addMarker (start);
+                    ++found;
+                    lastMarked = start;
+                }
+            }
+        }
+    }
+
+    return found;
+}
+
+bool DataWindow::copyOtherChannel()
+{
+    const auto channel = view.getSelectedChannel();
+
+    if (buffer.getNumChannels() != 2 || channel < 0)
+        return false;
+
+    const auto range = processRange();
+    pushUndo();
+    buffer.copyFrom (channel, range.getStart(), buffer, 1 - channel, range.getStart(), range.getLength());
+    audioChanged();
+    return true;
+}
+
 bool DataWindow::deleteSelectedMarkers()
 {
     const auto& picked = view.getSelectedMarkers();
@@ -880,7 +1058,7 @@ void DataWindow::pruneBarStarts()
 void DataWindow::pushUndo()
 {
     redoStack.clear();
-    undoStack.push_back ({ buffer, markers, barStarts, sampleRate });
+    undoStack.push_back ({ buffer, markers, barStarts, sampleRate, bitDepth, resolutionBits, floatingPoint });
 
     size_t total = 0;
     for (const auto& b : undoStack)
@@ -895,12 +1073,18 @@ void DataWindow::pushUndo()
 
 void DataWindow::restore (Snapshot& from, std::vector<Snapshot>& saveTo)
 {
-    saveTo.push_back ({ std::move (buffer), std::move (markers), std::move (barStarts), sampleRate });
+    saveTo.push_back ({ std::move (buffer), std::move (markers), std::move (barStarts), sampleRate,
+                        bitDepth, resolutionBits, floatingPoint });
+    const auto channelsBefore = saveTo.back().audio.getNumChannels();
     buffer = std::move (from.audio);
     markers = std::move (from.markers);
     barStarts = std::move (from.barStarts);
+    bitDepth = from.bitDepth;
+    resolutionBits = from.resolutionBits;
+    floatingPoint = from.floatingPoint;
 
-    if (! juce::approximatelyEqual (from.rate, sampleRate))
+    // Another rate or channel count (Resample, Channel Converter) needs a fresh view.
+    if (! juce::approximatelyEqual (from.rate, sampleRate) || channelsBefore != buffer.getNumChannels())
     {
         sampleRate = from.rate;
         view.setAudio (&buffer, sampleRate);
