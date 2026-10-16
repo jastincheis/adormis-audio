@@ -17,6 +17,9 @@ menu structure and default shortcuts so the workflow feels familiar.
 - Processes: fade in / out, mute, normalize, reverse, invert, DC offset, volume
 - Effects with live preview: parametric EQ, compressor, delay / echo, reverb
 - Time Stretch (Rubber Band), De-esser, Bass Finder (key, tempo, notes, bass line)
+- MP3 Restore: grows back the top end an MP3 cut off (by saturation or spectral copy), smooths the "swirl", adds warmth and punch
+- Insert Silence, Resample, Bit-Depth Converter (with dither), Channel Converter, Auto Trim/Crop, Detect Clipping, Copy Other Channel
+- Set Selection, Go To, Mark In / Out, Mix (Ctrl+M), Repeat Last Process (Ctrl+Y), Level Zoom, Loop Playback, Save All
 - Record (Ctrl+R) with input meter, mono / stereo and bit depth
 - File > New from a tempo template with beat markers
 
