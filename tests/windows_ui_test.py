@@ -64,10 +64,19 @@ def menu(*path):
     win.child_window(title=path[0], control_type="MenuItem").click_input()
     time.sleep(0.6)
     for name in path[1:]:
-        item = Desktop(backend="uia").window(title=name, control_type="MenuItem", found_index=0)
-        item.wait("visible", timeout=5)
-        item.click_input()
+        find_popup_item(name).click_input()
         time.sleep(0.6)
+
+def find_popup_item(name, timeout=5):
+    """A menu item in an open popup menu (popups are windows of their own)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        for w in Desktop(backend="uia").windows(process=app.pid):
+            for item in w.descendants(control_type="MenuItem"):
+                if item.window_text() == name:
+                    return item
+        time.sleep(0.3)
+    raise RuntimeError(f"menu item not found: {name}")
 
 def close_top_window():
     send_keys("{ESC}"); time.sleep(0.4)
