@@ -90,6 +90,7 @@ target_sources(WaveForge PRIVATE
     Source/StartupLog.cpp
     Source/RegionsWindow.cpp
     Source/BatchWindow.cpp
+    Source/Settings.cpp
     Source/StatisticsWindow.cpp
     Source/ProcessToolbar.cpp
     Source/Recorder.cpp

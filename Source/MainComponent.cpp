@@ -4,6 +4,7 @@
 #include "Restoration.h"
 #include "BatchWindow.h"
 #include "StartupLog.h"
+#include "Settings.h"
 #include "BackgroundPattern.h"
 #include "Commands.h"
 #include "MixDialog.h"
@@ -296,6 +297,10 @@ MainComponent::MainComponent()
     deviceManager.addAudioCallback (meterTap.get());
 
     tempoTimer.tick = [this] { updateTempo(); };
+
+    // Remembered from last time.
+    if (const auto v = wf::settings::get ("volume.db"); ! v.isVoid())
+        lastVolumeDecibels = (float) (double) v;
     toolbar->onTempoClicked = [this] { showTempoMenu(); };
 
     meters = std::make_unique<wf::MeterPanel> (*meterTap);
@@ -363,6 +368,7 @@ void MainComponent::startAudio()
 
 MainComponent::~MainComponent()
 {
+    wf::settings::flush();
     tempoTimer.stopTimer();
     tempoPool.removeAllJobs (true, 10000);
     commandManager.getKeyMappings()->removeChangeListener (&keySaver);
@@ -934,6 +940,7 @@ void MainComponent::showVolumeDialog()
     auto onApply = [this, safeDoc = juce::Component::SafePointer<DataWindow> (doc)] (float decibels)
     {
         lastVolumeDecibels = decibels;
+        wf::settings::set ("volume.db", decibels);
 
         if (auto* target = safeDoc.getComponent())
         {
@@ -966,7 +973,7 @@ void MainComponent::showForm (const juce::String& title, const juce::String& inf
     if (doc == nullptr)
         return;
 
-    auto apply = [this, safeDoc = juce::Component::SafePointer<DataWindow> (doc), onOk = std::move (onOk)] (const juce::StringArray& values)
+    std::function<void (const juce::StringArray&)> apply = [this, safeDoc = juce::Component::SafePointer<DataWindow> (doc), onOk = std::move (onOk)] (const juce::StringArray& values)
     {
         if (auto* target = safeDoc.getComponent())
         {
@@ -986,6 +993,38 @@ void MainComponent::showForm (const juce::String& title, const juce::String& inf
                 main->formWindow.reset();
         });
     };
+
+    // These windows start from the values used last time (the others start
+    // from the file: its rate, its selection, the cursor).
+    static const juce::StringArray remembered { "Insert Silence", "Bit-Depth Converter", "Channel Converter", "Auto Trim/Crop",
+                                                "Detect Clipping", "Normalize", "Pitch Shift", "Auto Region" };
+    const auto key = "form." + title;
+
+    if (remembered.contains (title))
+    {
+        if (const auto* saved = wf::settings::get (key).getArray(); saved != nullptr && saved->size() == (int) fields.size())
+        {
+            for (size_t i = 0; i < fields.size(); ++i)
+            {
+                const auto value = (*saved)[(int) i].toString();
+                auto& f = fields[i];
+
+                if (f.choices.isEmpty() ? (f.isValid == nullptr || f.isValid (value)) : f.choices.contains (value))
+                    f.value = value;
+            }
+        }
+
+        apply = [inner = std::move (apply), key] (const juce::StringArray& values)
+        {
+            juce::Array<juce::var> list;
+
+            for (const auto& v : values)
+                list.add (v);
+
+            wf::settings::set (key, list);
+            inner (values);
+        };
+    }
 
     formWindow = wf::createFormWindow (title, info, std::move (fields), hint, std::move (apply), std::move (onClose));
     formWindow->setVisible (true);

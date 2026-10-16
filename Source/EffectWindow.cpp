@@ -2,6 +2,7 @@
 #include "Mp3Restore.h"
 #include "MoreEffects.h"
 #include "Restoration.h"
+#include "Settings.h"
 #include "Analysis.h"
 #include "DarkTheme.h"
 #include "Effects.h"
@@ -243,6 +244,10 @@ public:
     virtual double tailSeconds() const   { return 0.0; }         // suggested ring-out after the selection
     virtual bool hasTail() const         { return false; }
     virtual void tick() {}                                       // 30 times a second
+
+    // What the window remembers for next time (the controls, by default).
+    virtual juce::var getState()                    { return settings::captureControls (*this); }
+    virtual void setState (const juce::var& state)  { settings::restoreControls (*this, state); }
 
 protected:
     Shared& shared;
@@ -1016,6 +1021,73 @@ private:
         });
     }
 
+public:
+    juce::var getState() override
+    {
+        juce::Array<juce::var> bands;
+
+        for (int i = 0; i < params.count; ++i)
+        {
+            const auto& b = params.bands[(size_t) i];
+            juce::DynamicObject::Ptr o = new juce::DynamicObject();
+            o->setProperty ("type", (int) b.type);
+            o->setProperty ("hz", b.frequency);
+            o->setProperty ("db", b.gainDb);
+            o->setProperty ("q", b.q);
+            o->setProperty ("slope", b.slope);
+            o->setProperty ("on", b.on);
+            bands.add (juce::var (o.get()));
+        }
+
+        juce::DynamicObject::Ptr state = new juce::DynamicObject();
+        state->setProperty ("bands", bands);
+        state->setProperty ("output", params.outputDb);
+        state->setProperty ("range", graph.dbRange);
+        return juce::var (state.get());
+    }
+
+    void setState (const juce::var& state) override
+    {
+        const auto* bands = state["bands"].getArray();
+
+        if (bands == nullptr)
+            return;
+
+        params.count = 0;
+
+        for (const auto& v : *bands)
+        {
+            if (params.count >= fx::maxEqBands)
+                break;
+
+            auto& b = params.bands[(size_t) params.count++];
+            b.type = (fx::EqBand::Type) juce::jlimit (0, (int) fx::EqBand::bandPass, (int) v["type"]);
+            b.frequency = juce::jlimit (10.0, shared.rate() * 0.48, (double) v["hz"]);
+            b.gainDb = v["db"];
+            b.q = v["q"];
+            b.slope = v["slope"];
+            b.on = v["on"];
+        }
+
+        selection = params.count > 0 ? std::vector<int> { 0 } : std::vector<int> {};
+        output.slider.setValue ((double) state["output"], juce::sendNotificationSync);
+
+        const auto range = (double) state["range"];
+        const double ranges[] { 6.0, 12.0, 24.0, 48.0 };
+
+        for (int i = 0; i < 4; ++i)
+            if (juce::approximatelyEqual (ranges[i], range))
+            {
+                rangeButtons[i]->setToggleState (true, juce::dontSendNotification);
+                graph.dbRange = range;
+            }
+
+        push();
+        refreshControls();
+        graph.repaint();
+    }
+
+private:
     fx::EqParams params;
     std::vector<int> selection;
     EqGraph graph;
@@ -1480,6 +1552,7 @@ class Mp3RestoreEditor final : public Editor
 public:
     explicit Mp3RestoreEditor (Shared& s) : Editor (s)
     {
+        settings::dontRemember (cutoff);   // measured in each file
         cutoff.slider.setRange (4000.0, std::floor (shared.rate() * 0.49), 10.0);
         cutoff.slider.setSkewFactor (1.0);
         detect();
@@ -2326,6 +2399,7 @@ public:
             addAndMakeVisible (c);
 
         styleToggle (noiseOnly);
+        settings::dontRemember (noiseOnly);   // always starts hearing the result
         noiseOnly.setTooltip ("Hear what is being taken out: there should be no music in it");
         noiseOnly.onClick = [this] { push(); };
         addAndMakeVisible (noiseOnly);
@@ -2481,6 +2555,7 @@ public:
     {
         styleLabel (found, 12.0f, true, colours::muted);
         addAndMakeVisible (found);
+        settings::dontRemember (frequency);   // found in each file
         addAndMakeVisible (frequency);
         addAndMakeVisible (harmonics);
         addAndMakeVisible (width);
@@ -2709,6 +2784,8 @@ public:
     {
         styleLabel (found, 13.0f, true, colours::ink);
         addAndMakeVisible (found);
+        settings::dontRemember (level);    // measured in each file
+        settings::dontRemember (output);   // fitted to each file
         addAndMakeVisible (level);
         addAndMakeVisible (output);
         fit.setTooltip ("Sets the output so the rebuilt peaks stay under 0 dB");
@@ -2839,6 +2916,20 @@ public:
 
         // The editors pushed their values before the processor existed in some cases.
         editor->push();
+
+        // Last time's settings (the factory ones stay for the Defaults button).
+        defaults = editor->getState();
+        settingsKey = "effect." + name;
+
+        if (const auto saved = settings::get (settingsKey); ! saved.isVoid())
+        {
+            editor->setState (saved);
+            editor->push();
+        }
+
+        defaultsButton.setTooltip ("Back to the original settings of this effect");
+        defaultsButton.onClick = [this] { editor->setState (defaults); editor->push(); };
+        addAndMakeVisible (defaultsButton);
         addAndMakeVisible (*editor);
 
         styleLabel (title, 14.0f, true);
@@ -2893,7 +2984,11 @@ public:
         startTimerHz (30);
     }
 
-    ~EffectPanel() override   { stopPreview(); }
+    ~EffectPanel() override
+    {
+        stopPreview();
+        settings::set (settingsKey, editor->getState());   // remembered for next time
+    }
 
     void close()
     {
@@ -2931,6 +3026,7 @@ public:
 
         preview.setBounds (bottom.removeFromLeft (170).reduced (2));
         bypass.setBounds (bottom.removeFromLeft (110).reduced (2));
+        defaultsButton.setBounds (bottom.removeFromLeft (100).reduced (2));
         cancel.setBounds (bottom.removeFromRight (100).reduced (2));
         apply.setBounds (bottom.removeFromRight (150).reduced (2));
         status.setBounds (bottom.reduced (10, 0));
@@ -3060,6 +3156,9 @@ private:
                      cancel { "Close" }, autoTail { "Auto" };
     juce::Slider tailSlider;
     juce::Rectangle<int> card;
+    juce::TextButton defaultsButton { "Defaults" };
+    juce::var defaults;
+    juce::String settingsKey;
 };
 
 class EffectWindow final : public juce::DocumentWindow

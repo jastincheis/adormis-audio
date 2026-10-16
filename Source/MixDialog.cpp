@@ -1,4 +1,5 @@
 #include "MixDialog.h"
+#include "Settings.h"
 
 namespace wf
 {
@@ -25,8 +26,8 @@ public:
         info.setColour (juce::Label::textColourId, juce::Colours::black);
         addAndMakeVisible (info);
 
-        setUpRow (sourceLabel, sourceSlider, "Source volume (dropped audio)", gains->source);
-        setUpRow (destLabel, destSlider, "Destination volume (existing audio)", gains->dest);
+        setUpRow (sourceLabel, sourceSlider, "Source volume (dropped audio)", gains->source, "mix.sourceDb");
+        setUpRow (destLabel, destSlider, "Destination volume (existing audio)", gains->dest, "mix.destDb");
 
         previewButton.onClick = [this]
         {
@@ -85,7 +86,8 @@ public:
     }
 
 private:
-    void setUpRow (juce::Label& label, juce::Slider& slider, const juce::String& text, std::atomic<float>& target)
+    void setUpRow (juce::Label& label, juce::Slider& slider, const juce::String& text, std::atomic<float>& target,
+                   const juce::String& rememberKey)
     {
         label.setText (text, juce::dontSendNotification);
         label.setColour (juce::Label::textColourId, juce::Colours::black);
@@ -105,7 +107,15 @@ private:
         {
             return entered.trim().startsWithIgnoreCase ("-inf") ? minDb : entered.getDoubleValue();
         };
-        slider.onValueChange = [&slider, &target] { target = gainFromDb (slider.getValue()); };
+        slider.onValueChange = [&slider, &target, rememberKey]
+        {
+            target = gainFromDb (slider.getValue());
+            settings::set (rememberKey, slider.getValue());   // the next mix starts here
+        };
+
+        if (const auto last = settings::get (rememberKey); ! last.isVoid())
+            slider.setValue (juce::jlimit (minDb, maxDb, (double) last), juce::sendNotificationSync);
+
         slider.updateText();
         addAndMakeVisible (slider);
     }
