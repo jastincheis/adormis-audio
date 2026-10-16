@@ -27,7 +27,13 @@ public:
     void selectAll();
 
     // Sorted marker positions owned by the document (may be nullptr).
-    void setMarkers (const std::vector<juce::int64>* newMarkers)  { markers = newMarkers; repaint(); }
+    // `bars` (sorted, may be null) are the markers that begin a bar: drawn in another colour.
+    void setMarkers (const std::vector<juce::int64>* newMarkers, const std::vector<juce::int64>* bars = nullptr)
+    {
+        markers = newMarkers;
+        barStarts = bars;
+        repaint();
+    }
 
     // Markers picked with a click on them (one) or a double-click (all),
     // by position; Delete removes them instead of audio.
@@ -95,6 +101,7 @@ private:
 
     const juce::AudioBuffer<float>* buffer = nullptr;
     const std::vector<juce::int64>* markers = nullptr;
+    const std::vector<juce::int64>* barStarts = nullptr;
     double sampleRate = 44100.0;
     double samplesPerPixel = 1.0;
     double viewStart = 0.0;            // first visible sample

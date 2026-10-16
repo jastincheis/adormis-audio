@@ -2,11 +2,13 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
+#include "BassFinder.h"
 #include "DataWindow.h"
 #include "FilePicker.h"
 #include "MixDialog.h"
 #include "MixPreview.h"
 #include "ProcessToolbar.h"
+#include "StretchDialog.h"
 #include "TemplateDialog.h"
 #include "VolumeDialog.h"
 
@@ -63,6 +65,18 @@ private:
     void askToSaveBeforeClosing (DataWindow* doc, std::function<void (bool okToClose)> done);
     void process (wf::Process process);
     void showVolumeDialog();
+    void showStretchDialog();
+    void runStretch (DataWindow* doc, juce::Range<int> range, wf::StretchSettings settings);
+    void showBassFinder();
+    std::optional<wf::BassFinderSource> bassFinderSource();
+
+    // Runs `work` behind a progress bar with Cancel, one job at a time.
+    void runJob (const juce::String& title, std::function<bool (std::function<bool (float)>)> work,
+                 std::function<void (bool finished)> done);
+
+    // Plays audio that isn't a document (Bass Finder notes, tones and loops).
+    void startToolPreview (std::unique_ptr<juce::PositionableAudioSource> source, double rate, int channels);
+    void stopToolPreview();
     void showNewFileDialog();
     void arrangeWindows (bool cascade);
     void cycleWindows (int direction);
@@ -113,6 +127,11 @@ private:
     std::unique_ptr<juce::DocumentWindow> saveAsWindow;
     std::unique_ptr<juce::DocumentWindow> volumeWindow;
     std::unique_ptr<juce::DocumentWindow> templateWindow;
+    std::unique_ptr<juce::DocumentWindow> stretchWindow;
+    std::unique_ptr<juce::DocumentWindow> bassFinderWindow;
+    std::unique_ptr<juce::ThreadWithProgressWindow> job;
+    std::unique_ptr<juce::PositionableAudioSource> toolPreview;
+    wf::StretchRequest lastStretch;   // the new tempo / pitch choices carry over
     wf::TemplateSettings lastTemplate;   // File > New starts from the last settings used
     float lastVolumeDecibels = 0.0f;   // the Volume window starts from the last value used
     std::unique_ptr<wf::MixPreviewSource> mixPreview;

@@ -252,6 +252,10 @@ MainComponent::~MainComponent()
     saveAsWindow.reset();
     volumeWindow.reset();
     templateWindow.reset();
+    stretchWindow.reset();
+    bassFinderWindow.reset();
+    job.reset();
+    stopToolPreview();
     stopTimer();
     transport.stop();
     transport.setSource (nullptr);
@@ -527,7 +531,8 @@ void MainComponent::showNewFileDialog()
                          + juce::String (settings.division) + ")";
 
         addDocument (DataWindow::createSilent (title, settings.sampleRate, settings.channels,
-                                               settings.lengthInSamples(), settings.markerPositions()));
+                                               settings.lengthInSamples(), settings.markerPositions(),
+                                               settings.barStartPositions()));
     };
 
     auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
@@ -575,6 +580,303 @@ void MainComponent::showVolumeDialog()
                                            lastVolumeDecibels, std::move (onApply), std::move (onClose));
     volumeWindow->setVisible (true);
     volumeWindow->toFront (true);
+}
+
+namespace
+{
+// Runs work off the message thread behind a progress bar with Cancel.
+class ProgressJob final : public juce::ThreadWithProgressWindow
+{
+public:
+    ProgressJob (const juce::String& title, std::function<bool (std::function<bool (float)>)> workIn,
+                 std::function<void (bool)> doneIn)
+        : juce::ThreadWithProgressWindow (title, true, true), work (std::move (workIn)), done (std::move (doneIn))
+    {
+    }
+
+    void run() override
+    {
+        finished = work ([this] (float fraction)
+        {
+            setProgress (fraction);
+            return ! threadShouldExit();
+        });
+    }
+
+    void threadComplete (bool userPressedCancel) override
+    {
+        if (done != nullptr)
+            done (finished && ! userPressedCancel);
+    }
+
+private:
+    std::function<bool (std::function<bool (float)>)> work;
+    std::function<void (bool)> done;
+    bool finished = false;
+};
+} // namespace
+
+void MainComponent::showStretchDialog()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || job != nullptr || bassFinderWindow != nullptr)
+        return;
+
+    const auto range = doc->processRange();
+    const juce::Component::SafePointer<DataWindow> safeDoc (doc);
+
+    // The tempo and key belong to this audio, the rest is remembered.
+    auto initial = lastStretch;
+    initial.fromBpm.reset();
+    initial.fromKey = -1;
+
+    wf::StretchCallbacks callbacks;
+
+    callbacks.detectTempo = [safeDoc, range]() -> std::optional<wf::TempoEstimate>
+    {
+        if (auto* d = safeDoc.getComponent())
+            return wf::detectTempo (d->getBuffer(), range, d->getSampleRate());
+
+        return {};
+    };
+
+    callbacks.detectKey = [safeDoc, range]() -> std::optional<wf::KeyEstimate>
+    {
+        if (auto* d = safeDoc.getComponent())
+            return wf::detectKey (d->getBuffer(), range, d->getSampleRate());
+
+        return {};
+    };
+
+    callbacks.onApply = [this, safeDoc, range] (wf::StretchRequest request)
+    {
+        lastStretch = request;
+
+        if (auto* target = safeDoc.getComponent())
+            runStretch (target, range, request.settings());
+    };
+
+    callbacks.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->stretchWindow.reset();
+                main->commandManager.commandStatusChanged();
+            }
+        });
+    };
+
+    // Changing the length works on all channels together.
+    const auto target = doc->getTitle() + " ("
+                      + (doc->getView().getSelection().isEmpty() ? "whole file" : "selection, all channels") + ")";
+
+    stretchWindow = wf::createStretchWindow (target, range.getLength() / doc->getSampleRate(), initial, std::move (callbacks));
+    stretchWindow->setVisible (true);
+    stretchWindow->toFront (true);
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::runStretch (DataWindow* doc, juce::Range<int> range, wf::StretchSettings settings)
+{
+    if (doc == nullptr || job != nullptr)
+        return;
+
+    range = range.getIntersectionWith ({ 0, doc->getBuffer().getNumSamples() });
+
+    if (range.isEmpty())
+        return;
+
+    auto audio = std::make_shared<juce::AudioBuffer<float>> (doc->getBuffer().getNumChannels(), range.getLength());
+
+    for (int ch = 0; ch < audio->getNumChannels(); ++ch)
+        audio->copyFrom (ch, 0, doc->getBuffer(), ch, range.getStart(), range.getLength());
+
+    auto result = std::make_shared<std::optional<juce::AudioBuffer<float>>>();
+    const auto rate = doc->getSampleRate();
+
+    runJob ("Time stretch...",
+            [audio, result, rate, settings] (std::function<bool (float)> progress)
+            {
+                *result = wf::stretchAudio (*audio, { 0, audio->getNumSamples() }, rate, settings, progress);
+                return result->has_value();
+            },
+            [this, safeDoc = juce::Component::SafePointer<DataWindow> (doc), range, result] (bool finished)
+            {
+                if (auto* target = safeDoc.getComponent(); target != nullptr && finished && result->has_value())
+                {
+                    releasePlaybackSource();
+                    target->replaceRange (range, **result, (double) (*result)->getNumSamples() / (double) range.getLength());
+                }
+            });
+}
+
+void MainComponent::runJob (const juce::String& title, std::function<bool (std::function<bool (float)>)> work,
+                            std::function<void (bool finished)> done)
+{
+    if (job != nullptr)
+        return;
+
+    auto finish = [safeThis = juce::Component::SafePointer<MainComponent> (this), done = std::move (done)] (bool finished)
+    {
+        if (done != nullptr)
+            done (finished);
+
+        // The job is still on the stack here; let it go afterwards.
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->job.reset();
+                main->commandManager.commandStatusChanged();
+            }
+        });
+    };
+
+    job = std::make_unique<ProgressJob> (title, std::move (work), std::move (finish));
+    job->launchThread();
+    commandManager.commandStatusChanged();
+}
+
+std::optional<wf::BassFinderSource> MainComponent::bassFinderSource()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->getBuffer().getNumSamples() == 0)
+        return {};
+
+    const auto range = doc->processRange();
+    wf::BassFinderSource source;
+    source.title = doc->getTitle() + (doc->getView().getSelection().isEmpty() ? " (whole file)" : " (selection)");
+    source.sampleRate = doc->getSampleRate();
+    source.audio.setSize (doc->getBuffer().getNumChannels(), range.getLength());
+
+    for (int ch = 0; ch < source.audio.getNumChannels(); ++ch)
+        source.audio.copyFrom (ch, 0, doc->getBuffer(), ch, range.getStart(), range.getLength());
+
+    const juce::Component::SafePointer<DataWindow> safeDoc (doc);
+
+    source.applyToFile = [this, safeDoc, range] (const juce::AudioBuffer<float>& corrected)
+    {
+        auto* target = safeDoc.getComponent();
+
+        if (target == nullptr || range.getEnd() > target->getBuffer().getNumSamples()
+            || corrected.getNumChannels() != target->getBuffer().getNumChannels())
+            return false;
+
+        releasePlaybackSource();
+        target->replaceRange (range, corrected, 1.0);
+        return true;
+    };
+
+    source.cursorSeconds = [safeDoc, range]
+    {
+        auto* target = safeDoc.getComponent();
+
+        if (target == nullptr)
+            return 0.0;
+
+        const auto& view = target->getView();
+        const auto at = view.getPlayhead() >= 0 ? view.getPlayhead() : view.getCursor();
+        return (double) (at - range.getStart()) / target->getSampleRate();
+    };
+
+    return source;
+}
+
+void MainComponent::showBassFinder()
+{
+    if (bassFinderWindow != nullptr)
+    {
+        bassFinderWindow->toFront (true);
+        return;
+    }
+
+    if (stretchWindow != nullptr)
+        return;
+
+    auto source = bassFinderSource();
+
+    if (! source.has_value())
+        return;
+
+    wf::BassFinderHost host;
+    host.currentSource = [this] { return bassFinderSource(); };
+
+    host.play = [this] (std::unique_ptr<juce::PositionableAudioSource> audio, double rate, int channels)
+    {
+        startToolPreview (std::move (audio), rate, channels);
+    };
+
+    host.stop = [this] { stopToolPreview(); };
+    host.playPosition = [this]() -> juce::int64
+    {
+        return toolPreview != nullptr && transport.isPlaying() ? toolPreview->getNextReadPosition() : -1;
+    };
+
+    host.openAsNewFile = [this] (const juce::String& title, juce::AudioBuffer<float> audio, double rate,
+                                 std::vector<juce::int64> markers)
+    {
+        // The Bass Finder's renders have a marker on every bar.
+        auto bars = markers;
+        addDocument (DataWindow::fromAudio (title, rate, std::move (audio), std::move (markers), std::move (bars)));
+    };
+
+    host.chooseSaveFile = [this] (const juce::String& title, const juce::File& suggested, const juce::String& pattern,
+                                  std::function<void (juce::File)> onChosen)
+    {
+        filePicker.launch (title, suggested, pattern,
+                           juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                               | juce::FileBrowserComponent::warnAboutOverwriting,
+                           [onChosen] (const juce::Array<juce::File>& files)
+                           {
+                               onChosen (files.isEmpty() ? juce::File() : files.getFirst());
+                           });
+    };
+
+    host.runJob = [this] (const juce::String& title, std::function<bool (std::function<bool (float)>)> work,
+                          std::function<void (bool)> done)
+    {
+        runJob (title, std::move (work), std::move (done));
+    };
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->stopToolPreview();
+                main->bassFinderWindow.reset();
+                main->commandManager.commandStatusChanged();
+            }
+        });
+    };
+
+    bassFinderWindow = wf::createBassFinderWindow (std::move (*source), std::move (host), std::move (onClose));
+    bassFinderWindow->setVisible (true);
+    bassFinderWindow->toFront (true);
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::startToolPreview (std::unique_ptr<juce::PositionableAudioSource> source, double rate, int channels)
+{
+    releasePlaybackSource();
+    toolPreview = std::move (source);
+    transport.setSource (toolPreview.get(), 0, nullptr, rate, channels);
+    transport.start();
+}
+
+void MainComponent::stopToolPreview()
+{
+    if (toolPreview == nullptr)
+        return;
+
+    transport.stop();
+    transport.setSource (nullptr);
+    toolPreview.reset();
 }
 
 void MainComponent::startMixPreview (DataWindow* target, const juce::AudioBuffer<float>& audio, double sourceRate,
@@ -659,6 +961,7 @@ bool MainComponent::isMixPreviewing() const
 void MainComponent::releasePlaybackSource()
 {
     stopMixPreview();
+    stopToolPreview();
 
     // The memory source points straight at a document's samples, so detach it
     // (under the audio callback lock) before any buffer is modified or reallocated.
@@ -773,6 +1076,7 @@ void MainComponent::startPlayback (juce::Range<juce::int64> range, int soloChann
         return;
 
     stopPlayback (false);
+    stopToolPreview();
 
     transport.setSource (nullptr);
     memorySource = std::make_unique<SoloPlaybackSource> (doc->getBuffer(), soloChannel);
@@ -923,6 +1227,11 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
                                              || ! doc->getView().getSelectedMarkers().empty()); break;
         case wf::optStop:   available = available && isPlaying(); break;
 
+        // Bass Finder works on a copy of the audio and can write it back, so
+        // the file mustn't be stretched meanwhile: one or the other.
+        case wf::procTimeStretch: available = available && doc != nullptr && bassFinderWindow == nullptr && job == nullptr; break;
+        case wf::toolsBassFinder: available = available && doc != nullptr && stretchWindow == nullptr && job == nullptr; break;
+
         case wf::winCascade: case wf::winTile:
             available = available && numDocuments > 0;
             break;
@@ -998,6 +1307,8 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::procInvert:        process (wf::Process::invert); return true;
         case wf::procDcOffset:      process (wf::Process::dcOffset); return true;
         case wf::procVolume:        showVolumeDialog(); return true;
+        case wf::procTimeStretch:   showStretchDialog(); return true;
+        case wf::toolsBassFinder:   showBassFinder(); return true;
 
         case wf::optPlay:
             if (isPlaying())

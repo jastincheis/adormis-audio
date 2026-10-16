@@ -15,6 +15,7 @@ struct TemplateSettings
 
     juce::int64 lengthInSamples() const;
     std::vector<juce::int64> markerPositions() const;   // one per grid step, from 0
+    std::vector<juce::int64> barStartPositions() const; // the first marker of every bar
 };
 
 // Floating, non-modal window like Volume / Save As. `onCreate` gets the

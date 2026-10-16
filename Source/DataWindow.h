@@ -17,8 +17,14 @@ public:
     static std::unique_ptr<DataWindow> fromSelection (const DataWindow& source, const juce::String& title);
 
     // A new, unsaved, silent 16-bit document with the given markers (File > New).
+    // A new, unsaved 24-bit document holding `audio` (the Bass Finder's renders).
+    // `barStarts` are the markers that begin a bar (drawn in another colour).
+    static std::unique_ptr<DataWindow> fromAudio (const juce::String& title, double sampleRate, juce::AudioBuffer<float> audio,
+                                                  std::vector<juce::int64> markers, std::vector<juce::int64> barStarts = {});
+
     static std::unique_ptr<DataWindow> createSilent (const juce::String& title, double sampleRate, int channels,
-                                                     juce::int64 numSamples, std::vector<juce::int64> markers);
+                                                     juce::int64 numSamples, std::vector<juce::int64> markers,
+                                                     std::vector<juce::int64> barStarts = {});
 
     WaveformView& getView()                          { return view; }
     juce::AudioBuffer<float>& getBuffer()            { return buffer; }
@@ -43,6 +49,12 @@ public:
     juce::Range<int> processRange() const;
     void applyProcess (wf::Process process);
     void applyVolume (float decibels);
+
+    // Puts `audio` (same channels, any length: a time stretch of `range`) in
+    // place of `range`, undoably. Markers inside it move with the stretch
+    // (`timeRatio` = new length / old length), later ones shift. Selects the
+    // new audio if `range` was a selection.
+    void replaceRange (juce::Range<int> range, const juce::AudioBuffer<float>& audio, double timeRatio);
 
     // "Selection, left channel", "whole file"...: what a process would change.
     juce::String describeProcessTarget() const;
@@ -114,13 +126,20 @@ private:
     bool modified = false;
 
     std::vector<juce::int64> markers;
+    std::vector<juce::int64> barStarts;   // sorted; the markers that begin a bar
+
+    // Moves (or, for an empty result, removes) every marker, bar starts included.
+    void remapMarkers (const std::function<std::optional<juce::int64> (juce::int64)>& fn);
+
+    // Bar starts whose marker has gone are forgotten.
+    void pruneBarStarts();
 
     // Undo keeps whole snapshots of the samples, markers and sample rate
     // (Save As can convert the rate).
     struct Snapshot
     {
         juce::AudioBuffer<float> audio;
-        std::vector<juce::int64> markers;
+        std::vector<juce::int64> markers, barStarts;
         double rate = 44100.0;
     };
 

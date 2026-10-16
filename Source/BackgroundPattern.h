@@ -2,7 +2,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
-// Textured grey backdrop with faint elephants and stars, drawn as a seamless
+// Textured grey backdrop with faint elephants, teddy bears and stars, drawn as a seamless
 // tile so it can fill any area.
 namespace wf
 {

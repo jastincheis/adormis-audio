@@ -189,7 +189,7 @@ void DataWindow::initialise (const juce::String& newTitle)
     view.onCursorOrSelectionChanged = [this] { updateInfo(); if (onChanged) onChanged(); };
     view.onPlayheadMoved = [this] { updateInfo(); };
     view.onRemoveMarker = [this] (int index) { removeMarker (index); };
-    view.setMarkers (&markers);
+    view.setMarkers (&markers, &barStarts);
     addAndMakeVisible (view);
 
     for (auto* label : { &resolutionLabel, &lengthBox, &cursorBox })
@@ -246,8 +246,8 @@ bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager
         {
             pushUndo();
 
-            for (auto& m : markers)
-                m = (juce::int64) std::llround ((double) m * targetRate / sampleRate);
+            const auto ratio = targetRate / sampleRate;
+            remapMarkers ([ratio] (juce::int64 m) { return std::optional<juce::int64> (std::llround ((double) m * ratio)); });
 
             buffer = std::move (converted);
             sampleRate = targetRate;
@@ -379,6 +379,49 @@ void DataWindow::applyVolume (float decibels)
     processChannels ([decibels] (auto& audio, auto range) { wf::applyVolume (audio, range, decibels); });
 }
 
+void DataWindow::replaceRange (juce::Range<int> range, const juce::AudioBuffer<float>& audio, double timeRatio)
+{
+    range = range.getIntersectionWith ({ 0, buffer.getNumSamples() });
+
+    if (audio.getNumChannels() != buffer.getNumChannels() || range.isEmpty())
+        return;
+
+    const auto wasSelection = ! view.getSelection().isEmpty();
+    const auto newLength = audio.getNumSamples();
+    const auto tail = buffer.getNumSamples() - range.getEnd();
+
+    pushUndo();
+
+    juce::AudioBuffer<float> result (buffer.getNumChannels(), range.getStart() + newLength + tail);
+
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+    {
+        result.copyFrom (ch, 0, buffer, ch, 0, range.getStart());
+        result.copyFrom (ch, range.getStart(), audio, ch, 0, newLength);
+        result.copyFrom (ch, range.getStart() + newLength, buffer, ch, range.getEnd(), tail);
+    }
+
+    buffer = std::move (result);
+
+    const auto shift = (juce::int64) newLength - range.getLength();
+
+    remapMarkers ([range, shift, newLength, timeRatio] (juce::int64 m) -> std::optional<juce::int64>
+    {
+        if (m >= range.getEnd() && m > range.getStart())
+            return m + shift;
+
+        if (m > range.getStart())
+            return range.getStart() + std::min ((juce::int64) newLength,
+                                                (juce::int64) std::llround ((double) (m - range.getStart()) * timeRatio));
+        return m;
+    });
+
+    view.setSelection (wasSelection ? juce::Range<juce::int64> (range.getStart(), range.getStart() + newLength)
+                                    : juce::Range<juce::int64>());
+    view.setCursor (range.getStart());
+    audioChanged();
+}
+
 juce::String DataWindow::describeProcessTarget() const
 {
     const auto channel = view.getSelectedChannel();
@@ -413,15 +456,12 @@ bool DataWindow::deleteSelection()
     buffer = std::move (result);
 
     // Markers inside the cut go away; later ones move back with the audio.
-    std::vector<juce::int64> kept;
-
-    for (auto m : markers)
+    remapMarkers ([start, removed] (juce::int64 m) -> std::optional<juce::int64>
     {
-        if (m < start)                    kept.push_back (m);
-        else if (m >= start + removed)    kept.push_back (m - removed);
-    }
-
-    markers = std::move (kept);
+        if (m < start)              return m;
+        if (m >= start + removed)   return m - removed;
+        return {};
+    });
     view.setSelection ({});
     view.setCursor (start);
     audioChanged();
@@ -429,7 +469,8 @@ bool DataWindow::deleteSelection()
 }
 
 std::unique_ptr<DataWindow> DataWindow::createSilent (const juce::String& newTitle, double rate, int channels,
-                                                      juce::int64 numSamples, std::vector<juce::int64> newMarkers)
+                                                      juce::int64 numSamples, std::vector<juce::int64> newMarkers,
+                                                      std::vector<juce::int64> newBarStarts)
 {
     if (numSamples <= 0 || numSamples > std::numeric_limits<int>::max() || channels < 1)
         return nullptr;
@@ -441,6 +482,27 @@ std::unique_ptr<DataWindow> DataWindow::createSilent (const juce::String& newTit
     doc->buffer.setSize (channels, (int) numSamples);
     doc->buffer.clear();
     doc->markers = std::move (newMarkers);
+    doc->barStarts = std::move (newBarStarts);
+    std::sort (doc->barStarts.begin(), doc->barStarts.end());
+    doc->modified = true;
+    doc->initialise (newTitle);
+    return doc;
+}
+
+std::unique_ptr<DataWindow> DataWindow::fromAudio (const juce::String& newTitle, double rate, juce::AudioBuffer<float> audio,
+                                                   std::vector<juce::int64> newMarkers, std::vector<juce::int64> newBarStarts)
+{
+    if (audio.getNumSamples() <= 0 || audio.getNumChannels() < 1)
+        return nullptr;
+
+    std::unique_ptr<DataWindow> doc (new DataWindow());
+    doc->sampleRate = rate;
+    doc->bitDepth = 24;
+    doc->formatName = "WAV file";
+    doc->buffer = std::move (audio);
+    doc->markers = std::move (newMarkers);
+    doc->barStarts = std::move (newBarStarts);
+    std::sort (doc->barStarts.begin(), doc->barStarts.end());
     doc->modified = true;
     doc->initialise (newTitle);
     return doc;
@@ -540,6 +602,7 @@ bool DataWindow::deleteSelectedMarkers()
     // Markers aren't saved in the audio file, so this doesn't mark it modified.
     pushUndo();
     markers = std::move (kept);
+    pruneBarStarts();
     view.clearMarkerSelection();
     view.repaint();
 
@@ -567,15 +630,45 @@ void DataWindow::removeMarker (int index)
     if (juce::isPositiveAndBelow (index, (int) markers.size()))
     {
         markers.erase (markers.begin() + index);
+        pruneBarStarts();
         view.clearMarkerSelection();
         view.repaint();
     }
 }
 
+void DataWindow::remapMarkers (const std::function<std::optional<juce::int64> (juce::int64)>& fn)
+{
+    auto remap = [&fn] (std::vector<juce::int64>& list)
+    {
+        std::vector<juce::int64> moved;
+
+        for (auto m : list)
+            if (const auto to = fn (m))
+                moved.push_back (*to);
+
+        std::sort (moved.begin(), moved.end());
+        list = std::move (moved);
+    };
+
+    remap (markers);
+    remap (barStarts);
+}
+
+void DataWindow::pruneBarStarts()
+{
+    std::vector<juce::int64> kept;
+
+    for (auto b : barStarts)
+        if (std::binary_search (markers.begin(), markers.end(), b))
+            kept.push_back (b);
+
+    barStarts = std::move (kept);
+}
+
 void DataWindow::pushUndo()
 {
     redoStack.clear();
-    undoStack.push_back ({ buffer, markers, sampleRate });
+    undoStack.push_back ({ buffer, markers, barStarts, sampleRate });
 
     size_t total = 0;
     for (const auto& b : undoStack)
@@ -590,9 +683,10 @@ void DataWindow::pushUndo()
 
 void DataWindow::restore (Snapshot& from, std::vector<Snapshot>& saveTo)
 {
-    saveTo.push_back ({ std::move (buffer), std::move (markers), sampleRate });
+    saveTo.push_back ({ std::move (buffer), std::move (markers), std::move (barStarts), sampleRate });
     buffer = std::move (from.audio);
     markers = std::move (from.markers);
+    barStarts = std::move (from.barStarts);
 
     if (! juce::approximatelyEqual (from.rate, sampleRate))
     {

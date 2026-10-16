@@ -20,6 +20,29 @@ else()
     FetchContent_MakeAvailable(JUCE)
 endif()
 
+# Rubber Band Library 4.0.0 (GPL-2.0-or-later) for time stretch / pitch shift,
+# compiled from its single-file build so every platform gets the same engine.
+# -DWAVEFORGE_RUBBERBAND_DIR=/path/to/rubberband-4.0.0 skips the download.
+set(WAVEFORGE_RUBBERBAND_DIR "" CACHE PATH "Local Rubber Band source tree (optional)")
+
+if(WAVEFORGE_RUBBERBAND_DIR)
+    set(RUBBERBAND_SOURCE_DIR ${WAVEFORGE_RUBBERBAND_DIR})
+else()
+    include(FetchContent)
+    FetchContent_Declare(rubberband
+        URL      https://github.com/breakfastquay/rubberband/archive/refs/tags/v4.0.0.tar.gz
+        URL_HASH SHA256=24300f48a8014b7c863b573a9647e61b1b19b37875e2cdd92005e64c6424d266)
+    FetchContent_MakeAvailable(rubberband)   # no CMakeLists.txt in it: sources only
+    set(RUBBERBAND_SOURCE_DIR ${rubberband_SOURCE_DIR})
+endif()
+
+add_library(rubberband_single STATIC ${RUBBERBAND_SOURCE_DIR}/single/RubberBandSingle.cpp)
+target_include_directories(rubberband_single PUBLIC ${RUBBERBAND_SOURCE_DIR})
+set_target_properties(rubberband_single PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(APPLE)
+    target_link_libraries(rubberband_single PUBLIC "-framework Accelerate")
+endif()
+
 juce_add_gui_app(WaveForge
     PRODUCT_NAME "WaveForge"
     COMPANY_NAME "WaveForge"
@@ -28,10 +51,14 @@ juce_add_gui_app(WaveForge
 
 target_sources(WaveForge PRIVATE
     Source/Main.cpp
+    Source/Analysis.cpp
     Source/BackgroundPattern.cpp
+    Source/BassFinder.cpp
+    Source/BassGenerator.cpp
     Source/MainComponent.cpp
     Source/MixDialog.cpp
     Source/MixPreview.cpp
+    Source/NoteDetector.cpp
     Source/Mp3Encoder.cpp
     Source/Commands.cpp
     Source/DataWindow.cpp
@@ -41,7 +68,9 @@ target_sources(WaveForge PRIVATE
     Source/VolumeDialog.cpp
     Source/ProcessToolbar.cpp
     Source/ShortcutsWindow.cpp
+    Source/StretchDialog.cpp
     Source/TemplateDialog.cpp
+    Source/TimeStretch.cpp
     Source/WaveformView.cpp)
 
 target_compile_definitions(WaveForge PRIVATE
@@ -84,6 +113,8 @@ target_link_libraries(WaveForge
     PRIVATE
         juce::juce_gui_extra
         juce::juce_audio_utils
+        juce::juce_dsp
+        rubberband_single
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags

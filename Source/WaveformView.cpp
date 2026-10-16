@@ -13,6 +13,7 @@ const juce::Colour selectionShade  = juce::Colours::black.withAlpha (0.38f);
 const juce::Colour cursorColour    (0xffffffff);
 const juce::Colour playheadColour  (0xffffc23a);
 const juce::Colour markerColour    (0xffff8a3d);
+const juce::Colour barMarkerColour (0xffe8344a);   // a marker that begins a bar
 } // namespace
 
 WaveformView::WaveformView()
@@ -717,13 +718,17 @@ void WaveformView::paintMarkers (juce::Graphics& g, juce::Rectangle<int> rulerAr
             continue;
 
         const auto picked = isMarkerSelected ((*markers)[(size_t) i]);
+        const auto barStart = barStarts != nullptr
+                           && std::binary_search (barStarts->begin(), barStarts->end(), (*markers)[(size_t) i]);
+        const auto colour = barStart ? barMarkerColour : markerColour;
 
         // Dashed line through the waveform; solid and thicker when picked.
         const float dashes[] = { 5.0f, 3.0f };
-        g.setColour (markerColour);
+        g.setColour (colour);
 
-        if (picked)
-            g.drawLine (x, (float) wave.getY(), x, (float) wave.getBottom(), 2.0f);
+        // A bar start is a solid line, so the bars stand out from the beats.
+        if (picked || barStart)
+            g.drawLine (x, (float) wave.getY(), x, (float) wave.getBottom(), picked ? 2.0f : 1.6f);
         else
             g.drawDashedLine ({ x, (float) wave.getY(), x, (float) wave.getBottom() }, dashes, 2, 1.2f);
 
@@ -735,16 +740,16 @@ void WaveformView::paintMarkers (juce::Graphics& g, juce::Rectangle<int> rulerAr
         flag.addRoundedRectangle (tag.getX(), tag.getY(), tag.getWidth(), tag.getHeight(), 3.0f, 3.0f,
                                   flipped, ! flipped, flipped, ! flipped);
         // Picked: white flag with an orange outline and number.
-        g.setColour (picked ? juce::Colours::white : markerColour);
+        g.setColour (picked ? juce::Colours::white : colour);
         g.fillPath (flag);
 
         if (picked)
         {
-            g.setColour (markerColour);
+            g.setColour (colour);
             g.strokePath (flag, juce::PathStrokeType (1.5f));
         }
 
-        g.setColour (picked ? markerColour : juce::Colours::white);
+        g.setColour (picked ? colour : juce::Colours::white);
         g.drawText (juce::String (i + 1), tag, juce::Justification::centred);
     }
 }

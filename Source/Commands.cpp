@@ -134,6 +134,7 @@ std::vector<CommandDef> makeCommands()
         { toolsRepairCopyChannel, "Copy Other Channel",       "Tools", {} },
         { toolsSynthSimple,       "Simple Synthesis...",      "Tools", {} },
         { toolsSynthFm,           "FM Synthesis...",          "Tools", {} },
+        { toolsBassFinder,        "Bass Finder...",           "Tools", {} },
 
         // FX Favorites
         { favPluginManager, "Plug-In Manager...",             "FX Favorites", {} },
@@ -229,7 +230,7 @@ const std::vector<TopMenu>& menuBar()
 
         { "Tools", { C (toolsAutoRegion), C (toolsExtractRegions), C (toolsClipDetect), C (toolsFind), sep(),
                      sub ("Repair", { C (toolsRepairInterpolate), C (toolsRepairReplace), C (toolsRepairCopyChannel) }),
-                     sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }) } },
+                     sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsBassFinder) } },
 
         { "FX Favorites", { C (favPluginManager), C (favPluginChain), sep(), C (favRescan) } },
 
@@ -269,7 +270,7 @@ const std::vector<CommandDef>& allCommands()
     // Commands that work so far; everything else stays greyed out in the menus.
     static const juce::CommandID implemented[] {
         fileNew, fileOpen, fileClose, fileSave, fileSaveAs, fileExit, editUndo, editRedo, editDelete, editSelectAll, insertMarker,
-        procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume,
+        procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder,
         winCascade, winTile, winNext, winPrev,
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,
         optPlay, optPlayAll, optPlayPause, optStop, optGoStart, optGoEnd, optAudioDevice,

@@ -185,6 +185,40 @@ void iconVolume (juce::Graphics& g, juce::Rectangle<float> a)
     strokeIcon (g, waves, a, 1.8f);
 }
 
+// Time stretch: a wave being pulled wider, arrows out on both sides.
+void iconStretch (juce::Graphics& g, juce::Rectangle<float> a)
+{
+    juce::Path wave;
+    wave.startNewSubPath (4.0f, 9.0f);
+    wave.cubicTo (6.5f, 3.0f, 9.0f, 3.0f, 12.0f, 9.0f);
+    wave.cubicTo (15.0f, 15.0f, 17.5f, 15.0f, 20.0f, 9.0f);
+    strokeIcon (g, wave, a, 1.8f);
+
+    juce::Path line;
+    line.startNewSubPath (5.5f, 19.0f);
+    line.lineTo (18.5f, 19.0f);
+    strokeIcon (g, line, a, 1.6f);
+
+    fillIcon (g, arrowHead ({ 2.5f, 19.0f }, -juce::MathConstants<float>::halfPi, 3.4f), a);
+    fillIcon (g, arrowHead ({ 21.5f, 19.0f }, juce::MathConstants<float>::halfPi, 3.4f), a);
+}
+
+// Bass Finder: a bass clef (hook and two dots) over a small magnifier.
+void iconBassFinder (juce::Graphics& g, juce::Rectangle<float> a)
+{
+    juce::Path clef;
+    clef.startNewSubPath (5.0f, 8.5f);
+    clef.cubicTo (5.0f, 4.0f, 14.0f, 3.5f, 14.0f, 9.0f);
+    clef.cubicTo (14.0f, 14.0f, 9.5f, 17.0f, 4.5f, 19.5f);
+    strokeIcon (g, clef, a, 2.0f);
+
+    juce::Path dots;
+    dots.addEllipse (17.0f, 5.6f, 2.6f, 2.6f);
+    dots.addEllipse (17.0f, 10.6f, 2.6f, 2.6f);
+    dots.addEllipse (4.4f, 7.0f, 3.4f, 3.4f);
+    fillIcon (g, dots, a);
+}
+
 // New: a blank page with a beat grid (markers) on it.
 void iconNew (juce::Graphics& g, juce::Rectangle<float> a)
 {
@@ -209,6 +243,8 @@ const juce::Colour historyTint   (0xff5a6378);
 const juce::Colour fadeTint      (0xffb0703a);
 const juce::Colour levelTint     (0xff4a6fa5);
 const juce::Colour shapeTint     (0xff7a5a8c);
+const juce::Colour timeTint      (0xff2f7f86);
+const juce::Colour bassTint      (0xffc0640f);
 } // namespace
 
 //==============================================================================
@@ -273,6 +309,9 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     addGap();
     addButton (wf::procReverse,    shapeTint,     iconReverse);
     addButton (wf::procInvert,     shapeTint,     iconInvert);
+    addGap();
+    addButton (wf::procTimeStretch, timeTint,     iconStretch);
+    addButton (wf::toolsBassFinder, bassTint,     iconBassFinder);
 
     commands.addListener (this);
     refreshEnabled();

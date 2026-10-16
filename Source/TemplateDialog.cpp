@@ -21,6 +21,18 @@ std::vector<juce::int64> TemplateSettings::markerPositions() const
     return positions;
 }
 
+std::vector<juce::int64> TemplateSettings::barStartPositions() const
+{
+    // Every `division`-th grid marker, with the same rounding as markerPositions().
+    const auto all = markerPositions();
+    std::vector<juce::int64> starts;
+
+    for (size_t i = 0; i < all.size(); i += (size_t) division)
+        starts.push_back (all[i]);
+
+    return starts;
+}
+
 namespace
 {
 juce::String cleanNumber (juce::String text)
