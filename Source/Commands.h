@@ -23,7 +23,7 @@ enum CommandIDs : juce::CommandID
     viewZoomIn = 0x1200, viewZoomOut, viewZoomSelection, viewZoomNormal, viewLevelIn,
     viewLevelOut, viewPlaybackScroll, viewSmoothScroll, viewDockBottom, viewDockSides,
     viewDockAll, viewMaxWidth, viewExplorer, viewProperties, viewChannelMeters,
-    viewUndoHistory, viewSpectrum, viewRegionsList, viewPlaylist,
+    viewUndoHistory, viewSpectrum, viewRegionsList, viewPlaylist, viewLoudnessMeters,
 
     // Insert
     insertMarker = 0x1300, insertRegion, insertCommandMarker, insertSilence, insertVolumeEnv,
@@ -41,7 +41,7 @@ enum CommandIDs : juce::CommandID
     // Tools
     toolsAutoRegion = 0x1600, toolsExtractRegions, toolsClipDetect, toolsFind,
     toolsRepairInterpolate, toolsRepairReplace, toolsRepairCopyChannel, toolsSynthSimple,
-    toolsSynthFm, toolsBassFinder, toolsDeEsser, toolsMp3Restore,
+    toolsSynthFm, toolsBassFinder, toolsDeEsser, toolsMp3Restore, toolsStatistics,
 
     // FX Favorites
     favPluginManager = 0x1700, favPluginChain, favRescan,
@@ -75,4 +75,5 @@ juce::PopupMenu buildMenu (int topLevelIndex, juce::ApplicationCommandManager& m
 // Human-readable shortcut text using Sound Forge's naming ("Ctrl+O"),
 // or the platform's own symbols on macOS.
 juce::String shortcutText (const CommandDef& def);
+juce::String shortcutText (const juce::Array<juce::KeyPress>& keys);
 } // namespace wf

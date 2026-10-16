@@ -15,6 +15,8 @@
 #include "TemplateDialog.h"
 #include "VolumeDialog.h"
 #include "FormDialog.h"
+#include "MeterPanel.h"
+#include "StatisticsWindow.h"
 
 class ShortcutsWindow;
 
@@ -87,6 +89,12 @@ private:
     void showGoTo();
     void showDetectClipping();
     void mixClipboard();
+
+    // Package B: loudness.
+    void showNormalize();
+    void showStatistics();
+    void setMeterSections (bool channels, bool loudness);
+    juce::StringArray lastNormalize;   // the Normalize window starts from the last choices
     void saveAll (std::vector<juce::Component::SafePointer<DataWindow>> remaining);
     void markInOut (bool in);
 
@@ -138,6 +146,23 @@ private:
     void stopPlayback (bool returnToStart);
     void releasePlaybackSource();   // before a document's buffer is changed
     void setLooping (bool shouldLoop);
+    void toggleLoop();   // Q: loop on (a selection starts looping) / off
+    void followSelectionLoop (DataWindow* doc);
+    int playSoloChannel = -1;
+
+    // Options > Customize Keyboard; the changes live in keyboard.xml.
+    static juce::File keyMappingsFile();
+    void loadKeyMappings();
+    void showKeyboardEditor();
+    std::unique_ptr<juce::DocumentWindow> keyboardWindow;
+
+    struct ChangeCall final : public juce::ChangeListener
+    {
+        std::function<void()> onChange;
+        void changeListenerCallback (juce::ChangeBroadcaster*) override  { if (onChange != nullptr) onChange(); }
+    };
+
+    ChangeCall keySaver;
     bool loopPlayback = false;
 
     // Mix dialog preview: plays the mix result without touching the file.
@@ -170,6 +195,8 @@ private:
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer sourcePlayer;
     juce::AudioTransportSource transport;
+    std::unique_ptr<wf::MeterTap> meterTap;     // the device plays through this (for the meters)
+    std::unique_ptr<wf::MeterPanel> meters;
     std::unique_ptr<juce::PositionableAudioSource> memorySource;
     juce::Component::SafePointer<DataWindow> playingDocument;
     juce::Range<juce::int64> playRange;
@@ -193,6 +220,7 @@ private:
     std::unique_ptr<juce::DocumentWindow> saveAsWindow;
     std::unique_ptr<juce::DocumentWindow> volumeWindow;
     std::unique_ptr<juce::DocumentWindow> formWindow;
+    std::unique_ptr<juce::DocumentWindow> statisticsWindow;
     std::unique_ptr<juce::DocumentWindow> templateWindow;
     std::unique_ptr<juce::DocumentWindow> stretchWindow;
     std::unique_ptr<juce::DocumentWindow> bassFinderWindow;

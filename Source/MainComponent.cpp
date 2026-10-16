@@ -258,6 +258,7 @@ MainComponent::MainComponent()
 
     commandManager.registerAllCommandsForTarget (this);
     commandManager.setFirstCommandTarget (this);
+    loadKeyMappings();
     setApplicationCommandManagerToWatch (&commandManager);
 
    #if JUCE_MAC
@@ -287,7 +288,11 @@ MainComponent::MainComponent()
 
     deviceManager.initialiseWithDefaultDevices (0, 2);
     sourcePlayer.setSource (&transport);
-    deviceManager.addAudioCallback (&sourcePlayer);
+    meterTap = std::make_unique<wf::MeterTap> (sourcePlayer);
+    deviceManager.addAudioCallback (meterTap.get());
+
+    meters = std::make_unique<wf::MeterPanel> (*meterTap);
+    addAndMakeVisible (*meters);
 
     setWantsKeyboardFocus (true);
     setSize (1100, 700);
@@ -296,6 +301,8 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    commandManager.getKeyMappings()->removeChangeListener (&keySaver);
+    keyboardWindow.reset();
     mixWindow.reset();
     saveAsWindow.reset();
     volumeWindow.reset();
@@ -310,7 +317,9 @@ MainComponent::~MainComponent()
     stopTimer();
     transport.stop();
     transport.setSource (nullptr);
-    deviceManager.removeAudioCallback (&sourcePlayer);
+    statisticsWindow.reset();
+    meters.reset();
+    deviceManager.removeAudioCallback (meterTap.get());
     sourcePlayer.setSource (nullptr);
     workspace->closeAllDocumentsAsync (false, nullptr);
 
@@ -334,6 +343,15 @@ void MainComponent::resized()
 
     statusBar.setBounds (area.removeFromBottom (statusBarHeight));
     toolbar->setBounds (area.removeFromBottom (ProcessToolbar::preferredHeight));
+
+    if (meters != nullptr)
+    {
+        meters->setVisible (meters->showsAnything());
+
+        if (meters->showsAnything())
+            meters->setBounds (area.removeFromRight (wf::MeterPanel::preferredWidth));
+    }
+
     workspace->setBounds (area);
 }
 
@@ -398,6 +416,8 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
     auto* raw = doc.get();
     raw->onChanged = [this, raw]
     {
+        followSelectionLoop (raw);
+
         if (raw == activeDocument())
         {
             updateStatus();
@@ -903,6 +923,138 @@ void MainComponent::showDetectClipping()
                                                           found == 0 ? juce::String ("No clipping found.")
                                                                      : juce::String (found) + (found == 1 ? " clipped place, marked." : " clipped places, marked."));
               });
+}
+
+namespace
+{
+const juce::StringArray normalizeTargets {
+    "Peak -0.1 dB", "Peak -1 dB", "Peak -3 dB", "Peak (custom level)",
+    "-14 LUFS: Spotify, YouTube, Tidal", "-16 LUFS: Apple Music, podcasts",
+    "-23 LUFS: EBU R128 broadcast", "-24 LUFS: US TV (ATSC A/85)", "Loudness (custom level)"
+};
+} // namespace
+
+void MainComponent::showNormalize()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    if (lastNormalize.size() != 3)
+        lastNormalize = { normalizeTargets[0], "-0.1", "-1.0" };
+
+    auto inRange = [] (double low, double high)
+    {
+        return [low, high] (const juce::String& t) { const auto v = wf::parseNumber (t); return v.has_value() && *v >= low && *v <= high; };
+    };
+
+    showForm ("Normalize", "Normalize: " + doc->getTitle() + " (" + doc->describeProcessTarget() + ")",
+              { { "Normalize to:", lastNormalize[0], normalizeTargets, {}, {} },
+                { "Custom level:", lastNormalize[1], {}, "dB / LUFS", inRange (-70.0, 0.0) },
+                { "True peak at most:", lastNormalize[2], {}, "dBTP", inRange (-12.0, 0.0) } },
+              "Peak: the loudest sample reaches the level. Loudness: the\n"
+              "integrated loudness (LUFS, what streaming services measure)\n"
+              "reaches it, with less gain if the true peak would go over\n"
+              "the limit. Custom level is used by the two \"custom\" choices.",
+              [this] (DataWindow& d, const juce::StringArray& v)
+              {
+                  lastNormalize = v;
+                  const auto loudness = ! v[0].startsWith ("Peak");
+                  const auto custom = v[0].contains ("custom");
+                  const auto level = custom ? *wf::parseNumber (v[1])
+                                            : loudness ? v[0].upToFirstOccurrenceOf (" ", false, false).getDoubleValue()
+                                                       : v[0].fromFirstOccurrenceOf ("Peak ", false, false).getDoubleValue();
+                  const auto ceiling = *wf::parseNumber (v[2]);
+
+                  const auto result = d.normalize (loudness, level, ceiling);
+                  rememberAction ("Normalize", [loudness, level, ceiling] (DataWindow& w) { w.normalize (loudness, level, ceiling); });
+
+                  if (result.silent)
+                  {
+                      juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::NoIcon, "Normalize",
+                                                              "Nothing to normalize: it is silent.");
+                  }
+                  else if (result.limited)
+                  {
+                      juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::NoIcon, "Normalize",
+                          "Reached " + wf::formatLufs (result.reached) + " instead of " + wf::formatLufs (level) + ":\n"
+                          "more gain would push the true peak over " + juce::String (ceiling, 1) + " dBTP.\n"
+                          "Gain used: " + juce::String (result.gainDb, 2) + " dB.\n\n"
+                          "To get louder, the peaks have to be limited first\n"
+                          "(a Limiter is planned for a later version).");
+                  }
+              });
+}
+
+void MainComponent::showStatistics()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->isEmpty() || job != nullptr)
+        return;
+
+    // Measured on a copy, so the file can't change under the job.
+    const auto range = doc->processRange();
+    const auto picked = doc->getView().getSelectedChannel();
+    const auto& source = doc->getBuffer();
+    const auto channels = picked >= 0 ? 1 : source.getNumChannels();
+    auto audio = std::make_shared<juce::AudioBuffer<float>> (channels, range.getLength());
+
+    for (int ch = 0; ch < channels; ++ch)
+        audio->copyFrom (ch, 0, source, picked >= 0 ? picked : ch, range.getStart(), range.getLength());
+
+    const auto rate = doc->getSampleRate();
+    const auto what = doc->getTitle() + " (" + doc->describeProcessTarget() + ")";
+    auto result = std::make_shared<std::optional<wf::AudioStatistics>>();
+    const juce::Component::SafePointer<DataWindow> safeDoc (doc);
+
+    runJob ("Measuring " + doc->getTitle() + "...",
+            [audio, rate, result] (std::function<bool (float)> progress)
+            {
+                *result = wf::measure (*audio, rate, { 0, audio->getNumSamples() }, progress);
+                return result->has_value();
+            },
+            [this, result, rate, what, safeDoc, range] (bool finished)
+            {
+                if (! finished || ! result->has_value())
+                    return;
+
+                auto stats = **result;
+
+                for (auto& c : stats.channels)
+                    c.peakPosition += range.getStart();
+
+                auto goTo = [safeDoc] (juce::int64 position)
+                {
+                    if (auto* d = safeDoc.getComponent())
+                    {
+                        d->getView().setSelection ({});
+                        d->getView().setCursor (position);
+                        d->getView().ensureVisible (position);
+                    }
+                };
+
+                auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+                {
+                    juce::MessageManager::callAsync ([safeThis]
+                    {
+                        if (auto* main = safeThis.getComponent())
+                            main->statisticsWindow.reset();
+                    });
+                };
+
+                statisticsWindow = wf::createStatisticsWindow (what, stats, rate, std::move (goTo), std::move (onClose));
+                statisticsWindow->setVisible (true);
+                statisticsWindow->toFront (true);
+            });
+}
+
+void MainComponent::setMeterSections (bool channels, bool loudness)
+{
+    meters->setSections (channels, loudness);
+    resized();
+    commandManager.commandStatusChanged();
 }
 
 void MainComponent::mixClipboard()
@@ -1816,6 +1968,155 @@ private:
 };
 } // namespace
 
+void MainComponent::toggleLoop()
+{
+    if (loopPlayback)
+    {
+        setLooping (false);
+        return;
+    }
+
+    setLooping (true);
+
+    // Q on a selection: that selection plays in a loop straight away
+    // (unless it already is what's playing).
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->isEmpty() || isRecording())
+        return;
+
+    const auto selection = doc->getView().getSelection();
+
+    if (selection.isEmpty())
+        return;
+
+    if (! isPlaying() || playingDocument.getComponent() != doc || playRange != selection
+        || doc->getView().getSelectedChannel() != playSoloChannel)
+        startPlayback (selection, doc->getView().getSelectedChannel());
+}
+
+void MainComponent::followSelectionLoop (DataWindow* doc)
+{
+    // While looping, a new selection in the file being played becomes the loop.
+    if (! loopPlayback || ! isPlaying() || doc == nullptr || doc != playingDocument.getComponent() || mixPreview != nullptr)
+        return;
+
+    const auto selection = doc->getView().getSelection();
+
+    if (selection.getLength() < 64 || selection == playRange)
+        return;
+
+    if (doc->getView().getSelectedChannel() != playSoloChannel)
+    {
+        juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<MainComponent> (this),
+                                          safeDoc = juce::Component::SafePointer<DataWindow> (doc)]
+        {
+            auto* main = safeThis.getComponent();
+            auto* d = safeDoc.getComponent();
+
+            if (main != nullptr && d != nullptr && main->loopPlayback && main->isPlaying() && ! d->getView().getSelection().isEmpty())
+                main->startPlayback (d->getView().getSelection(), d->getView().getSelectedChannel());
+        });
+        return;
+    }
+
+    playRange = selection;
+
+    if (auto* solo = dynamic_cast<SoloPlaybackSource*> (memorySource.get()))
+        solo->setLoopRange (playRange);   // playback outside it jumps to its start
+}
+
+juce::File MainComponent::keyMappingsFile()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+               .getChildFile ("WaveForge").getChildFile ("keyboard.xml");
+}
+
+void MainComponent::loadKeyMappings()
+{
+    auto* mappings = commandManager.getKeyMappings();
+
+    if (auto xml = juce::parseXML (keyMappingsFile()))
+        mappings->restoreFromXml (*xml);
+
+    // Every change made in Customize Keyboard is kept for the next start.
+    keySaver.onChange = [this]
+    {
+        if (auto xml = commandManager.getKeyMappings()->createXml (true))
+        {
+            keyMappingsFile().getParentDirectory().createDirectory();
+            xml->writeTo (keyMappingsFile());
+        }
+
+        shortcutsWindow.reset();   // rebuilt with the new keys next time
+        commandManager.commandStatusChanged();
+    };
+    mappings->addChangeListener (&keySaver);
+}
+
+void MainComponent::showKeyboardEditor()
+{
+    if (keyboardWindow != nullptr)
+    {
+        keyboardWindow->toFront (true);
+        return;
+    }
+
+    struct KeyboardWindow final : public juce::DocumentWindow
+    {
+        KeyboardWindow (juce::KeyPressMappingSet& mappings, std::function<void()> onCloseIn)
+            : juce::DocumentWindow ("Customize Keyboard", juce::Colour (0xffd4d0c8), juce::DocumentWindow::closeButton),
+              onClose (std::move (onCloseIn))
+        {
+            // Own title bar so it can be moved on window managers without decorations.
+            setUsingNativeTitleBar (false);
+
+            auto* content = new juce::Component();
+            auto* hint = new juce::Label ({}, "Open a menu, click a command's \"+\" to add a key (press the key you want),\n"
+                                              "click a key to change or remove it. Changes are saved right away.");
+            hint->setColour (juce::Label::textColourId, juce::Colours::black);
+            hint->setFont (juce::FontOptions (13.0f));
+            auto* editor = new juce::KeyMappingEditorComponent (mappings, true);
+            editor->setColours (juce::Colour (0xffd4d0c8), juce::Colours::black);
+            content->addAndMakeVisible (hint);
+            content->addAndMakeVisible (editor);
+            owned.add (hint);
+            owned.add (editor);
+            content->setSize (620, 640);
+            hint->setBounds (10, 6, 600, 38);
+            editor->setBounds (0, 48, 620, 592);
+            setContentOwned (content, true);
+            setResizable (false, false);
+            setAlwaysOnTop (true);
+            centreWithSize (getWidth(), getHeight());
+        }
+
+        ~KeyboardWindow() override
+        {
+            if (auto* c = getContentComponent())
+                c->removeAllChildren();
+        }
+
+        void closeButtonPressed() override  { if (onClose != nullptr) onClose(); }
+
+        std::function<void()> onClose;
+        juce::OwnedArray<juce::Component> owned;
+    };
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->keyboardWindow.reset();
+        });
+    };
+
+    keyboardWindow = std::make_unique<KeyboardWindow> (*commandManager.getKeyMappings(), std::move (onClose));
+    keyboardWindow->setVisible (true);
+    keyboardWindow->toFront (true);
+}
+
 void MainComponent::setLooping (bool shouldLoop)
 {
     loopPlayback = shouldLoop;
@@ -1847,8 +2148,12 @@ void MainComponent::startPlayback (juce::Range<juce::int64> range, int soloChann
     // device's still reaches both speakers through the resampler.
     transport.setSource (memorySource.get(), 0, nullptr, doc->getSampleRate(), juce::jmax (2, doc->getBuffer().getNumChannels()));
 
+    if (meters != nullptr)
+        meters->resetLoudness();
+
     playingDocument = doc;
     playRange = range;
+    playSoloChannel = soloChannel;
     playStartCursor = doc->getView().getCursor();
     transport.setPosition ((double) range.getStart() / doc->getSampleRate());
     transport.start();
@@ -1981,7 +2286,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
     switch (id)
     {
-        case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice:
+        case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice: case wf::optKeyboard:
         case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord:
             break;
 
@@ -2016,6 +2321,19 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
         case wf::optLoop:
             info.setTicked (loopPlayback);
+            available = true;   // the switch works with or without a file
+            break;
+
+        case wf::viewChannelMeters:
+            info.setTicked (meters != nullptr && meters->showsChannels());
+            break;
+
+        case wf::viewLoudnessMeters:
+            info.setTicked (meters != nullptr && meters->showsLoudness());
+            break;
+
+        case wf::toolsStatistics:
+            available = available && doc != nullptr && job == nullptr && ! doc->isEmpty();
             break;
 
         // Conversions change the whole file: not while a tool works on a copy of it.
@@ -2056,9 +2374,11 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
     // while recording, only Record (to stop), the windows and zoom work.
     const auto editsOrPlays = (id >= wf::editUndo && id < wf::favPluginManager) || (id >= wf::optPlay && id <= wf::optGoEnd);
     const auto stillWorksWhileRecording = id == wf::optRecord || id == wf::helpShortcuts || id == wf::helpAbout
+                                       || id == wf::viewChannelMeters || id == wf::viewLoudnessMeters
                                        || (id >= wf::winCascade && id <= wf::winPrev) || (id >= wf::viewZoomIn && id <= wf::viewZoomNormal);
 
-    if (editsOrPlays && id != wf::optRecord && doc != nullptr && doc->isEmpty())
+    if (editsOrPlays && id != wf::optRecord && id != wf::viewChannelMeters && id != wf::viewLoudnessMeters
+        && doc != nullptr && doc->isEmpty())
         available = false;
 
     if (isRecording() && ! stillWorksWhileRecording)
@@ -2084,6 +2404,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::fileSaveAs:        saveDocument (doc, true); return true;
         case wf::fileExit:          juce::JUCEApplication::getInstance()->systemRequestedQuit(); return true;
         case wf::optAudioDevice:    showAudioSettings(); return true;
+        case wf::optKeyboard:       showKeyboardEditor(); return true;
         case wf::optRecord:         record(); return true;
         case wf::helpShortcuts:     showShortcuts(); return true;
         case wf::helpAbout:         showAbout(); return true;
@@ -2113,7 +2434,7 @@ bool MainComponent::perform (const InvocationInfo& info)
             return true;
         }
 
-        case wf::optLoop:           setLooping (! loopPlayback); return true;
+        case wf::optLoop:           toggleLoop(); return true;
 
         case wf::editPasteToNew:
             if (hasClipboard())
@@ -2205,7 +2526,10 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::procFadeIn:        process (wf::Process::fadeIn); return true;
         case wf::procFadeOut:       process (wf::Process::fadeOut); return true;
         case wf::procMute:          process (wf::Process::mute); return true;
-        case wf::procNormalize:     process (wf::Process::normalize); return true;
+        case wf::procNormalize:     showNormalize(); return true;
+        case wf::toolsStatistics:   showStatistics(); return true;
+        case wf::viewChannelMeters:  setMeterSections (! meters->showsChannels(), meters->showsLoudness()); return true;
+        case wf::viewLoudnessMeters: setMeterSections (meters->showsChannels(), ! meters->showsLoudness()); return true;
         case wf::procReverse:       process (wf::Process::reverse); return true;
         case wf::procInvert:        process (wf::Process::invert); return true;
         case wf::procDcOffset:      process (wf::Process::dcOffset); return true;
@@ -2288,7 +2612,7 @@ void MainComponent::showAbout()
 void MainComponent::showShortcuts()
 {
     if (shortcutsWindow == nullptr)
-        shortcutsWindow = std::make_unique<ShortcutsWindow>();
+        shortcutsWindow = std::make_unique<ShortcutsWindow> (*commandManager.getKeyMappings());
 
     shortcutsWindow->setVisible (true);
     shortcutsWindow->toFront (true);

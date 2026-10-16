@@ -6,7 +6,7 @@
 class ShortcutsWindow final : public juce::DocumentWindow
 {
 public:
-    ShortcutsWindow();
+    explicit ShortcutsWindow (juce::KeyPressMappingSet& mappings);
 
     void closeButtonPressed() override  { setVisible (false); }
 

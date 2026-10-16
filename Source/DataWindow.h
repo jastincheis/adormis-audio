@@ -2,6 +2,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_gui_basics/juce_gui_basics.h>
+#include "Loudness.h"
 #include "Processes.h"
 #include "SaveAsDialog.h"
 #include "WaveformView.h"
@@ -74,6 +75,23 @@ public:
     juce::Range<int> processRange() const;
     void applyProcess (wf::Process process);
     void applyVolume (float decibels);
+
+    // Tools > Statistics: the measures of what a process would change (the
+    // selection or whole file, the picked channel or all). Empty if cancelled.
+    std::optional<wf::AudioStatistics> measureTarget (const std::function<bool (float)>& progress = {}) const;
+
+    // Process > Normalize: one gain for the whole target, to bring its peak
+    // (dBFS) or its integrated loudness (LUFS) to `target`. For loudness the
+    // gain is held back so the true peak stays at or under `truePeakCeiling`
+    // (there's no limiter): then `limited` is set. Undoable.
+    struct NormalizeResult
+    {
+        bool silent = false;    // nothing to normalize (all quiet): no change
+        bool limited = false;
+        double gainDb = 0.0, reached = 0.0, truePeak = 0.0;
+    };
+
+    NormalizeResult normalize (bool loudness, double target, double truePeakCeiling);
 
     // Puts `audio` (same channels, any length: a time stretch of `range`) in
     // place of `range`, undoably. Markers inside it move with the stretch

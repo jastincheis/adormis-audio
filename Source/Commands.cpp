@@ -76,6 +76,7 @@ std::vector<CommandDef> makeCommands()
         { viewExplorer,       "Explorer",                     "View", { key ('1', alt) } },
         { viewProperties,     "File Properties",              "View", { key ('2', alt) } },
         { viewChannelMeters,  "Channel Meters",               "View", { key ('5', alt) } },
+        { viewLoudnessMeters, "Loudness Meters",              "View", { key ('6', alt) } },
         { viewUndoHistory,    "Undo/Redo History",            "View", { key ('8', alt) } },
         { viewSpectrum,       "Spectrum Analysis",            "View", { key ('9', alt) } },
         { viewRegionsList,    "Regions List",                 "View", {} },
@@ -137,6 +138,7 @@ std::vector<CommandDef> makeCommands()
         { toolsBassFinder,        "Bass Finder...",           "Tools", {} },
         { toolsDeEsser,           "De-esser...",              "Tools", {} },
         { toolsMp3Restore,        "MP3 Restore...",           "Tools", {} },
+        { toolsStatistics,        "Statistics...",            "Tools", {} },
 
         // FX Favorites
         { favPluginManager, "Plug-In Manager...",             "FX Favorites", {} },
@@ -209,7 +211,7 @@ const std::vector<TopMenu>& menuBar()
         { "View", { C (viewZoomIn), C (viewZoomOut), C (viewZoomSelection), C (viewZoomNormal), sep(),
                     C (viewLevelIn), C (viewLevelOut), sep(),
                     C (viewPlaybackScroll), C (viewSmoothScroll), C (viewMaxWidth), sep(),
-                    C (viewExplorer), C (viewProperties), C (viewChannelMeters), C (viewUndoHistory),
+                    C (viewExplorer), C (viewProperties), C (viewChannelMeters), C (viewLoudnessMeters), C (viewUndoHistory),
                     C (viewSpectrum), C (viewRegionsList), C (viewPlaylist), sep(),
                     sub ("Docked Windows", { C (viewDockBottom), C (viewDockSides), C (viewDockAll) }) } },
 
@@ -230,7 +232,7 @@ const std::vector<TopMenu>& menuBar()
                        sub ("Pitch", { C (fxPitchBend), C (fxPitchShift) }),
                        C (fxReverb), C (fxVibrato) } },
 
-        { "Tools", { C (toolsAutoRegion), C (toolsExtractRegions), C (toolsClipDetect), C (toolsFind), sep(),
+        { "Tools", { C (toolsAutoRegion), C (toolsExtractRegions), C (toolsClipDetect), C (toolsFind), C (toolsStatistics), sep(),
                      sub ("Repair", { C (toolsRepairInterpolate), C (toolsRepairReplace), C (toolsRepairCopyChannel) }),
                      sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsBassFinder), C (toolsDeEsser), C (toolsMp3Restore) } },
 
@@ -275,6 +277,7 @@ const std::vector<CommandDef>& allCommands()
         fileNewNoDialog, fileSaveAll, editRepeat, editMix, editSetSelection, editMarkIn, editMarkOut, editGoTo,
         viewLevelIn, viewLevelOut, insertSilence, procAutoTrim, procBitDepth, procChannelConv, procResample,
         toolsClipDetect, toolsRepairCopyChannel, optLoop, insertMarker,
+        viewChannelMeters, viewLoudnessMeters, toolsStatistics, optKeyboard,
         procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDeEsser, toolsMp3Restore, optRecord,
         procEqParametric, fxCompressor, fxDelay, fxReverb,
         winCascade, winTile, winNext, winPrev,
@@ -327,9 +330,19 @@ juce::PopupMenu buildMenu (int topLevelIndex, juce::ApplicationCommandManager& m
 
 juce::String shortcutText (const CommandDef& def)
 {
-    juce::StringArray parts;
+    juce::Array<juce::KeyPress> keys;
 
     for (const auto& k : def.keys)
+        keys.add (k);
+
+    return shortcutText (keys);
+}
+
+juce::String shortcutText (const juce::Array<juce::KeyPress>& keys)
+{
+    juce::StringArray parts;
+
+    for (const auto& k : keys)
     {
        #if JUCE_MAC
         parts.add (k.getTextDescriptionWithIcons());

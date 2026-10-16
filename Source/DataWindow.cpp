@@ -450,6 +450,69 @@ void DataWindow::applyEffect (juce::Range<int> range, const juce::AudioBuffer<fl
     audioChanged();
 }
 
+std::optional<wf::AudioStatistics> DataWindow::measureTarget (const std::function<bool (float)>& progress) const
+{
+    if (const auto picked = view.getSelectedChannel(); picked >= 0 && picked < buffer.getNumChannels())
+    {
+        float* channel[] = { const_cast<float*> (buffer.getReadPointer (picked)) };
+        const juce::AudioBuffer<float> one (channel, 1, buffer.getNumSamples());
+        return wf::measure (one, sampleRate, processRange(), progress);
+    }
+
+    return wf::measure (buffer, sampleRate, processRange(), progress);
+}
+
+DataWindow::NormalizeResult DataWindow::normalize (bool loudness, double target, double truePeakCeiling)
+{
+    NormalizeResult result;
+    const auto stats = measureTarget();
+
+    if (! stats.has_value())
+        return result;
+
+    double peak = wf::LoudnessMeter::silence;
+
+    for (const auto& c : stats->channels)
+        peak = juce::jmax (peak, c.peakDb);
+
+    if (loudness)
+    {
+        if (stats->integrated <= -70.0)
+        {
+            result.silent = true;
+            return result;
+        }
+
+        result.gainDb = target - stats->integrated;
+
+        if (stats->truePeakDb + result.gainDb > truePeakCeiling)
+        {
+            result.gainDb = truePeakCeiling - stats->truePeakDb;
+            result.limited = true;
+        }
+
+        result.reached = stats->integrated + result.gainDb;
+    }
+    else
+    {
+        if (peak <= -100.0)
+        {
+            result.silent = true;
+            return result;
+        }
+
+        result.gainDb = target - peak;
+        result.reached = target;
+    }
+
+    result.truePeak = stats->truePeakDb + result.gainDb;
+
+    if (std::abs (result.gainDb) > 0.0005)
+        applyVolume ((float) result.gainDb);
+
+    return result;
+}
+
 juce::String DataWindow::describeProcessTarget() const
 {
     const auto channel = view.getSelectedChannel();

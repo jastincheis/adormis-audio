@@ -54,6 +54,24 @@ void iconRecord (juce::Graphics& g, juce::Rectangle<float> a)
     fillIcon (g, p, a);
 }
 
+// Loop: a rounded loop with an arrow on each side.
+void iconLoop (juce::Graphics& g, juce::Rectangle<float> a)
+{
+    juce::Path top, bottom;
+    top.startNewSubPath (5.0f, 13.0f);
+    top.lineTo (5.0f, 10.0f);
+    top.quadraticTo (5.0f, 7.0f, 8.0f, 7.0f);
+    top.lineTo (17.0f, 7.0f);
+    bottom.startNewSubPath (19.0f, 11.0f);
+    bottom.lineTo (19.0f, 14.0f);
+    bottom.quadraticTo (19.0f, 17.0f, 16.0f, 17.0f);
+    bottom.lineTo (7.0f, 17.0f);
+    strokeIcon (g, top, a);
+    strokeIcon (g, bottom, a);
+    fillIcon (g, arrowHead ({ 19.5f, 7.0f }, juce::MathConstants<float>::halfPi), a);
+    fillIcon (g, arrowHead ({ 4.5f, 17.0f }, -juce::MathConstants<float>::halfPi), a);
+}
+
 void iconStop (juce::Graphics& g, juce::Rectangle<float> a)
 {
     juce::Path p;
@@ -294,7 +312,9 @@ public:
         auto bounds = getLocalBounds().toFloat().reduced (1.0f);
         const auto enabled = isEnabled();
 
-        auto base = enabled ? tint : tint.withSaturation (0.0f).withAlpha (0.45f);
+        // A switch that is on (Loop) lights up amber.
+        const auto on = getToggleState();
+        auto base = ! enabled ? tint.withSaturation (0.0f).withAlpha (0.45f) : on ? juce::Colour (0xffe8a317) : tint;
         if (enabled && highlighted) base = base.brighter (0.25f);
         if (enabled && down)        base = base.darker (0.25f);
 
@@ -303,8 +323,8 @@ public:
         g.setGradientFill (fill);
         g.fillRoundedRectangle (bounds, 7.0f);
 
-        g.setColour (juce::Colours::black.withAlpha (enabled ? 0.35f : 0.15f));
-        g.drawRoundedRectangle (bounds, 7.0f, 1.0f);
+        g.setColour (on && enabled ? juce::Colour (0xfffff3c4) : juce::Colours::black.withAlpha (enabled ? 0.35f : 0.15f));
+        g.drawRoundedRectangle (bounds, 7.0f, on && enabled ? 2.0f : 1.0f);
 
         g.setColour (ink.withAlpha (enabled ? 1.0f : 0.55f));
         painter (g, bounds.reduced (6.0f).translated (0.0f, down ? 1.0f : 0.0f));
@@ -324,6 +344,7 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     addButton (wf::optPlay,        transportTint, iconPlay);
     addButton (wf::optStop,        transportTint, iconStop);
     addButton (wf::optRecord,      transportTint, iconRecord);
+    addButton (wf::optLoop,        transportTint, iconLoop);
     addGap();
     addButton (wf::editUndo,       historyTint,   iconUndo);
     addButton (wf::editRedo,       historyTint,   iconRedo);
@@ -390,10 +411,7 @@ ProcessToolbar::~ProcessToolbar()
 void ProcessToolbar::addButton (juce::CommandID id, juce::Colour tint, IconPainter painter)
 {
     const auto* def = wf::findCommand (id);
-    auto name = def != nullptr ? juce::String (def->name).upToFirstOccurrenceOf ("...", false, false) : juce::String();
-
-    if (def != nullptr && ! def->keys.empty())
-        name << "  (" << wf::shortcutText (*def) << ")";
+    const auto name = def != nullptr ? juce::String (def->name).upToFirstOccurrenceOf ("...", false, false) : juce::String();
 
     auto button = std::make_unique<IconButton> (name, tint, std::move (painter));
     if (id == wf::procVolume)
@@ -418,6 +436,20 @@ void ProcessToolbar::refreshEnabled()
         juce::ApplicationCommandInfo info (id);
         const auto* target = commands.getTargetForCommand (id, info);
         button->setEnabled (target != nullptr && (info.flags & juce::ApplicationCommandInfo::isDisabled) == 0);
+        button->setToggleState ((info.flags & juce::ApplicationCommandInfo::isTicked) != 0, juce::dontSendNotification);
+
+        // The tooltip shows the keys as they are now (they can be changed
+        // in Options > Customize Keyboard).
+        auto tip = button->getName();
+        const auto keys = commands.getKeyMappings()->getKeyPressesAssignedToCommand (id);
+
+        if (! keys.isEmpty())
+            tip << "  (" << wf::shortcutText (keys) << ")";
+
+        if (id == wf::optLoop)
+            tip << (button->getToggleState() ? "  - on" : "  - off");
+
+        button->setTooltip (tip);
     }
 }
 
