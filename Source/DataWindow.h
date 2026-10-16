@@ -81,6 +81,11 @@ public:
     // new audio if `range` was a selection.
     void replaceRange (juce::Range<int> range, const juce::AudioBuffer<float>& audio, double timeRatio);
 
+    // An effect's result for `range`: its first range-length samples replace
+    // the range, the rest (the tail) is added onto what follows; the file
+    // grows when the tail runs past the end. Undoable; keeps the selection.
+    void applyEffect (juce::Range<int> range, const juce::AudioBuffer<float>& processed);
+
     // "Selection, left channel", "whole file"...: what a process would change.
     juce::String describeProcessTarget() const;
 

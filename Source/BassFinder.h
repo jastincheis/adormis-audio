@@ -5,7 +5,7 @@
 
 namespace wf
 {
-// The audio the Bass Finder works on: a copy of the active file's selection
+// The audio a tool window (Bass Finder, De-esser) works on: a copy of the active file's selection
 // (or the whole file), and how to put a corrected version back.
 struct BassFinderSource
 {
@@ -16,8 +16,20 @@ struct BassFinderSource
     // Replaces the analysed audio in the file (undoable); false when the file is gone.
     std::function<bool (const juce::AudioBuffer<float>&)> applyToFile;
 
+    // Like applyToFile, but `audio` may be longer: what is past the end (an
+    // effect's tail) is added onto the audio that follows, growing the file
+    // if needed.
+    std::function<bool (const juce::AudioBuffer<float>&)> applyWithTail;
+
     // Where the file's cursor / playhead is, in seconds from the start of the audio.
     std::function<double()> cursorSeconds;
+
+    // Selects and shows this stretch (seconds from the start of the audio) in the file's window.
+    std::function<void (double start, double end)> showRange;
+
+    // Moves the file window's playhead to what the tool is playing (seconds
+    // from the start of the audio; negative hides it).
+    std::function<void (double seconds)> showPlayhead;
 };
 
 // What the Bass Finder needs from the main window.

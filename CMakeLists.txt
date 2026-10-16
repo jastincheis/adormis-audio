@@ -64,6 +64,9 @@ target_sources(WaveForge PRIVATE
     Source/Mp3Encoder.cpp
     Source/Commands.cpp
     Source/DataWindow.cpp
+    Source/DeEsser.cpp
+    Source/Effects.cpp
+    Source/EffectWindow.cpp
     Source/FilePicker.cpp
     Source/Processes.cpp
     Source/SaveAsDialog.cpp
@@ -71,6 +74,7 @@ target_sources(WaveForge PRIVATE
     Source/ProcessToolbar.cpp
     Source/Recorder.cpp
     Source/ShortcutsWindow.cpp
+    Source/Sibilance.cpp
     Source/StretchDialog.cpp
     Source/TemplateDialog.cpp
     Source/TimeStretch.cpp

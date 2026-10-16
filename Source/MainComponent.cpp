@@ -255,6 +255,8 @@ MainComponent::~MainComponent()
     closeRecorder();
     stretchWindow.reset();
     bassFinderWindow.reset();
+    deEsserWindow.reset();
+    effectWindow.reset();
     job.reset();
     stopToolPreview();
     stopTimer();
@@ -624,7 +626,7 @@ void MainComponent::showStretchDialog()
 {
     auto* doc = activeDocument();
 
-    if (doc == nullptr || job != nullptr || bassFinderWindow != nullptr)
+    if (doc == nullptr || job != nullptr || toolWindowOpen())
         return;
 
     const auto range = doc->processRange();
@@ -775,6 +777,49 @@ std::optional<wf::BassFinderSource> MainComponent::bassFinderSource()
         return true;
     };
 
+    source.applyWithTail = [this, safeDoc, range] (const juce::AudioBuffer<float>& processed)
+    {
+        auto* target = safeDoc.getComponent();
+
+        if (target == nullptr || range.getEnd() > target->getBuffer().getNumSamples()
+            || processed.getNumChannels() != target->getBuffer().getNumChannels())
+            return false;
+
+        releasePlaybackSource();
+        target->applyEffect (range, processed);
+        return true;
+    };
+
+    source.showRange = [safeDoc, range] (double start, double end)
+    {
+        if (auto* target = safeDoc.getComponent())
+        {
+            const auto rate = target->getSampleRate();
+            const auto from = range.getStart() + (juce::int64) std::llround (start * rate);
+            const auto to = range.getStart() + (juce::int64) std::llround (end * rate);
+            target->getView().setSelection ({ from, to });
+            target->getView().ensureVisible (from);
+        }
+    };
+
+    source.showPlayhead = [safeDoc, range] (double seconds)
+    {
+        if (auto* target = safeDoc.getComponent())
+        {
+            auto& view = target->getView();
+
+            if (seconds < 0.0)
+            {
+                view.setPlayhead (-1);
+                return;
+            }
+
+            const auto at = range.getStart() + (juce::int64) std::llround (seconds * target->getSampleRate());
+            view.setPlayhead (at);
+            view.ensureVisible (at);
+        }
+    };
+
     source.cursorSeconds = [safeDoc, range]
     {
         auto* target = safeDoc.getComponent();
@@ -790,15 +835,15 @@ std::optional<wf::BassFinderSource> MainComponent::bassFinderSource()
     return source;
 }
 
-void MainComponent::showBassFinder()
+void MainComponent::showDeEsser()
 {
-    if (bassFinderWindow != nullptr)
+    if (deEsserWindow != nullptr)
     {
-        bassFinderWindow->toFront (true);
+        deEsserWindow->toFront (true);
         return;
     }
 
-    if (stretchWindow != nullptr)
+    if (toolWindowOpen())
         return;
 
     auto source = bassFinderSource();
@@ -806,6 +851,66 @@ void MainComponent::showBassFinder()
     if (! source.has_value())
         return;
 
+    // The selection is about to follow the sibilants, so the source keeps
+    // the range it was opened on (bassFinderSource captured it).
+    auto host = toolHost();
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->stopToolPreview();
+                main->deEsserWindow.reset();
+                main->commandManager.commandStatusChanged();
+            }
+        });
+    };
+
+    deEsserWindow = wf::createDeEsserWindow (std::move (*source), std::move (host), std::move (onClose));
+    deEsserWindow->setVisible (true);
+    deEsserWindow->toFront (true);
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::showEffect (wf::EffectKind kind)
+{
+    if (effectWindow != nullptr)
+    {
+        effectWindow->toFront (true);
+        return;
+    }
+
+    if (toolWindowOpen())
+        return;
+
+    auto source = bassFinderSource();
+
+    if (! source.has_value())
+        return;
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->stopToolPreview();
+                main->effectWindow.reset();
+                main->commandManager.commandStatusChanged();
+            }
+        });
+    };
+
+    effectWindow = wf::createEffectWindow (kind, std::move (*source), toolHost(), std::move (onClose));
+    effectWindow->setVisible (true);
+    effectWindow->toFront (true);
+    commandManager.commandStatusChanged();
+}
+
+wf::BassFinderHost MainComponent::toolHost()
+{
     wf::BassFinderHost host;
     host.currentSource = [this] { return bassFinderSource(); };
 
@@ -845,6 +950,27 @@ void MainComponent::showBassFinder()
     {
         runJob (title, std::move (work), std::move (done));
     };
+
+    return host;
+}
+
+void MainComponent::showBassFinder()
+{
+    if (bassFinderWindow != nullptr)
+    {
+        bassFinderWindow->toFront (true);
+        return;
+    }
+
+    if (toolWindowOpen())
+        return;
+
+    auto source = bassFinderSource();
+
+    if (! source.has_value())
+        return;
+
+    auto host = toolHost();
 
     auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
     {
@@ -1411,8 +1537,13 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
         // Bass Finder works on a copy of the audio and can write it back, so
         // the file mustn't be stretched meanwhile: one or the other.
-        case wf::procTimeStretch: available = available && doc != nullptr && bassFinderWindow == nullptr && job == nullptr; break;
-        case wf::toolsBassFinder: available = available && doc != nullptr && stretchWindow == nullptr && job == nullptr; break;
+        case wf::procTimeStretch: available = available && doc != nullptr && ! toolWindowOpen() && job == nullptr; break;
+        case wf::toolsBassFinder: available = available && doc != nullptr && (bassFinderWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
+        case wf::toolsDeEsser:    available = available && doc != nullptr && (deEsserWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
+
+        case wf::procEqParametric: case wf::fxCompressor: case wf::fxDelay: case wf::fxReverb:
+            available = available && doc != nullptr && (effectWindow != nullptr || ! toolWindowOpen()) && job == nullptr;
+            break;
 
         case wf::winCascade: case wf::winTile:
             available = available && numDocuments > 0;
@@ -1504,6 +1635,11 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::procVolume:        showVolumeDialog(); return true;
         case wf::procTimeStretch:   showStretchDialog(); return true;
         case wf::toolsBassFinder:   showBassFinder(); return true;
+        case wf::toolsDeEsser:      showDeEsser(); return true;
+        case wf::procEqParametric:  showEffect (wf::EffectKind::eq); return true;
+        case wf::fxCompressor:      showEffect (wf::EffectKind::compressor); return true;
+        case wf::fxDelay:           showEffect (wf::EffectKind::delay); return true;
+        case wf::fxReverb:          showEffect (wf::EffectKind::reverb); return true;
 
         case wf::optPlay:
             if (isPlaying())

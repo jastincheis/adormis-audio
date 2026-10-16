@@ -228,6 +228,25 @@ void iconBassFinder (juce::Graphics& g, juce::Rectangle<float> a)
     fillIcon (g, dots, a);
 }
 
+// De-esser: an "S" under a bell-shaped dip.
+void iconDeEsser (juce::Graphics& g, juce::Rectangle<float> a)
+{
+    juce::Path s;
+    s.startNewSubPath (15.5f, 11.0f);
+    s.cubicTo (14.5f, 9.0f, 9.0f, 8.8f, 9.0f, 12.0f);
+    s.cubicTo (9.0f, 15.0f, 15.5f, 14.5f, 15.5f, 18.0f);
+    s.cubicTo (15.5f, 21.2f, 9.5f, 21.0f, 8.5f, 19.0f);
+    strokeIcon (g, s, a, 2.0f);
+
+    juce::Path bell;
+    bell.startNewSubPath (2.5f, 4.0f);
+    bell.lineTo (7.0f, 4.0f);
+    bell.cubicTo (9.5f, 4.0f, 10.0f, 7.5f, 12.0f, 7.5f);
+    bell.cubicTo (14.0f, 7.5f, 14.5f, 4.0f, 17.0f, 4.0f);
+    bell.lineTo (21.5f, 4.0f);
+    strokeIcon (g, bell, a, 1.5f);
+}
+
 // New: a blank page with a beat grid (markers) on it.
 void iconNew (juce::Graphics& g, juce::Rectangle<float> a)
 {
@@ -322,6 +341,7 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     addGap();
     addButton (wf::procTimeStretch, timeTint,     iconStretch);
     addButton (wf::toolsBassFinder, bassTint,     iconBassFinder);
+    addButton (wf::toolsDeEsser,   timeTint,      iconDeEsser);
 
     commands.addListener (this);
     refreshEnabled();

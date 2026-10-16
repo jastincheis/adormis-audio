@@ -426,6 +426,30 @@ void DataWindow::replaceRange (juce::Range<int> range, const juce::AudioBuffer<f
     audioChanged();
 }
 
+void DataWindow::applyEffect (juce::Range<int> range, const juce::AudioBuffer<float>& processed)
+{
+    range = range.getIntersectionWith ({ 0, buffer.getNumSamples() });
+
+    if (range.isEmpty() || processed.getNumChannels() != buffer.getNumChannels() || processed.getNumSamples() < range.getLength())
+        return;
+
+    pushUndo();
+    const auto tail = processed.getNumSamples() - range.getLength();
+
+    if (range.getEnd() + tail > buffer.getNumSamples())
+        buffer.setSize (buffer.getNumChannels(), range.getEnd() + tail, true, true, false);
+
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+    {
+        buffer.copyFrom (ch, range.getStart(), processed, ch, 0, range.getLength());
+
+        if (tail > 0)
+            buffer.addFrom (ch, range.getEnd(), processed, ch, range.getLength(), tail);
+    }
+
+    audioChanged();
+}
+
 juce::String DataWindow::describeProcessTarget() const
 {
     const auto channel = view.getSelectedChannel();

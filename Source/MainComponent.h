@@ -3,6 +3,8 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "BassFinder.h"
+#include "DeEsser.h"
+#include "EffectWindow.h"
 #include "DataWindow.h"
 #include "FilePicker.h"
 #include "MixDialog.h"
@@ -69,6 +71,17 @@ private:
     void showStretchDialog();
     void runStretch (DataWindow* doc, juce::Range<int> range, wf::StretchSettings settings);
     void showBassFinder();
+    void showDeEsser();
+    wf::BassFinderHost toolHost();   // playback, jobs and files for the tool windows
+
+    // Time Stretch, Bass Finder and De-esser work on the active file (the
+    // last two on a copy they write back), so only one is open at a time.
+    bool toolWindowOpen() const
+    {
+        return stretchWindow != nullptr || bassFinderWindow != nullptr || deEsserWindow != nullptr || effectWindow != nullptr;
+    }
+
+    void showEffect (wf::EffectKind kind);
 
     // Ctrl+R: the first press opens a new empty file and the Record window,
     // the next ones start and stop recording into it.
@@ -143,6 +156,8 @@ private:
     std::unique_ptr<juce::DocumentWindow> templateWindow;
     std::unique_ptr<juce::DocumentWindow> stretchWindow;
     std::unique_ptr<juce::DocumentWindow> bassFinderWindow;
+    std::unique_ptr<juce::DocumentWindow> deEsserWindow;
+    std::unique_ptr<juce::DocumentWindow> effectWindow;   // EQ, compressor, delay or reverb
     std::unique_ptr<juce::ThreadWithProgressWindow> job;
     std::unique_ptr<juce::PositionableAudioSource> toolPreview;
 
