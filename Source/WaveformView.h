@@ -102,6 +102,7 @@ private:
     void paintDropPreview (juce::Graphics&, juce::Rectangle<int> waveArea);
     int markerNear (float x) const;  // index of a marker within a few pixels, or -1
     int markerAt (juce::Point<int> position) const;  // its flag or line under the mouse, or -1
+    int selectionEdgeAt (juce::Point<int> position) const;  // 0 = start, 1 = end of the selection under the mouse, or -1
     bool isMarkerSelected (juce::int64 position) const;
     juce::Image makeDragImage() const;
     void paintChannel (juce::Graphics&, int channel, juce::Rectangle<int> lane, juce::Rectangle<int> clip);

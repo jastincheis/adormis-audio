@@ -336,9 +336,72 @@ private:
 };
 
 //==============================================================================
+// A small display (dark, like a hardware readout): the tempo, with what it
+// was measured on underneath.
+class ProcessToolbar::TempoDisplay final : public juce::Component,
+                                           public juce::SettableTooltipClient
+{
+public:
+    TempoDisplay()
+    {
+        setInterceptsMouseClicks (true, false);
+        setMouseCursor (juce::MouseCursor::PointingHandCursor);
+    }
+
+    std::function<void()> onClick;
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (onClick != nullptr && getLocalBounds().contains (e.getPosition()))
+            onClick();
+    }
+
+    void set (const juce::String& v, const juce::String& c, const juce::String& tip)
+    {
+        value = v;
+        caption = c;
+        setTooltip (tip);
+        repaint();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto r = getLocalBounds().toFloat().reduced (1.0f);
+        g.setColour (juce::Colour (0xff23272e));
+        g.fillRoundedRectangle (r, 6.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.4f));
+        g.drawRoundedRectangle (r, 6.0f, 1.0f);
+
+        r = r.reduced (8.0f, 2.0f);
+        auto top = r.removeFromTop (r.getHeight() * 0.62f);
+        g.setColour (juce::Colour (0xff8f95a9));
+        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.drawText ("TEMPO", top.removeFromLeft (44.0f), juce::Justification::centredLeft);
+        // A small arrow: a click opens the choices.
+        const auto arrow = top.removeFromRight (14.0f);
+        juce::Path tri;
+        tri.addTriangle (arrow.getCentreX() - 4.0f, arrow.getCentreY() - 2.0f, arrow.getCentreX() + 4.0f,
+                         arrow.getCentreY() - 2.0f, arrow.getCentreX(), arrow.getCentreY() + 3.0f);
+        g.fillPath (tri);
+        top.removeFromRight (4.0f);
+        g.setColour (juce::Colour (0xff7ee0a1));
+        g.setFont (juce::FontOptions (17.0f, juce::Font::bold));
+        g.drawText (value, top, juce::Justification::centredRight);
+        g.setColour (juce::Colour (0xffc9cdd8));
+        g.setFont (juce::FontOptions (10.5f));
+        g.drawText (caption, r, juce::Justification::centredRight);
+    }
+
+private:
+    juce::String value { "-" }, caption;
+};
+
 ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     : commands (manager)
 {
+    tempo = std::make_unique<TempoDisplay>();
+    tempo->onClick = [this] { if (onTempoClicked != nullptr) onTempoClicked(); };
+    addAndMakeVisible (*tempo);
+
     addButton (wf::fileNew,        fileTint,      iconNew);
     addGap();
     addButton (wf::optPlay,        transportTint, iconPlay);
@@ -423,6 +486,16 @@ void ProcessToolbar::addButton (juce::CommandID id, juce::Colour tint, IconPaint
     buttons.push_back (std::move (button));
 }
 
+void ProcessToolbar::setTempo (const juce::String& value, const juce::String& caption, const juce::String& tooltip)
+{
+    tempo->set (value, caption, tooltip);
+}
+
+juce::Component* ProcessToolbar::getTempoDisplay() const
+{
+    return tempo.get();
+}
+
 void ProcessToolbar::addGap()
 {
     gapsBefore.push_back ((int) buttons.size());
@@ -466,6 +539,9 @@ void ProcessToolbar::paint (juce::Graphics& g)
     // Thin dividers between groups.
     g.setColour (juce::Colours::black.withAlpha (0.18f));
 
+    if (tempoX > 0)
+        g.drawVerticalLine (tempoX - groupGap / 2, 8.0f, (float) getHeight() - 8.0f);
+
     for (auto index : gapsBefore)
         if (juce::isPositiveAndBelow (index, (int) buttons.size()))
             g.drawVerticalLine (buttons[(size_t) index]->getX() - groupGap / 2, 8.0f, (float) getHeight() - 8.0f);
@@ -484,4 +560,8 @@ void ProcessToolbar::resized()
         buttons[(size_t) i]->setBounds (x, y, buttonSize, buttonSize);
         x += buttonSize;
     }
+
+    // The tempo comes right after the last group, with a divider before it.
+    tempoX = x + groupGap;
+    tempo->setBounds (tempoX, (getHeight() - 38) / 2, 300, 38);
 }

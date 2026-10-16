@@ -85,6 +85,7 @@ target_sources(WaveForge PRIVATE
     Source/Loudness.cpp
     Source/MeterPanel.cpp
     Source/MoreEffects.cpp
+    Source/Tempo.cpp
     Source/StatisticsWindow.cpp
     Source/ProcessToolbar.cpp
     Source/Recorder.cpp

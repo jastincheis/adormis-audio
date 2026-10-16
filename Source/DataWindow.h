@@ -12,6 +12,14 @@
 class DataWindow final : public juce::Component
 {
 public:
+    // The tempo a file was made with (File > New from a tempo template),
+    // shown instead of a detected one for the whole file. 0 = not known.
+    void setKnownTempo (double bpm)   { knownTempo = bpm; }
+    double getKnownTempo() const      { return knownTempo; }
+
+    // Goes up with every change to the audio (for caches of measurements).
+    int getEditCount() const          { return editCount; }
+
     static std::unique_ptr<DataWindow> load (const juce::File& file, juce::AudioFormatManager& formats, juce::String& error);
 
     // A new, unsaved document holding a copy of `source`'s selection.
@@ -242,6 +250,8 @@ private:
 
     // Top-left resolution; bottom-right file length and cursor position.
     juce::Label resolutionLabel, lengthBox, cursorBox;
+    double knownTempo = 0.0;
+    int editCount = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DataWindow)
 };

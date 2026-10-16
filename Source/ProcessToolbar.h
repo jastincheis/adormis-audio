@@ -20,6 +20,12 @@ public:
     // this. "Custom..." in that list opens the Volume window instead.
     std::function<void (float decibels)> onQuickVolume;
 
+    // The tempo box at the end of the bar: `value` ("144.0 BPM", "...", "-")
+    // and what it was measured on ("selection", "whole file").
+    void setTempo (const juce::String& value, const juce::String& caption, const juce::String& tooltip);
+    std::function<void()> onTempoClicked;
+    juce::Component* getTempoDisplay() const;
+
 private:
     class IconButton;
     using IconPainter = std::function<void (juce::Graphics&, juce::Rectangle<float>)>;
@@ -32,9 +38,13 @@ private:
     void applicationCommandInvoked (const juce::ApplicationCommandTarget::InvocationInfo&) override {}
     void applicationCommandListChanged() override  { refreshEnabled(); }
 
+    class TempoDisplay;
+    std::unique_ptr<TempoDisplay> tempo;
+
     juce::ApplicationCommandManager& commands;
     std::vector<std::unique_ptr<IconButton>> buttons;
     std::vector<int> gapsBefore;   // button indices that start a new group
+    int tempoX = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ProcessToolbar)
 };

@@ -243,6 +243,36 @@ private:
     };
 
     RecordPump recordPump;
+
+    // The tempo on the toolbar: of the selection, or of the whole file when
+    // nothing is selected; detected in the background a moment after the
+    // selection or the audio changes.
+    void scheduleTempo();
+    void updateTempo();           // starts the detection (background) when needed
+    void refreshTempoDisplay();   // shows what is known now
+    void showTempoMenu();
+
+    struct TempoKey
+    {
+        const DataWindow* doc = nullptr;
+        juce::Range<juce::int64> range;
+        int channel = -1, edits = -1;
+
+        bool operator== (const TempoKey& o) const
+        {
+            return doc == o.doc && range == o.range && channel == o.channel && edits == o.edits;
+        }
+    };
+
+    RecordPump tempoTimer;
+    TempoKey shownTempo;
+    std::vector<std::pair<TempoKey, double>> tempoCache;   // the last few results
+    int tempoGeneration = 0;
+    int tempoMode = 0;        // detected tempo: 0 as detected, 1 double, 2 half
+    int selectionBeats = 4;   // how many beats a selection is (its tempo comes from its length)
+    TempoKey currentTempoKey() const;
+    std::optional<double> cachedTempo (const TempoKey&) const;
+    juce::ThreadPool tempoPool { juce::ThreadPoolOptions{}.withNumberOfThreads (1).withThreadName ("Tempo") };
     wf::StretchRequest lastStretch;   // the new tempo / pitch choices carry over
     wf::TemplateSettings lastTemplate;   // File > New starts from the last settings used
     float lastVolumeDecibels = 0.0f;   // the Volume window starts from the last value used

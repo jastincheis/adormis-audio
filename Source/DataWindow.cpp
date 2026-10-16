@@ -1178,6 +1178,7 @@ void DataWindow::redo()
 
 void DataWindow::audioChanged()
 {
+    ++editCount;
     modified = true;
     setName ("*" + title);
     updateInfo();

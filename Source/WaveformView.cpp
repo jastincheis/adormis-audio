@@ -248,9 +248,34 @@ void WaveformView::mouseMove (const juce::MouseEvent& e)
     static const auto leftCursor = makeCursor ("L");
     static const auto rightCursor = makeCursor ("R");
 
+    if (markerAt (e.getPosition()) < 0 && selectionEdgeAt (e.getPosition()) >= 0)
+    {
+        setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
+        return;
+    }
+
     const auto zone = waveArea().contains (e.getPosition()) && markerAt (e.getPosition()) < 0
                           ? channelZoneAt (e.getPosition()) : -1;
     setMouseCursor (zone == 0 ? leftCursor : zone > 0 ? rightCursor : juce::MouseCursor::NormalCursor);
+}
+
+int WaveformView::selectionEdgeAt (juce::Point<int> position) const
+{
+    if (selection.isEmpty() || ! waveArea().contains (position))
+        return -1;
+
+    // A one-channel selection is grabbed in its own lane.
+    if (selectedChannel >= 0 && ! laneBounds (selectedChannel).contains (position))
+        return -1;
+
+    constexpr float grab = 5.0f;   // pixels either side of the edge
+    const auto dStart = std::abs ((float) position.x - sampleToX ((double) selection.getStart()));
+    const auto dEnd = std::abs ((float) position.x - sampleToX ((double) selection.getEnd()));
+
+    if (std::min (dStart, dEnd) > grab)
+        return -1;
+
+    return dStart <= dEnd ? 0 : 1;
 }
 
 void WaveformView::setSelection (juce::Range<juce::int64> range, int channel)
@@ -388,6 +413,17 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     }
 
     const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
+
+    // Pressing on an edge of the selection moves that edge (the other one
+    // stays), on the same channel(s).
+    if (const auto edge = selectionEdgeAt (e.getPosition()); edge >= 0 && ! e.mods.isShiftDown())
+    {
+        pressedInSelection = false;
+        draggingOut = false;
+        dragAnchor = edge == 0 ? selection.getEnd() : selection.getStart();
+        dragChannel = selectedChannel;
+        return;
+    }
 
     // Pressing inside the selection may start dragging it out (decided on drag).
     pressedInSelection = ! e.mods.isShiftDown() && selection.contains (sample)

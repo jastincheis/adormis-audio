@@ -1,4 +1,6 @@
 #include "MainComponent.h"
+#include "Analysis.h"
+#include "Tempo.h"
 #include "BackgroundPattern.h"
 #include "Commands.h"
 #include "MixDialog.h"
@@ -291,16 +293,22 @@ MainComponent::MainComponent()
     meterTap = std::make_unique<wf::MeterTap> (sourcePlayer);
     deviceManager.addAudioCallback (meterTap.get());
 
+    tempoTimer.tick = [this] { updateTempo(); };
+    toolbar->onTempoClicked = [this] { showTempoMenu(); };
+
     meters = std::make_unique<wf::MeterPanel> (*meterTap);
     addAndMakeVisible (*meters);
 
     setWantsKeyboardFocus (true);
     setSize (1100, 700);
     updateStatus();
+    scheduleTempo();
 }
 
 MainComponent::~MainComponent()
 {
+    tempoTimer.stopTimer();
+    tempoPool.removeAllJobs (true, 10000);
     commandManager.getKeyMappings()->removeChangeListener (&keySaver);
     keyboardWindow.reset();
     mixWindow.reset();
@@ -420,6 +428,7 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
 
         if (raw == activeDocument())
         {
+            scheduleTempo();
             updateStatus();
             updateTitle();
             commandManager.commandStatusChanged();
@@ -449,6 +458,7 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
 
 void MainComponent::activeDocumentChanged()
 {
+    scheduleTempo();
     updateTitle();
     updateStatus();
     commandManager.commandStatusChanged();
@@ -456,11 +466,192 @@ void MainComponent::activeDocumentChanged()
 
 void MainComponent::documentClosing (DataWindow* doc)
 {
+    tempoCache.erase (std::remove_if (tempoCache.begin(), tempoCache.end(), [doc] (auto& e) { return e.first.doc == doc; }),
+                      tempoCache.end());
+    shownTempo = {};
+    scheduleTempo();
+
     if (doc != nullptr && doc == recordDocument.getComponent())
         closeRecorder();
 
     if (doc != nullptr && doc == playingDocument.getComponent())
         releasePlaybackSource();
+}
+
+void MainComponent::scheduleTempo()
+{
+    refreshTempoDisplay();          // the selection's tempo (from its length) at once
+    tempoTimer.startTimer (300);    // the detection once the selection settles
+}
+
+MainComponent::TempoKey MainComponent::currentTempoKey() const
+{
+    TempoKey key;
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->isEmpty())
+        return key;
+
+    const auto selection = doc->getView().getSelection();
+    const auto whole = selection.isEmpty();
+    key.doc = doc;
+    key.range = whole ? juce::Range<juce::int64> (0, doc->getBuffer().getNumSamples()) : selection;
+    key.channel = whole ? -1 : doc->getView().getSelectedChannel();
+    key.edits = doc->getEditCount();
+    return key;
+}
+
+std::optional<double> MainComponent::cachedTempo (const TempoKey& key) const
+{
+    for (const auto& [cached, bpm] : tempoCache)
+        if (cached == key)
+            return bpm;
+
+    return {};
+}
+
+void MainComponent::refreshTempoDisplay()
+{
+    auto* doc = activeDocument();
+    const auto key = currentTempoKey();
+
+    if (key.doc == nullptr)
+    {
+        toolbar->setTempo ("-", doc == nullptr ? "no file" : "empty file", "Open a file to see its tempo");
+        return;
+    }
+
+    const auto rate = doc->getSampleRate();
+    const auto whole = doc->getView().getSelection().isEmpty();
+    const auto factor = tempoMode == 1 ? 2.0 : tempoMode == 2 ? 0.5 : 1.0;
+
+    // What the detection says (or will say) about this audio.
+    juce::String detected;
+
+    if (whole && doc->getKnownTempo() > 0.0)
+        detected = juce::String (doc->getKnownTempo(), 1);
+    else if ((double) key.range.getLength() < rate * 2.0)
+        detected = "too short";
+    else if (const auto bpm = cachedTempo (key))
+        detected = *bpm > 0.0 ? juce::String (*bpm * factor, 1) : juce::String ("no beat");
+    else
+        detected = "...";
+
+    const auto factorText = tempoMode == 1 ? juce::String (" x2") : tempoMode == 2 ? juce::String (" x1/2") : juce::String();
+    const auto channelText = key.channel == 0 ? juce::String (", left") : key.channel == 1 ? juce::String (", right") : juce::String();
+
+    if (whole)
+    {
+        toolbar->setTempo (detected == "..." || detected == "no beat" || detected == "too short" ? detected : detected + " BPM",
+                           "whole file, detected" + factorText,
+                           "Tempo of the whole file, detected from the beat.\n"
+                           "Select a part to get its tempo from its length.\n"
+                           "Click to choose how many beats a selection is, or double / half time.");
+        return;
+    }
+
+    // Sound Forge's Edit Tempo: the selection is `selectionBeats` beats long.
+    const auto seconds = (double) key.range.getLength() / rate;
+    const auto bpm = selectionBeats * 60.0 / seconds;
+    const auto beatsText = selectionBeats == 4 ? juce::String ("1 bar") : juce::String (selectionBeats) + " beats";
+
+    toolbar->setTempo (juce::String (bpm, 2) + " BPM",
+                       "selection = " + beatsText + channelText + "  |  audio " + detected + factorText,
+                       "The selection taken as " + beatsText + " (" + juce::String (selectionBeats) + " beats): "
+                       + juce::String (seconds, 3) + " s -> " + juce::String (bpm, 3) + " BPM.\n"
+                       "Drag its edges to fit a bar exactly; \"audio\" is the tempo detected in the sound.\n"
+                       "Click to choose how many beats the selection is.");
+}
+
+void MainComponent::updateTempo()
+{
+    tempoTimer.stopTimer();
+    auto* doc = activeDocument();
+    const auto key = currentTempoKey();
+
+    if (key.doc == nullptr || key == shownTempo)
+        return;
+
+    shownTempo = key;
+    const auto rate = doc->getSampleRate();
+
+    if ((doc->getView().getSelection().isEmpty() && doc->getKnownTempo() > 0.0)
+        || (double) key.range.getLength() < rate * 2.0 || cachedTempo (key).has_value())
+    {
+        refreshTempoDisplay();
+        return;
+    }
+
+    // At most a minute from the middle: enough for the beat, quick, and the
+    // copy stays small however long the file is.
+    const auto length = (int) juce::jmin (key.range.getLength(), (juce::int64) (rate * 60.0));
+    const auto start = (int) (key.range.getStart() + (key.range.getLength() - length) / 2);
+    const auto& buffer = doc->getBuffer();
+    const auto channels = key.channel >= 0 ? 1 : buffer.getNumChannels();
+    auto excerpt = std::make_shared<juce::AudioBuffer<float>> (channels, length);
+
+    for (int ch = 0; ch < channels; ++ch)
+        excerpt->copyFrom (ch, 0, buffer, key.channel >= 0 ? key.channel : ch, start, length);
+
+    tempoPool.addJob ([excerpt, rate, key, safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        const auto bpm = wf::measureTempo (*excerpt, { 0, excerpt->getNumSamples() }, rate).value_or (0.0);
+
+        juce::MessageManager::callAsync ([safeThis, key, bpm]
+        {
+            auto* main = safeThis.getComponent();
+
+            if (main == nullptr)
+                return;
+
+            main->tempoCache.push_back ({ key, bpm });
+
+            if (main->tempoCache.size() > 32)
+                main->tempoCache.erase (main->tempoCache.begin());
+
+            if (main->currentTempoKey() == key)
+                main->refreshTempoDisplay();
+        });
+    });
+}
+
+void MainComponent::showTempoMenu()
+{
+    juce::PopupMenu menu;
+    menu.addSectionHeader ("A selection is");
+
+    for (int beats : { 1, 2, 3, 4, 6, 8, 12, 16, 32 })
+    {
+        const auto name = beats == 4 ? juce::String ("4 beats (1 bar)")
+                        : beats % 4 == 0 ? juce::String (beats) + " beats (" + juce::String (beats / 4) + " bars)"
+                                         : juce::String (beats) + (beats == 1 ? " beat" : " beats");
+        menu.addItem (beats, name, true, beats == selectionBeats);
+    }
+
+    menu.addSectionHeader ("Detected tempo");
+    menu.addItem (101, "As detected", true, tempoMode == 0);
+    menu.addItem (102, "Double time (x2)", true, tempoMode == 1);
+    menu.addItem (103, "Half time (x1/2)", true, tempoMode == 2);
+
+    const juce::Component::SafePointer<MainComponent> safeThis (this);
+    // Inside the main window: Hyprland moves focus onto separate menu windows
+    // and JUCE then closes them as soon as the mouse slips off.
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (toolbar->getTempoDisplay())
+                                                  .withParentComponent (getTopLevelComponent()),
+                        [safeThis] (int result)
+                        {
+                            auto* main = safeThis.getComponent();
+
+                            if (main == nullptr || result == 0)
+                                return;
+
+                            if (result > 100)
+                                main->tempoMode = result - 101;
+                            else
+                                main->selectionBeats = result;
+
+                            main->refreshTempoDisplay();
+                        });
 }
 
 void MainComponent::openFileDialog()
@@ -643,9 +834,11 @@ void MainComponent::showNewFileDialog()
         const auto title = "Untitled " + juce::String (++untitledCount) + " (" + bpm + " BPM, 1/"
                          + juce::String (settings.division) + ")";
 
-        addDocument (DataWindow::createSilent (title, settings.sampleRate, settings.channels,
+        auto doc = DataWindow::createSilent (title, settings.sampleRate, settings.channels,
                                                settings.lengthInSamples(), settings.markerPositions(),
-                                               settings.barStartPositions(), settings.bits));
+                                               settings.barStartPositions(), settings.bits);
+        doc->setKnownTempo (settings.bpm);
+        addDocument (std::move (doc));
     };
 
     auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
