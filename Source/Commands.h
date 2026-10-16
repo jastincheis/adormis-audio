@@ -74,6 +74,10 @@ const CommandDef* findCommand (juce::CommandID id);
 juce::StringArray menuBarNames();
 juce::PopupMenu buildMenu (int topLevelIndex, juce::ApplicationCommandManager& manager);
 
+// Submenus whose items change while the program runs (File > Open Recent):
+// asked for by title when the menu opens.
+void setDynamicSubmenus (std::function<juce::PopupMenu (const juce::String& title)> provider);
+
 // Human-readable shortcut text using Sound Forge's naming ("Ctrl+O"),
 // or the platform's own symbols on macOS.
 juce::String shortcutText (const CommandDef& def);

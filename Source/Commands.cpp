@@ -203,7 +203,7 @@ struct TopMenu
 const std::vector<TopMenu>& menuBar()
 {
     static const std::vector<TopMenu> menus {
-        { "File", { C (fileNew), C (fileOpen), C (fileClose), sep(),
+        { "File", { C (fileNew), C (fileOpen), sub ("Open Recent", {}), C (fileClose), sep(),
                     C (fileSave), C (fileSaveAs), C (fileSaveAll), sep(),
                     C (fileProperties), sep(), C (fileExit) } },
 
@@ -261,6 +261,12 @@ const std::vector<TopMenu>& menuBar()
     return menus;
 }
 
+std::function<juce::PopupMenu (const juce::String&)>& dynamicSubmenus()
+{
+    static std::function<juce::PopupMenu (const juce::String&)> provider;
+    return provider;
+}
+
 juce::PopupMenu build (const std::vector<MenuItem>& items, juce::ApplicationCommandManager& manager)
 {
     juce::PopupMenu menu;
@@ -271,13 +277,28 @@ juce::PopupMenu build (const std::vector<MenuItem>& items, juce::ApplicationComm
         {
             case MenuItem::Kind::command:   menu.addCommandItem (&manager, item.id); break;
             case MenuItem::Kind::separator: menu.addSeparator(); break;
-            case MenuItem::Kind::submenu:   menu.addSubMenu (item.title, build (item.children, manager)); break;
+            case MenuItem::Kind::submenu:
+                if (item.children.empty() && dynamicSubmenus() != nullptr)
+                {
+                    const auto sub = dynamicSubmenus() (item.title);
+                    menu.addSubMenu (item.title, sub, sub.getNumItems() > 0);
+                }
+                else
+                {
+                    menu.addSubMenu (item.title, build (item.children, manager));
+                }
+                break;
         }
     }
 
     return menu;
 }
 } // namespace
+
+void setDynamicSubmenus (std::function<juce::PopupMenu (const juce::String&)> provider)
+{
+    dynamicSubmenus() = std::move (provider);
+}
 
 const std::vector<CommandDef>& allCommands()
 {

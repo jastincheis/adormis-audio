@@ -778,6 +778,8 @@ juce::AudioBuffer<float> DataWindow::prepareForMix (const juce::AudioBuffer<floa
 void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRate, juce::int64 position,
                         float sourceGain, float destGain)
 {
+    // An empty file takes the format of what comes in.
+    setEmptyFormat (sourceRate, source.getNumChannels());
     const auto channels = buffer.getNumChannels();
     const auto src = prepareForMix (source, sourceRate, sampleRate, channels);
     const auto start = (int) juce::jlimit ((juce::int64) 0, (juce::int64) buffer.getNumSamples(), position);
@@ -806,6 +808,8 @@ void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRat
 
 void DataWindow::pasteAudio (const juce::AudioBuffer<float>& source, double sourceRate)
 {
+    // An empty file takes the format of what comes in.
+    setEmptyFormat (sourceRate, source.getNumChannels());
     const auto channels = buffer.getNumChannels();
     const auto src = prepareForMix (source, sourceRate, sampleRate, channels);
     const auto length = src.getNumSamples();

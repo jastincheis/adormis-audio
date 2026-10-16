@@ -106,6 +106,12 @@ private:
     void extractRegions();
     std::unique_ptr<wf::RegionsWindow> regionsWindow;
     void showBatch();   // Tools > Batch Converter
+
+    // Right-click on the workspace: Create New (an empty file) and Open Recent.
+    void showWorkspaceMenu (juce::Point<int> position);
+    void createEmptyDocument (std::optional<juce::Point<int>> position);
+    void addRecentFile (const juce::File& file);
+    juce::PopupMenu recentFilesMenu();
     std::unique_ptr<juce::DocumentWindow> batchWindow;
     void captureNoisePrint();   // Tools > Noise Reduction > Capture Noise Print
     juce::StringArray lastPitch;

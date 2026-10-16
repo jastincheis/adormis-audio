@@ -50,6 +50,13 @@ public:
 
     void activeDocumentChanged() override  { owner.activeDocumentChanged(); }
 
+    // Right-click on the empty workspace (not on a window).
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu() && e.eventComponent == this)
+            owner.showWorkspaceMenu (e.getPosition());
+    }
+
     // Audio files dragged in from Explorer / Finder / a file manager open
     // where they are dropped, one window per file.
     bool isInterestedInFileDrag (const juce::StringArray& files) override
@@ -135,6 +142,15 @@ public:
             // Empty workspace: the selection becomes a new file.
             owner.addDocument (DataWindow::fromSelection (*sourceDoc, "Untitled " + juce::String (++owner.untitledCount)),
                                details.localPosition);
+            return;
+        }
+
+        // An empty window (Create New): the audio simply goes in.
+        if (targetDoc->isEmpty())
+        {
+            owner.releasePlaybackSource();
+            targetDoc->mixIn (sourceDoc->copySelection(), sourceDoc->getSampleRate(), 0, 1.0f, 1.0f);
+            setActiveDocument (targetDoc);
             return;
         }
 
@@ -302,6 +318,10 @@ MainComponent::MainComponent()
     if (const auto v = wf::settings::get ("volume.db"); ! v.isVoid())
         lastVolumeDecibels = (float) (double) v;
     toolbar->onTempoClicked = [this] { showTempoMenu(); };
+    wf::setDynamicSubmenus ([this] (const juce::String& title)
+    {
+        return title == "Open Recent" ? recentFilesMenu() : juce::PopupMenu();
+    });
 
     meters = std::make_unique<wf::MeterPanel> (*meterTap);
     addAndMakeVisible (*meters);
@@ -368,6 +388,7 @@ void MainComponent::startAudio()
 
 MainComponent::~MainComponent()
 {
+    wf::setDynamicSubmenus (nullptr);
     wf::settings::flush();
     tempoTimer.stopTimer();
     tempoPool.removeAllJobs (true, 10000);
@@ -478,6 +499,7 @@ bool MainComponent::loadFile (const juce::File& file, std::optional<juce::Point<
     }
 
     addDocument (std::move (doc), position);
+    addRecentFile (file);
     return true;
 }
 
@@ -818,7 +840,12 @@ void MainComponent::saveDocument (DataWindow* doc, bool forceSaveAs, std::functi
                                    stopPlayback (false);
 
                                juce::String error;
-                               finish (doc->saveTo (file, formatManager, error, &format), error);
+                               const auto saved = doc->saveTo (file, formatManager, error, &format);
+
+                               if (saved)
+                                   addRecentFile (file);
+
+                               finish (saved, error);
                            });
     };
 
@@ -1661,6 +1688,92 @@ void MainComponent::showBatch()
     batchWindow = wf::createBatchWindow (formatManager, filePicker, files, std::move (onClose));
     batchWindow->setVisible (true);
     batchWindow->toFront (true);
+}
+
+void MainComponent::addRecentFile (const juce::File& file)
+{
+    juce::StringArray paths;
+
+    if (const auto* list = wf::settings::get ("recentFiles").getArray())
+        for (const auto& v : *list)
+            paths.add (v.toString());
+
+    paths.removeString (file.getFullPathName());
+    paths.insert (0, file.getFullPathName());
+
+    while (paths.size() > 10)
+        paths.remove (paths.size() - 1);
+
+    juce::Array<juce::var> list;
+
+    for (const auto& p : paths)
+        list.add (p);
+
+    wf::settings::set ("recentFiles", list);
+}
+
+juce::PopupMenu MainComponent::recentFilesMenu()
+{
+    juce::PopupMenu menu;
+    const juce::Component::SafePointer<MainComponent> safeThis (this);
+
+    if (const auto* list = wf::settings::get ("recentFiles").getArray())
+    {
+        for (const auto& v : *list)
+        {
+            const juce::File file (v.toString());
+            juce::PopupMenu::Item item (file.getFileName() + "   (" + file.getParentDirectory().getFullPathName() + ")");
+            item.isEnabled = file.existsAsFile();
+            item.action = [safeThis, file]
+            {
+                if (auto* main = safeThis.getComponent())
+                    main->loadFile (file);
+            };
+            menu.addItem (item);
+        }
+    }
+
+    if (menu.getNumItems() > 0)
+    {
+        menu.addSeparator();
+        menu.addItem ("Clear the list", [] { wf::settings::set ("recentFiles", juce::Array<juce::var>()); });
+    }
+
+    return menu;
+}
+
+void MainComponent::createEmptyDocument (std::optional<juce::Point<int>> position)
+{
+    auto doc = DataWindow::createEmpty ("Untitled " + juce::String (++untitledCount), 44100.0, 2);
+    doc->getView().setEmptyText ("Empty: paste (Ctrl+V) or drag audio in here");
+    addDocument (std::move (doc), position);
+}
+
+void MainComponent::showWorkspaceMenu (juce::Point<int> position)
+{
+    juce::PopupMenu menu;
+    const juce::Component::SafePointer<MainComponent> safeThis (this);
+    menu.addItem ("Create New (empty)", [safeThis, position]
+    {
+        if (auto* main = safeThis.getComponent())
+            main->createEmptyDocument (position);
+    });
+    menu.addCommandItem (&commandManager, wf::fileNew, "New from a Template...");
+    menu.addSeparator();
+    menu.addCommandItem (&commandManager, wf::fileOpen);
+
+    const auto recent = recentFilesMenu();
+    menu.addSubMenu ("Open Recent", recent, recent.getNumItems() > 0);
+
+    if (hasClipboard())
+    {
+        menu.addSeparator();
+        menu.addCommandItem (&commandManager, wf::editPasteToNew);
+    }
+
+    // Inside the main window: Hyprland moves focus onto separate menu windows
+    // and JUCE then closes them as soon as the mouse slips off.
+    menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition().withParentComponent (getTopLevelComponent()));
 }
 
 void MainComponent::showStatistics()
@@ -3070,6 +3183,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
                                        || (id >= wf::winCascade && id <= wf::winPrev) || (id >= wf::viewZoomIn && id <= wf::viewZoomNormal);
 
     if (editsOrPlays && id != wf::optRecord && id != wf::viewChannelMeters && id != wf::viewLoudnessMeters && id != wf::viewRegionsList
+        && id != wf::editPaste && id != wf::editMix
         && doc != nullptr && doc->isEmpty())
         available = false;
 
