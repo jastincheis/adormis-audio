@@ -33,8 +33,13 @@ public:
             juce::Timer::callAfterDelay (3000, [this, report]
             {
                 if (auto* content = mainWindow != nullptr ? dynamic_cast<MainComponent*> (mainWindow->getContentComponent()) : nullptr)
-                    report.replaceWithText ("== File open, nothing selected\n" + content->commandReport (false)
-                                            + "\n== Part of the file selected\n" + content->commandReport (true));
+                {
+                    // Two statements: the order of calls inside one expression isn't fixed.
+                    const auto unselected = content->commandReport (false);
+                    const auto selected = content->commandReport (true);
+                    report.replaceWithText ("== File open, nothing selected\n" + unselected
+                                            + "\n== Part of the file selected\n" + selected, false, false, "\n");
+                }
 
                 quit();
             });
