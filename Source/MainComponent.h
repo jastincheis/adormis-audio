@@ -8,6 +8,7 @@
 #include "MixDialog.h"
 #include "MixPreview.h"
 #include "ProcessToolbar.h"
+#include "Recorder.h"
 #include "StretchDialog.h"
 #include "TemplateDialog.h"
 #include "VolumeDialog.h"
@@ -68,6 +69,17 @@ private:
     void showStretchDialog();
     void runStretch (DataWindow* doc, juce::Range<int> range, wf::StretchSettings settings);
     void showBassFinder();
+
+    // Ctrl+R: the first press opens a new empty file and the Record window,
+    // the next ones start and stop recording into it.
+    void record();
+    void openRecorder();
+    void closeRecorder();
+    void startTake();
+    void stopTake();
+    void pumpRecording();
+    void setInputEnabled (bool enabled);
+    bool isRecording() const  { return recorder.isRecording(); }
     std::optional<wf::BassFinderSource> bassFinderSource();
 
     // Runs `work` behind a progress bar with Cancel, one job at a time.
@@ -122,6 +134,8 @@ private:
     juce::int64 playStartCursor = 0;
 
     int untitledCount = 0;
+    int recordCount = 0;
+    int lastRecordBits = 24;   // a new recording starts with the last bit depth chosen
 
     std::unique_ptr<juce::DocumentWindow> mixWindow;
     std::unique_ptr<juce::DocumentWindow> saveAsWindow;
@@ -131,6 +145,19 @@ private:
     std::unique_ptr<juce::DocumentWindow> bassFinderWindow;
     std::unique_ptr<juce::ThreadWithProgressWindow> job;
     std::unique_ptr<juce::PositionableAudioSource> toolPreview;
+
+    wf::InputRecorder recorder;
+    std::unique_ptr<juce::DocumentWindow> recordWindow;
+    juce::Component::SafePointer<DataWindow> recordDocument;
+    juce::AudioBuffer<float> recordChunk;
+
+    struct RecordPump final : public juce::Timer
+    {
+        std::function<void()> tick;
+        void timerCallback() override  { if (tick != nullptr) tick(); }
+    };
+
+    RecordPump recordPump;
     wf::StretchRequest lastStretch;   // the new tempo / pitch choices carry over
     wf::TemplateSettings lastTemplate;   // File > New starts from the last settings used
     float lastVolumeDecibels = 0.0f;   // the Volume window starts from the last value used

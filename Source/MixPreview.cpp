@@ -19,13 +19,18 @@ void MixPreviewSource::getNextAudioBlock (const juce::AudioSourceChannelInfo& in
     const auto sourceGain = gains->source.load();
     const auto destGain = gains->dest.load();
     const auto start = position.load();
-    const auto channels = juce::jmin (info.buffer->getNumChannels(), juce::jmax (dest.getNumChannels(), source.getNumChannels()));
+    // A mono destination is heard in the centre (both speakers); the prepared
+    // source already has the destination's channel count.
+    const auto mono = dest.getNumChannels() == 1;
+    const auto channels = mono ? info.buffer->getNumChannels()
+                               : juce::jmin (info.buffer->getNumChannels(), juce::jmax (dest.getNumChannels(), source.getNumChannels()));
 
     for (int ch = 0; ch < channels; ++ch)
     {
         auto* out = info.buffer->getWritePointer (ch, info.startSample);
-        const auto* d = ch < dest.getNumChannels() ? dest.getReadPointer (ch) : nullptr;
-        const auto* s = ch < source.getNumChannels() ? source.getReadPointer (ch) : nullptr;
+        const auto from = mono ? 0 : ch;
+        const auto* d = from < dest.getNumChannels() ? dest.getReadPointer (from) : nullptr;
+        const auto* s = from < source.getNumChannels() ? source.getReadPointer (from) : nullptr;
 
         for (int i = 0; i < info.numSamples; ++i)
         {

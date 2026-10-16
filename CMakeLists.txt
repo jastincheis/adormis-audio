@@ -47,6 +47,8 @@ juce_add_gui_app(WaveForge
     PRODUCT_NAME "WaveForge"
     COMPANY_NAME "WaveForge"
     BUNDLE_ID    "io.github.jastincheis.waveforge"
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "WaveForge records audio from the input you choose (Ctrl+R)."
     VERSION      ${PROJECT_VERSION})
 
 target_sources(WaveForge PRIVATE
@@ -67,6 +69,7 @@ target_sources(WaveForge PRIVATE
     Source/SaveAsDialog.cpp
     Source/VolumeDialog.cpp
     Source/ProcessToolbar.cpp
+    Source/Recorder.cpp
     Source/ShortcutsWindow.cpp
     Source/StretchDialog.cpp
     Source/TemplateDialog.cpp
@@ -78,6 +81,13 @@ target_compile_definitions(WaveForge PRIVATE
     JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:WaveForge,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:WaveForge,JUCE_VERSION>")
+
+# ASIO drivers on Windows (low-latency audio interfaces). JUCE bundles the
+# ASIO SDK headers, which Steinberg licenses under GPLv3 as an alternative to
+# its own licence: compatible with WaveForge's AGPLv3.
+if(WIN32)
+    target_compile_definitions(WaveForge PRIVATE JUCE_ASIO=1)
+endif()
 
 # MP3 export through LAME (libmp3lame, LGPL). Prefer the static library so the
 # app doesn't depend on it being installed (it's bundled on macOS/Windows).

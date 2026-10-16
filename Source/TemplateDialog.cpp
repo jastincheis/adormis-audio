@@ -84,7 +84,7 @@ public:
                    std::function<void()> onCloseIn)
         : onCreate (std::move (onCreateIn)), onClose (std::move (onCloseIn))
     {
-        for (auto* l : { &info, &bpmLabel, &gridLabel, &barsLabel, &rateLabel, &channelsLabel, &lengthInfo })
+        for (auto* l : { &info, &bpmLabel, &gridLabel, &barsLabel, &rateLabel, &channelsLabel, &bitsLabel, &lengthInfo })
         {
             l->setColour (juce::Label::textColourId, juce::Colours::black);
             addAndMakeVisible (l);
@@ -126,7 +126,14 @@ public:
         channelsBox.addItem ("Mono", 1);
         channelsBox.setSelectedId (initial.channels, juce::dontSendNotification);
 
-        for (auto* box : { &gridBox, &rateBox, &channelsBox })
+        for (int b : { 8, 12, 14, 16, 24, 32 })
+            bitsBox.addItem (b == 32 ? juce::String ("32-bit float")
+                                     : juce::String (b) + "-bit" + (b == 12 || b == 14 ? " (lo-fi)" : ""),
+                             b);
+
+        bitsBox.setSelectedId (initial.bits, juce::dontSendNotification);
+
+        for (auto* box : { &gridBox, &rateBox, &channelsBox, &bitsBox })
         {
             box->onChange = [this] { update(); };
             addAndMakeVisible (box);
@@ -141,7 +148,7 @@ public:
         addAndMakeVisible (createButton);
         addAndMakeVisible (cancelButton);
 
-        setSize (440, 300);
+        setSize (440, 333);
         update();
     }
 
@@ -164,6 +171,7 @@ public:
         row (barsLabel, barsField, 90);
         row (rateLabel, rateBox, 120);
         row (channelsLabel, channelsBox, 120);
+        row (bitsLabel, bitsBox, 160);
 
         lengthInfo.setBounds (area.removeFromTop (22));
 
@@ -200,6 +208,7 @@ private:
         s.division = gridBox.getSelectedId();
         s.sampleRate = (double) rateBox.getSelectedId();
         s.channels = channelsBox.getSelectedId();
+        s.bits = bitsBox.getSelectedId();
         return s;
     }
 
@@ -250,9 +259,10 @@ private:
     std::function<void()> onClose;
 
     juce::Label info, bpmLabel { {}, "Tempo (BPM):" }, gridLabel { {}, "Markers every:" }, barsLabel { {}, "Length (bars):" },
-                rateLabel { {}, "Sample rate:" }, channelsLabel { {}, "Channels:" }, lengthInfo;
+                rateLabel { {}, "Sample rate:" }, channelsLabel { {}, "Channels:" },
+                bitsLabel { {}, "Bits:" }, lengthInfo;
     juce::TextEditor bpmField, barsField;
-    juce::ComboBox gridBox, rateBox, channelsBox;
+    juce::ComboBox gridBox, rateBox, channelsBox, bitsBox;
     juce::TextButton createButton { "Create" }, cancelButton { "Cancel" };
 };
 

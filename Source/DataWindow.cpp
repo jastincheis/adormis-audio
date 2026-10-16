@@ -257,6 +257,10 @@ bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager
         file = destination;
         title = destination.getFileName();
         formatName = newFormatName;
+        // Saved at another depth: the 12 / 14-bit label no longer applies.
+        if (newBitDepth != bitDepth)
+            resolutionBits = 0;
+
         bitDepth = newBitDepth;
         floatingPoint = newFloatingPoint;
         modified = false;
@@ -470,7 +474,7 @@ bool DataWindow::deleteSelection()
 
 std::unique_ptr<DataWindow> DataWindow::createSilent (const juce::String& newTitle, double rate, int channels,
                                                       juce::int64 numSamples, std::vector<juce::int64> newMarkers,
-                                                      std::vector<juce::int64> newBarStarts)
+                                                      std::vector<juce::int64> newBarStarts, int bits)
 {
     if (numSamples <= 0 || numSamples > std::numeric_limits<int>::max() || channels < 1)
         return nullptr;
@@ -481,12 +485,126 @@ std::unique_ptr<DataWindow> DataWindow::createSilent (const juce::String& newTit
     doc->formatName = "WAV file";
     doc->buffer.setSize (channels, (int) numSamples);
     doc->buffer.clear();
+    doc->setResolution (bits);
     doc->markers = std::move (newMarkers);
     doc->barStarts = std::move (newBarStarts);
     std::sort (doc->barStarts.begin(), doc->barStarts.end());
     doc->modified = true;
     doc->initialise (newTitle);
     return doc;
+}
+
+std::unique_ptr<DataWindow> DataWindow::createEmpty (const juce::String& newTitle, double rate, int channels)
+{
+    std::unique_ptr<DataWindow> doc (new DataWindow());
+    doc->sampleRate = rate;
+    doc->bitDepth = 24;
+    doc->formatName = "WAV file";
+    doc->buffer.setSize (juce::jlimit (1, 2, channels), 0);
+    doc->initialise (newTitle);
+    doc->view.setEmptyText ("Empty - press Record (Ctrl+R)");
+    return doc;
+}
+
+void DataWindow::setEmptyFormat (double rate, int channels)
+{
+    if (! isEmpty())
+        return;
+
+    buffer.setSize (juce::jlimit (1, 2, channels), 0);
+    sampleRate = rate;
+    view.setAudio (&buffer, sampleRate);
+    updateInfo();
+}
+
+const std::vector<int>& DataWindow::resolutionChoices()
+{
+    static const std::vector<int> choices { 8, 12, 14, 16, 24, 32 };
+    return choices;
+}
+
+void DataWindow::setResolution (int bits)
+{
+    resolutionBits = bits == 12 || bits == 14 ? bits : 0;
+    bitDepth = bits == 12 || bits == 14 ? 16 : bits;
+    floatingPoint = bits == 32;
+    updateInfo();
+}
+
+void DataWindow::quantize (juce::AudioBuffer<float>& audio, int start, int numSamples, int bits)
+{
+    if (bits >= 32 || bits < 2 || numSamples <= 0)
+        return;
+
+    const auto steps = (float) (1 << (bits - 1));
+    const auto top = (steps - 1.0f) / steps;
+
+    for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+    {
+        auto* d = audio.getWritePointer (ch, start);
+
+        for (int i = 0; i < numSamples; ++i)
+            d[i] = juce::jlimit (-1.0f, top, std::round (d[i] * steps) / steps);
+    }
+}
+
+void DataWindow::beginTake()
+{
+    pushUndo();
+    takeStart = buffer.getNumSamples();
+}
+
+void DataWindow::appendAudio (const juce::AudioBuffer<float>& audio, int numSamples)
+{
+    if (numSamples <= 0)
+        return;
+
+    const auto start = buffer.getNumSamples();
+    const auto needed = start + numSamples;
+
+    // Grow the memory in big steps (doubling, at least 10 s, at most a minute
+    // at a time) so a long recording isn't copied over and over.
+    if ((size_t) needed * sizeof (float) * (size_t) buffer.getNumChannels() > capacityBytes)
+    {
+        const auto step = std::clamp (start, (int) (sampleRate * 10.0), (int) (sampleRate * 60.0));
+        const auto capacity = std::max (needed, start + step);
+        buffer.setSize (buffer.getNumChannels(), capacity, true, true, false);
+        capacityBytes = (size_t) capacity * sizeof (float) * (size_t) buffer.getNumChannels();
+    }
+
+    buffer.setSize (buffer.getNumChannels(), needed, true, false, true);
+
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        buffer.copyFrom (ch, start, audio, std::min (ch, audio.getNumChannels() - 1), 0, numSamples);
+
+    quantize (buffer, start, numSamples, getResolution());
+    modified = true;
+    setName ("*" + title);
+    updateInfo();
+    view.audioChanged();
+    view.zoomToFit();
+}
+
+void DataWindow::endTake()
+{
+    // A take that recorded nothing leaves no undo step behind; otherwise a
+    // marker shows where it stopped (and where the next take will continue).
+    // Undoing the take removes the marker with it.
+    if (buffer.getNumSamples() == takeStart && ! undoStack.empty())
+        undoStack.pop_back();
+    else
+        addMarker (buffer.getNumSamples());
+
+    // Give back the memory reserved beyond the end.
+    // (A copy is allocated at the exact size; setSize to the same size keeps it all.)
+    if (capacityBytes > 0)
+    {
+        juce::AudioBuffer<float> fitted (buffer);
+        buffer = std::move (fitted);
+    }
+
+    capacityBytes = 0;
+    audioChanged();
 }
 
 std::unique_ptr<DataWindow> DataWindow::fromAudio (const juce::String& newTitle, double rate, juce::AudioBuffer<float> audio,
@@ -782,6 +900,8 @@ juce::String DataWindow::describeResolution() const
 
     if (lossy)
         text << formatName.upToFirstOccurrenceOf (" ", false, false) << ", ";
+    else if (resolutionBits > 0)
+        text << resolutionBits << "-bit (in 16-bit), ";
     else if (bitDepth > 0)
         text << bitDepth << "-bit" << (floatingPoint ? " float" : "") << ", ";
 

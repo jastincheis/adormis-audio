@@ -22,9 +22,34 @@ public:
     static std::unique_ptr<DataWindow> fromAudio (const juce::String& title, double sampleRate, juce::AudioBuffer<float> audio,
                                                   std::vector<juce::int64> markers, std::vector<juce::int64> barStarts = {});
 
+    // A new, empty (0 samples) 24-bit document to record into (Ctrl+R).
+    static std::unique_ptr<DataWindow> createEmpty (const juce::String& title, double sampleRate, int channels);
+
+    bool isEmpty() const   { return buffer.getNumSamples() == 0; }
+
+    // While still empty, the format the recording will have.
+    void setEmptyFormat (double sampleRate, int channels);
+
+    // The resolution of a new file: 8, 12, 14, 16, 24 or 32 (float) bits.
+    // 12 and 14 bits (the sound of old samplers) are stored in 16-bit files;
+    // recorded audio is rounded to that many steps.
+    void setResolution (int bits);
+    int getResolution() const   { return resolutionBits > 0 ? resolutionBits : bitDepth; }
+    static const std::vector<int>& resolutionChoices();
+
+    // Rounds `numSamples` from `start` of every channel to `bits` (no dither;
+    // 32 = float, unchanged).
+    static void quantize (juce::AudioBuffer<float>& audio, int start, int numSamples, int bits);
+
+    // Recording: one take = one undo step. Samples are added at the end.
+    void beginTake();
+    void appendAudio (const juce::AudioBuffer<float>& audio, int numSamples);
+    void endTake();
+    juce::int64 getTakeLength() const   { return (juce::int64) buffer.getNumSamples() - takeStart; }
+
     static std::unique_ptr<DataWindow> createSilent (const juce::String& title, double sampleRate, int channels,
                                                      juce::int64 numSamples, std::vector<juce::int64> markers,
-                                                     std::vector<juce::int64> barStarts = {});
+                                                     std::vector<juce::int64> barStarts = {}, int bits = 16);
 
     WaveformView& getView()                          { return view; }
     juce::AudioBuffer<float>& getBuffer()            { return buffer; }
@@ -121,9 +146,13 @@ private:
     juce::AudioBuffer<float> buffer;
     double sampleRate = 44100.0;
     int bitDepth = 0;
+    int resolutionBits = 0;       // 12 / 14 inside a 16-bit file; 0 = same as bitDepth
     bool floatingPoint = false;   // 32-bit float samples rather than integers
     juce::String formatName;
     bool modified = false;
+
+    juce::int64 takeStart = 0;   // where the current recording take began
+    size_t capacityBytes = 0;    // memory reserved for the take being recorded
 
     std::vector<juce::int64> markers;
     std::vector<juce::int64> barStarts;   // sorted; the markers that begin a bar

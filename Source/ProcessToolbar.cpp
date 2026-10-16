@@ -45,6 +45,15 @@ void iconPlay (juce::Graphics& g, juce::Rectangle<float> a)
     fillIcon (g, p, a);
 }
 
+// Record: a red dot (drawn in its own colour, whatever the tile tint).
+void iconRecord (juce::Graphics& g, juce::Rectangle<float> a)
+{
+    juce::Path p;
+    p.addEllipse (6.0f, 6.0f, 12.0f, 12.0f);
+    g.setColour (juce::Colour (0xffe53935));
+    fillIcon (g, p, a);
+}
+
 void iconStop (juce::Graphics& g, juce::Rectangle<float> a)
 {
     juce::Path p;
@@ -295,6 +304,7 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     addGap();
     addButton (wf::optPlay,        transportTint, iconPlay);
     addButton (wf::optStop,        transportTint, iconStop);
+    addButton (wf::optRecord,      transportTint, iconRecord);
     addGap();
     addButton (wf::editUndo,       historyTint,   iconUndo);
     addButton (wf::editRedo,       historyTint,   iconRedo);

@@ -15,6 +15,9 @@ public:
     void setAudio (const juce::AudioBuffer<float>* newBuffer, double newSampleRate);
     bool hasAudio() const  { return buffer != nullptr && buffer->getNumSamples() > 0; }
 
+    // What an empty view says ("No file open" by default).
+    void setEmptyText (const juce::String& text)   { emptyText = text; repaint(); }
+
     // Call after the buffer's samples (or length) changed in place.
     void audioChanged();
 
@@ -102,6 +105,7 @@ private:
     const juce::AudioBuffer<float>* buffer = nullptr;
     const std::vector<juce::int64>* markers = nullptr;
     const std::vector<juce::int64>* barStarts = nullptr;
+    juce::String emptyText { "No file open" };
     double sampleRate = 44100.0;
     double samplesPerPixel = 1.0;
     double viewStart = 0.0;            // first visible sample

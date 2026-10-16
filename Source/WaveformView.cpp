@@ -589,9 +589,9 @@ void WaveformView::paint (juce::Graphics& g)
     {
         g.setFont (juce::FontOptions (16.0f));
         g.setColour (juce::Colours::black.withAlpha (0.4f));
-        g.drawText ("No file open", area.translated (1, 1), juce::Justification::centred);
+        g.drawText (emptyText, area.translated (1, 1), juce::Justification::centred);
         g.setColour (juce::Colours::white.withAlpha (0.9f));
-        g.drawText ("No file open", area, juce::Justification::centred);
+        g.drawText (emptyText, area, juce::Justification::centred);
         return;
     }
 

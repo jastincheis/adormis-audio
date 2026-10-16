@@ -12,6 +12,7 @@ struct TemplateSettings
     int bars = 8;               // of 4/4
     double sampleRate = 44100.0;
     int channels = 2;
+    int bits = 16;              // 8, 12, 14, 16, 24 or 32 (float)
 
     juce::int64 lengthInSamples() const;
     std::vector<juce::int64> markerPositions() const;   // one per grid step, from 0

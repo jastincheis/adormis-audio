@@ -252,6 +252,7 @@ MainComponent::~MainComponent()
     saveAsWindow.reset();
     volumeWindow.reset();
     templateWindow.reset();
+    closeRecorder();
     stretchWindow.reset();
     bassFinderWindow.reset();
     job.reset();
@@ -354,6 +355,9 @@ void MainComponent::activeDocumentChanged()
 
 void MainComponent::documentClosing (DataWindow* doc)
 {
+    if (doc != nullptr && doc == recordDocument.getComponent())
+        closeRecorder();
+
     if (doc != nullptr && doc == playingDocument.getComponent())
         releasePlaybackSource();
 }
@@ -532,7 +536,7 @@ void MainComponent::showNewFileDialog()
 
         addDocument (DataWindow::createSilent (title, settings.sampleRate, settings.channels,
                                                settings.lengthInSamples(), settings.markerPositions(),
-                                               settings.barStartPositions()));
+                                               settings.barStartPositions(), settings.bits));
     };
 
     auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
@@ -861,11 +865,181 @@ void MainComponent::showBassFinder()
     commandManager.commandStatusChanged();
 }
 
+void MainComponent::setInputEnabled (bool enabled)
+{
+    auto setup = deviceManager.getAudioDeviceSetup();
+    setup.useDefaultInputChannels = false;
+    setup.inputChannels.clear();
+
+    if (enabled)
+    {
+        // The app starts with no input open (no microphone prompt / light until
+        // recording is wanted), so pick the system's default input now.
+        if (setup.inputDeviceName.isEmpty())
+            if (auto* type = deviceManager.getCurrentDeviceTypeObject())
+            {
+                const auto names = type->getDeviceNames (true);
+                const auto index = type->getDefaultDeviceIndex (true);
+
+                if (juce::isPositiveAndBelow (index, names.size()))
+                    setup.inputDeviceName = names[index];
+            }
+
+        setup.inputChannels.setRange (0, 2, true);
+    }
+
+    deviceManager.setAudioDeviceSetup (setup, true);
+}
+
+void MainComponent::record()
+{
+    if (recordWindow == nullptr)
+        openRecorder();
+    else if (isRecording())
+        stopTake();
+    else
+        startTake();
+}
+
+void MainComponent::openRecorder()
+{
+    releasePlaybackSource();
+    setInputEnabled (true);
+    deviceManager.addAudioCallback (&recorder);
+
+    const auto rate = recorder.getSampleRate() > 0.0 ? recorder.getSampleRate() : 44100.0;
+    // Mono by default: built-in and most USB microphones are mono (a stereo
+    // take would have a silent right channel). Stereo is one click away.
+    auto doc = DataWindow::createEmpty ("Record " + juce::String (++recordCount), rate, 1);
+    doc->setResolution (lastRecordBits);
+    recordDocument = doc.get();
+    addDocument (std::move (doc));
+
+    wf::RecordCallbacks callbacks;
+    callbacks.toggleRecording = [this] { isRecording() ? stopTake() : startTake(); };
+    callbacks.openAudioSettings = [this] { showAudioSettings(); };
+    callbacks.setChannels = [this] (int count)
+    {
+        if (auto* d = recordDocument.getComponent())
+            d->setEmptyFormat (recorder.getSampleRate(), count);
+    };
+    callbacks.setBits = [this] (int bits)
+    {
+        if (auto* d = recordDocument.getComponent(); d != nullptr && d->isEmpty())
+        {
+            d->setResolution (bits);
+            lastRecordBits = bits;
+        }
+    };
+    callbacks.fileBits = [this] { auto* d = recordDocument.getComponent(); return d != nullptr ? d->getResolution() : 24; };
+    callbacks.takeSeconds = [this]
+    {
+        auto* d = recordDocument.getComponent();
+        return d != nullptr ? (double) d->getTakeLength() / d->getSampleRate() : 0.0;
+    };
+    callbacks.fileSeconds = [this]
+    {
+        auto* d = recordDocument.getComponent();
+        return d != nullptr ? (double) d->getBuffer().getNumSamples() / d->getSampleRate() : 0.0;
+    };
+    callbacks.fileIsEmpty = [this] { auto* d = recordDocument.getComponent(); return d == nullptr || d->isEmpty(); };
+    callbacks.fileChannels = [this] { auto* d = recordDocument.getComponent(); return d != nullptr ? d->getBuffer().getNumChannels() : 2; };
+    callbacks.fileTitle = [this] { auto* d = recordDocument.getComponent(); return d != nullptr ? d->getTitle() : juce::String ("(closed)"); };
+    callbacks.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->closeRecorder();
+        });
+    };
+
+    recordWindow = wf::createRecordWindow (recorder, std::move (callbacks));
+    recordWindow->setVisible (true);
+    recordWindow->toFront (false);
+    recordPump.tick = [this] { pumpRecording(); };
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::startTake()
+{
+    auto* doc = recordDocument.getComponent();
+
+    if (doc == nullptr || recorder.getInputChannels() <= 0 || isRecording())
+        return;
+
+    // The file takes the input's rate while it is still empty; later takes must match it.
+    if (doc->isEmpty())
+        doc->setEmptyFormat (recorder.getSampleRate(), doc->getBuffer().getNumChannels());
+    else if (! juce::approximatelyEqual (doc->getSampleRate(), recorder.getSampleRate()))
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Record",
+                                                "The input runs at " + juce::String (juce::roundToInt (recorder.getSampleRate()))
+                                                    + " Hz but this file is " + juce::String (juce::roundToInt (doc->getSampleRate()))
+                                                    + " Hz. Press Ctrl+R in a new window or change the rate in Audio Device.");
+        return;
+    }
+
+    releasePlaybackSource();
+    doc->beginTake();
+    recorder.setRecording (true);
+    recordPump.startTimerHz (30);
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::pumpRecording()
+{
+    auto* doc = recordDocument.getComponent();
+
+    if (doc == nullptr)
+        return;
+
+    const auto count = recorder.drain (recordChunk);
+
+    if (count <= 0)
+        return;
+
+    // Recording in mono from a stereo input: both sides mixed, nothing lost.
+    // (A mono microphone arrives with the left copied right, so this keeps it as is.)
+    if (doc->getBuffer().getNumChannels() == 1 && recordChunk.getNumChannels() >= 2)
+    {
+        recordChunk.addFrom (0, 0, recordChunk, 1, 0, count);
+        recordChunk.applyGain (0, 0, count, 0.5f);
+    }
+
+    doc->appendAudio (recordChunk, count);
+}
+
+void MainComponent::stopTake()
+{
+    if (! isRecording())
+        return;
+
+    recorder.setRecording (false);
+    recordPump.stopTimer();
+    pumpRecording();   // what was still queued
+
+    if (auto* doc = recordDocument.getComponent())
+        doc->endTake();
+
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::closeRecorder()
+{
+    stopTake();
+    recordWindow.reset();
+    recordDocument = nullptr;
+    deviceManager.removeAudioCallback (&recorder);
+    setInputEnabled (false);
+    commandManager.commandStatusChanged();
+}
+
 void MainComponent::startToolPreview (std::unique_ptr<juce::PositionableAudioSource> source, double rate, int channels)
 {
     releasePlaybackSource();
     toolPreview = std::move (source);
-    transport.setSource (toolPreview.get(), 0, nullptr, rate, channels);
+    transport.setSource (toolPreview.get(), 0, nullptr, rate, juce::jmax (2, channels));
     transport.start();
 }
 
@@ -906,7 +1080,7 @@ void MainComponent::startMixPreview (DataWindow* target, const juce::AudioBuffer
     mixPreviewDocument = target;
     mixPreviewOffset = regionStart;
 
-    transport.setSource (mixPreview.get(), 0, nullptr, rate, dest.getNumChannels());
+    transport.setSource (mixPreview.get(), 0, nullptr, rate, juce::jmax (2, dest.getNumChannels()));
     transport.setPosition (0.0);
     transport.start();
     startTimerHz (30);
@@ -1041,7 +1215,7 @@ class SoloPlaybackSource final : public juce::PositionableAudioSource
 {
 public:
     SoloPlaybackSource (juce::AudioBuffer<float>& audio, int soloChannelIn)
-        : source (audio, false, false), soloChannel (soloChannelIn) {}
+        : source (audio, false, false), soloChannel (soloChannelIn), mono (audio.getNumChannels() == 1) {}
 
     void prepareToPlay (int block, double rate) override  { source.prepareToPlay (block, rate); }
     void releaseResources() override                      { source.releaseResources(); }
@@ -1050,7 +1224,12 @@ public:
     {
         source.getNextAudioBlock (info);
 
-        if (soloChannel >= 0)
+        // A mono file is heard in the centre: the same signal in every speaker.
+        if (mono)
+            for (int ch = 1; ch < info.buffer->getNumChannels(); ++ch)
+                info.buffer->copyFrom (ch, info.startSample, *info.buffer, 0, info.startSample, info.numSamples);
+
+        if (soloChannel >= 0 && ! mono)
             for (int ch = 0; ch < info.buffer->getNumChannels(); ++ch)
                 if (ch != soloChannel)
                     info.buffer->clear (ch, info.startSample, info.numSamples);
@@ -1065,6 +1244,7 @@ public:
 private:
     juce::MemoryAudioSource source;
     int soloChannel;
+    bool mono;
 };
 } // namespace
 
@@ -1080,7 +1260,9 @@ void MainComponent::startPlayback (juce::Range<juce::int64> range, int soloChann
 
     transport.setSource (nullptr);
     memorySource = std::make_unique<SoloPlaybackSource> (doc->getBuffer(), soloChannel);
-    transport.setSource (memorySource.get(), 0, nullptr, doc->getSampleRate(), doc->getBuffer().getNumChannels());
+    // At least two channels, so a mono file played at another rate than the
+    // device's still reaches both speakers through the resampler.
+    transport.setSource (memorySource.get(), 0, nullptr, doc->getSampleRate(), juce::jmax (2, doc->getBuffer().getNumChannels()));
 
     playingDocument = doc;
     playRange = range;
@@ -1217,7 +1399,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
     switch (id)
     {
         case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice:
-        case wf::helpShortcuts: case wf::helpAbout:
+        case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord:
             break;
 
         case wf::editUndo:  available = available && doc != nullptr && doc->canUndo(); break;
@@ -1245,6 +1427,18 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             break;
     }
 
+    // An empty file (waiting to be recorded into) has nothing to edit or play;
+    // while recording, only Record (to stop), the windows and zoom work.
+    const auto editsOrPlays = (id >= wf::editUndo && id < wf::favPluginManager) || (id >= wf::optPlay && id <= wf::optGoEnd);
+    const auto stillWorksWhileRecording = id == wf::optRecord || id == wf::helpShortcuts || id == wf::helpAbout
+                                       || (id >= wf::winCascade && id <= wf::winPrev) || (id >= wf::viewZoomIn && id <= wf::viewZoomNormal);
+
+    if (editsOrPlays && id != wf::optRecord && doc != nullptr && doc->isEmpty())
+        available = false;
+
+    if (isRecording() && ! stillWorksWhileRecording)
+        available = false;
+
     info.setActive (available);
 
     for (const auto& key : def->keys)
@@ -1265,6 +1459,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::fileSaveAs:        saveDocument (doc, true); return true;
         case wf::fileExit:          juce::JUCEApplication::getInstance()->systemRequestedQuit(); return true;
         case wf::optAudioDevice:    showAudioSettings(); return true;
+        case wf::optRecord:         record(); return true;
         case wf::helpShortcuts:     showShortcuts(); return true;
         case wf::helpAbout:         showAbout(); return true;
         case wf::winCascade:        arrangeWindows (true); return true;
@@ -1354,7 +1549,7 @@ juce::PopupMenu MainComponent::getMenuForIndex (int topLevelMenuIndex, const juc
 //==============================================================================
 void MainComponent::showAudioSettings()
 {
-    auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (deviceManager, 0, 0, 1, 2, false, false, true, false);
+    auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (deviceManager, 0, 2, 1, 2, false, false, true, false);
     selector->setSize (520, 360);
 
     juce::DialogWindow::LaunchOptions options;
