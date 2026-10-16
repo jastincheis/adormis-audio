@@ -2035,7 +2035,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case wf::toolsBassFinder: available = available && doc != nullptr && (bassFinderWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
         case wf::toolsDeEsser:    available = available && doc != nullptr && (deEsserWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
 
-        case wf::procEqParametric: case wf::fxCompressor: case wf::fxDelay: case wf::fxReverb:
+        case wf::procEqParametric: case wf::fxCompressor: case wf::fxDelay: case wf::fxReverb: case wf::toolsMp3Restore:
             available = available && doc != nullptr && (effectWindow != nullptr || ! toolWindowOpen()) && job == nullptr;
             break;
 
@@ -2217,6 +2217,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::fxCompressor:      showEffect (wf::EffectKind::compressor); return true;
         case wf::fxDelay:           showEffect (wf::EffectKind::delay); return true;
         case wf::fxReverb:          showEffect (wf::EffectKind::reverb); return true;
+        case wf::toolsMp3Restore:   showEffect (wf::EffectKind::mp3Restore); return true;
 
         case wf::optPlay:
             if (isPlaying())

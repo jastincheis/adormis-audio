@@ -601,14 +601,17 @@ std::optional<juce::AudioBuffer<float>> render (Processor& processor, const juce
                                                 int tailSamples, const std::function<bool (float)>& progress)
 {
     constexpr int block = 4096;
-    const auto length = audio.getNumSamples() + std::max (0, tailSamples);
+    processor.prepare (rate, audio.getNumChannels(), block);
+
+    // Run `latency` samples longer, then drop that much from the front.
+    const auto latency = std::max (0, processor.latencySamples());
+    const auto wanted = audio.getNumSamples() + std::max (0, tailSamples);
+    const auto length = wanted + latency;
     juce::AudioBuffer<float> out (audio.getNumChannels(), length);
     out.clear();
 
     for (int ch = 0; ch < audio.getNumChannels(); ++ch)
         out.copyFrom (ch, 0, audio, ch, 0, audio.getNumSamples());
-
-    processor.prepare (rate, audio.getNumChannels(), block);
 
     for (int done = 0; done < length; done += block)
     {
@@ -618,6 +621,14 @@ std::optional<juce::AudioBuffer<float>> render (Processor& processor, const juce
             return {};
     }
 
-    return out;
+    if (latency == 0)
+        return out;
+
+    juce::AudioBuffer<float> aligned (audio.getNumChannels(), wanted);
+
+    for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+        aligned.copyFrom (ch, 0, out, ch, latency, wanted);
+
+    return aligned;
 }
 } // namespace wf::fx

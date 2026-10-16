@@ -81,6 +81,7 @@ target_sources(WaveForge PRIVATE
     Source/SaveAsDialog.cpp
     Source/VolumeDialog.cpp
     Source/FormDialog.cpp
+    Source/Mp3Restore.cpp
     Source/ProcessToolbar.cpp
     Source/Recorder.cpp
     Source/ShortcutsWindow.cpp

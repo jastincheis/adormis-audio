@@ -84,6 +84,10 @@ public:
     virtual void reset() = 0;
     virtual void process (juce::AudioBuffer<float>& audio, int start, int numSamples) = 0;
 
+    // How many samples late the output comes out (block-based processors);
+    // render() takes it off so the result lines up with the original.
+    virtual int latencySamples() const   { return 0; }
+
     // Compressor meters (dB), read by the window.
     std::atomic<float> inputLevelDb { -100.0f }, outputLevelDb { -100.0f }, gainReductionDb { 0.0f };
 };

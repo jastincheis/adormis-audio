@@ -1,4 +1,5 @@
 #include "EffectWindow.h"
+#include "Mp3Restore.h"
 #include "Analysis.h"
 #include "DarkTheme.h"
 #include "Effects.h"
@@ -1446,6 +1447,213 @@ private:
 };
 
 //==============================================================================
+// MP3 Restore: the average spectrum with the encoder's cut marked, and what
+// grows back above it; live spectra while previewing.
+class Mp3RestoreEditor final : public Editor
+{
+public:
+    explicit Mp3RestoreEditor (Shared& s) : Editor (s)
+    {
+        cutoff.slider.setRange (4000.0, std::floor (shared.rate() * 0.49), 10.0);
+        cutoff.slider.setSkewFactor (1.0);
+        detect();
+
+        for (auto* c : { &cutoff, &highs, &deswirl, &warmth, &punch, &output })
+            addAndMakeVisible (c);
+
+        for (auto* b : { &harmonicsMode, &copyMode })
+        {
+            styleToggle (*b);
+            b->setRadioGroupId (501);
+            b->onClick = [this] { push(); };
+            addAndMakeVisible (b);
+        }
+
+        harmonicsMode.setToggleState (true, juce::dontSendNotification);
+        detectButton.onClick = [this] { detect(); push(); };
+        addAndMakeVisible (detectButton);
+        push();
+    }
+
+    fx::Mp3RestoreParams params() const
+    {
+        fx::Mp3RestoreParams p;
+        p.cutoffHz = cutoff.value();
+        p.highs = highs.value() / 100.0;
+        p.spectralCopy = copyMode.getToggleState();
+        p.deswirl = deswirl.value() / 100.0;
+        p.warmth = warmth.value() / 100.0;
+        p.punch = punch.value() / 100.0;
+        p.outputDb = output.value();
+        return p;
+    }
+
+    void push() override
+    {
+        fx::setParams (*shared.processor, params());
+        repaint();
+    }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeMp3Restore();
+        fx::setParams (*p, params());
+        return p;
+    }
+
+    void tick() override
+    {
+        if (shared.previewing)
+            repaint (drawArea);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto a = drawArea.toFloat();
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (a, 8.0f);
+
+        const auto plot = a.reduced (40.0f, 22.0f).withTrimmedRight (-10.0f);
+        const auto nyquist = shared.rate() * 0.5;
+        auto X = [&] (double hz) { return plot.getX() + plot.getWidth() * (float) (hz / nyquist); };
+        auto Y = [&] (float db) { return plot.getBottom() - plot.getHeight() * juce::jlimit (0.0f, 1.0f, (db + 110.0f) / 100.0f); };
+
+        // Grid: every 2 kHz, every 20 dB.
+        g.setFont (juce::FontOptions (11.0f));
+
+        for (double hz = 0.0; hz <= nyquist; hz += 2000.0)
+        {
+            g.setColour (colours::line);
+            g.fillRect (X (hz), plot.getY(), 1.0f, plot.getHeight());
+            g.setColour (colours::muted);
+            g.drawText (juce::String ((int) (hz / 1000.0)) + "k", juce::Rectangle<float> (X (hz) - 15.0f, plot.getBottom() + 2.0f, 30.0f, 14.0f),
+                        juce::Justification::centred);
+        }
+
+        for (float db = -100.0f; db <= -10.0f; db += 20.0f)
+        {
+            g.setColour (colours::line);
+            g.fillRect (plot.getX(), Y (db), plot.getWidth(), 1.0f);
+            g.setColour (colours::muted);
+            g.drawText (juce::String ((int) db), juce::Rectangle<float> (a.getX() + 4.0f, Y (db) - 7.0f, 32.0f, 14.0f), juce::Justification::centredRight);
+        }
+
+        auto curve = [&] (const std::vector<float>& db, bool fill, juce::Colour colour)
+        {
+            if (db.size() < 2)
+                return;
+
+            const auto hzPerBin = nyquist / (double) (db.size() - 1);
+            juce::Path path;
+            path.startNewSubPath (X (0.0), Y (db[0]));
+
+            for (size_t k = 1; k < db.size(); ++k)
+                path.lineTo (X ((double) k * hzPerBin), Y (db[k]));
+
+            if (fill)
+            {
+                auto area = path;
+                area.lineTo (X (nyquist), plot.getBottom());
+                area.lineTo (X (0.0), plot.getBottom());
+                area.closeSubPath();
+                g.setColour (colour.withAlpha (0.18f));
+                g.fillPath (area);
+            }
+
+            g.setColour (colour);
+            g.strokePath (path, juce::PathStrokeType (1.2f));
+        };
+
+        const auto p = params();
+
+        // What grows back: the region above the cut.
+        if (p.highs > 0.0 && detected.has_value())
+        {
+            g.setColour (colours::ok.withAlpha (0.12f + 0.18f * (float) p.highs));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (X (p.cutoffHz), plot.getY(), X (std::min (20000.0, nyquist)), plot.getBottom()));
+        }
+
+        if (shared.previewing)
+        {
+            curve (shared.pre.db, false, colours::muted);
+            curve (shared.post.db, false, colours::warn);
+        }
+        else
+        {
+            curve (spectrum, true, colours::muted);
+        }
+
+        g.setColour (colours::warn);
+        g.fillRect (X (p.cutoffHz) - 1.0f, plot.getY(), 2.0f, plot.getHeight());
+
+        g.setColour (colours::ink);
+        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.drawText (headline, juce::Rectangle<float> (plot.getX(), a.getY() + 3.0f, plot.getWidth(), 18.0f), juce::Justification::centredLeft);
+        g.setColour (colours::muted);
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText (shared.previewing ? "grey: before   orange: after   green: grown back" : "grey: average spectrum   orange line: the cut   green: grown back",
+                    juce::Rectangle<float> (plot.getX(), a.getY() + 3.0f, plot.getWidth(), 18.0f), juce::Justification::centredRight);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        drawArea = r.removeFromTop (220);
+        r.removeFromTop (12);
+
+        auto row = r.removeFromTop (46);
+        cutoff.setBounds (row.removeFromLeft (row.getWidth() / 2).reduced (6, 0));
+        auto modes = row.reduced (6, 0);
+        modes.removeFromTop (16);
+        modes = modes.removeFromTop (28);
+        detectButton.setBounds (modes.removeFromRight (110).reduced (2));
+        harmonicsMode.setBounds (modes.removeFromLeft (modes.getWidth() / 2).reduced (2));
+        copyMode.setBounds (modes.reduced (2));
+        r.removeFromTop (6);
+
+        for (auto pair : { std::pair { &highs, &deswirl }, std::pair { &warmth, &punch } })
+        {
+            row = r.removeFromTop (46);
+            pair.first->setBounds (row.removeFromLeft (row.getWidth() / 2).reduced (6, 0));
+            pair.second->setBounds (row.reduced (6, 0));
+            r.removeFromTop (6);
+        }
+
+        row = r.removeFromTop (46);
+        output.setBounds (row.removeFromLeft (row.getWidth() / 2).reduced (6, 0));
+    }
+
+private:
+    void detect()
+    {
+        detected = fx::detectCutoff (*shared.audio, shared.rate(), &spectrum);
+
+        if (detected.has_value())
+        {
+            cutoff.slider.setValue (*detected, juce::dontSendNotification);
+            headline = "Cut at " + formatHz (*detected) + " (" + fx::likelyBitrate (*detected) + "): the top end will be grown back";
+        }
+        else
+        {
+            cutoff.slider.setValue (cutoff.slider.getMaximum(), juce::dontSendNotification);
+            headline = "No cut found: the top end looks complete (de-swirl, warmth and punch still apply)";
+        }
+    }
+
+    LabelledSlider cutoff { "Cut (where the encoder stopped)", 4000.0, 22000.0, 10.0, " Hz", 16000.0, [this] { push(); } };
+    LabelledSlider highs { "Grow back the top end", 0.0, 100.0, 1.0, " %", 60.0, [this] { push(); } };
+    LabelledSlider deswirl { "De-swirl (birdies, underwater sound)", 0.0, 100.0, 1.0, " %", 40.0, [this] { push(); } };
+    LabelledSlider warmth { "Warmth (tape-like saturation)", 0.0, 100.0, 1.0, " %", 15.0, [this] { push(); } };
+    LabelledSlider punch { "Punch (sharper attacks)", 0.0, 100.0, 1.0, " %", 0.0, [this] { push(); } };
+    LabelledSlider output { "Output", -12.0, 12.0, 0.1, " dB", 0.0, [this] { push(); } };
+    juce::TextButton harmonicsMode { "Harmonics (saturation)" }, copyMode { "Spectral copy" }, detectButton { "Detect again" };
+    std::optional<double> detected;
+    std::vector<float> spectrum;
+    juce::String headline;
+    juce::Rectangle<int> drawArea;
+};
+
+//==============================================================================
 class EffectPanel final : public juce::Component,
                           private juce::Timer
 {
@@ -1463,6 +1671,7 @@ public:
             case EffectKind::compressor:  shared.processor = fx::makeCompressor(); editor = std::make_unique<CompressorEditor> (shared); name = "Compressor"; break;
             case EffectKind::delay:       shared.processor = fx::makeDelay();      editor = std::make_unique<DelayEditor> (shared); name = "Delay / Echo"; break;
             case EffectKind::reverb:      shared.processor = fx::makeReverb();     editor = std::make_unique<ReverbEditor> (shared); name = "Reverb"; break;
+            case EffectKind::mp3Restore:  shared.processor = fx::makeMp3Restore(); editor = std::make_unique<Mp3RestoreEditor> (shared); name = "MP3 Restore"; break;
         }
 
         // The editors pushed their values before the processor existed in some cases.
@@ -1506,7 +1715,7 @@ public:
         }
 
         const auto big = kind == EffectKind::eq;
-        setSize (big ? 1080 : 820, big ? 700 : kind == EffectKind::compressor ? 480 : 560);
+        setSize (big ? 1080 : 820, big ? 700 : kind == EffectKind::compressor ? 480 : kind == EffectKind::mp3Restore ? 640 : 560);
         startTimerHz (30);
     }
 
@@ -1689,7 +1898,7 @@ public:
         setLookAndFeel (&look);
         auto* panel = new EffectPanel (kind, std::move (source), std::move (host), std::move (onClose));
         setName (kind == EffectKind::eq ? "Parametric EQ" : kind == EffectKind::compressor ? "Compressor"
-                 : kind == EffectKind::delay ? "Delay / Echo" : "Reverb");
+                 : kind == EffectKind::delay ? "Delay / Echo" : kind == EffectKind::reverb ? "Reverb" : "MP3 Restore");
         setContentOwned (panel, true);
         dark::adoptLook (*getContentComponent());
         setResizable (false, false);

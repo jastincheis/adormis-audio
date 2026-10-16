@@ -136,6 +136,7 @@ std::vector<CommandDef> makeCommands()
         { toolsSynthFm,           "FM Synthesis...",          "Tools", {} },
         { toolsBassFinder,        "Bass Finder...",           "Tools", {} },
         { toolsDeEsser,           "De-esser...",              "Tools", {} },
+        { toolsMp3Restore,        "MP3 Restore...",           "Tools", {} },
 
         // FX Favorites
         { favPluginManager, "Plug-In Manager...",             "FX Favorites", {} },
@@ -231,7 +232,7 @@ const std::vector<TopMenu>& menuBar()
 
         { "Tools", { C (toolsAutoRegion), C (toolsExtractRegions), C (toolsClipDetect), C (toolsFind), sep(),
                      sub ("Repair", { C (toolsRepairInterpolate), C (toolsRepairReplace), C (toolsRepairCopyChannel) }),
-                     sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsBassFinder), C (toolsDeEsser) } },
+                     sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsBassFinder), C (toolsDeEsser), C (toolsMp3Restore) } },
 
         { "FX Favorites", { C (favPluginManager), C (favPluginChain), sep(), C (favRescan) } },
 
@@ -274,7 +275,7 @@ const std::vector<CommandDef>& allCommands()
         fileNewNoDialog, fileSaveAll, editRepeat, editMix, editSetSelection, editMarkIn, editMarkOut, editGoTo,
         viewLevelIn, viewLevelOut, insertSilence, procAutoTrim, procBitDepth, procChannelConv, procResample,
         toolsClipDetect, toolsRepairCopyChannel, optLoop, insertMarker,
-        procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDeEsser, optRecord,
+        procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDeEsser, toolsMp3Restore, optRecord,
         procEqParametric, fxCompressor, fxDelay, fxReverb,
         winCascade, winTile, winNext, winPrev,
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,
