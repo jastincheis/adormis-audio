@@ -10,20 +10,38 @@ menu structure and default shortcuts so the workflow feels familiar.
 
 ## Features
 
+**Files and editing**
 - Open WAV / FLAC / AIFF / OGG / MP3; save WAV / FLAC / AIFF / OGG and MP3, with sample-rate conversion
-- Several files in overlapping windows; drag a selection out into a new file, or onto another file to mix it in (volumes, live preview, snapping to markers)
-- Cut / copy / paste (also to a new file), trim / crop; selection per channel (L / R), markers, undo / redo
-- Drag audio files from Explorer / Finder / a file manager into the window to open them
-- Processes: fade in / out, mute, normalize, reverse, invert, DC offset, volume
-- Effects with live preview: parametric EQ, compressor, delay / echo, reverb
-- Time Stretch (Rubber Band), De-esser, Bass Finder (key, tempo, notes, bass line)
-- MP3 Restore: grows back the top end an MP3 cut off (by saturation or spectral copy), smooths the "swirl", adds warmth and punch
-- Insert Silence, Resample, Bit-Depth Converter (with dither), Channel Converter, Auto Trim/Crop, Detect Clipping, Copy Other Channel
-- Set Selection, Go To, Mark In / Out, Mix (Ctrl+M), Repeat Last Process (Ctrl+Y), Level Zoom, Loop Playback, Save All
-- Record (Ctrl+R) with input meter, mono / stereo and bit depth
-- File > New from a tempo template with beat markers
+- Several files in overlapping windows; drag audio files in from Explorer / Finder / a file manager
+- Cut / copy / paste (also to a new file), trim / crop, Mix (Ctrl+M); undo / redo
+- Selection on both channels or one (L / R); drag a selection's edges to change it; drag it out into a new file, or onto another file to mix it in (volumes, live preview, snapping to markers)
+- Markers, Set Selection, Go To, Mark In / Out, Repeat Last Process (Ctrl+Y), Level Zoom, Save All
+- Record (Ctrl+R) with input meter, mono / stereo and bit depth; File > New from a tempo template with beat markers
 
-Planned: regions, more effects, VST3 plug-ins.
+**Playback and meters**
+- Loop button on the toolbar; Q loops the selection, and a new selection while looping becomes the loop
+- Channel Meters (Alt+5): peak, RMS, peak hold, clip lights
+- Loudness Meters (Alt+6): momentary, short-term and integrated LUFS, loudness range, true peak, a minute of history, streaming / broadcast targets (ITU BS.1770 / EBU R128)
+- Tempo on the toolbar: a selection's tempo from its length in beats (2 decimals, live while dragging), or the detected tempo of the whole file
+
+**Processes**
+- Fade in / out, mute, normalize (to a peak or a LUFS target, with a true-peak ceiling), volume, reverse, invert, DC offset
+- Insert Silence, Resample, Bit-Depth Converter (with dither), Channel Converter, Auto Trim / Crop
+- Time Stretch and Pitch Shift (Rubber Band)
+
+**Effects** (live preview; Apply is undoable)
+- Parametric EQ, Compressor, Limiter (true peak; finds the gain for -14 / -16 / -23 LUFS), Noise Gate
+- Delay / Echo, Reverb, Chorus, Flanger, Vibrato, Distortion (4 types, oversampled)
+
+**Repair and tools**
+- Noise Reduction (from a captured noise print, or learned from the quietest parts), Hum Removal (finds 50 / 60 Hz by itself), Click and Crackle Removal, Clipped Peak Restoration
+- MP3 Restore: grows back the top end an MP3 cut off (by saturation or spectral copy), smooths the "swirl", adds warmth and punch
+- De-esser, Detect Clipping, Copy Other Channel, Statistics (peak, true peak, RMS, DC offset, LUFS, LRA)
+- Bass Finder: key, tempo, notes and a bass line
+
+**Keyboard:** the classic default shortcuts (F1 lists them); change any of them in **Options > Customize Keyboard** (saved).
+
+Planned: regions, VST3 plug-ins, batch processing.
 
 On macOS, `Ctrl` shortcuts use `Cmd` and `Alt` uses `Option`.
 
@@ -53,6 +71,9 @@ You only do this once. Alternatively, in Terminal:
 3. If **Windows protected your PC** appears, click **More info** → **Run anyway**.
 4. Optional: right-click `WaveForge.exe` → **Show more options** → **Send to → Desktop (create shortcut)**.
 
+WaveForge plays through Windows Audio. To use an audio interface's ASIO driver, tick
+**Options > Audio Device > Use ASIO drivers** and restart WaveForge.
+
 ### Linux (x86_64 or ARM64)
 
 1. Check your processor: `uname -m` prints `x86_64` or `aarch64`, then download
@@ -68,10 +89,25 @@ You only do this once. Alternatively, in Terminal:
    ```
 4. Optional, to start it by name from anywhere: `mkdir -p ~/.local/bin && mv WaveForge ~/.local/bin/`
 
+### If it doesn't start
+
+WaveForge writes a start-up log that says how far it got (window, audio device,
+timings, and the stack of a crash):
+
+- Windows: type `%APPDATA%\WaveForge` in the File Explorer address bar → `waveforge.log`
+- macOS: `~/Library/Application Support/WaveForge/waveforge.log`
+- Linux: `~/.config/WaveForge/waveforge.log`
+
+The previous start's log is kept next to it as `waveforge-previous.log`. Please attach
+both to an [issue](https://github.com/jastincheis/waveforge/issues). If a start ever
+gets stuck opening the audio device, the next one starts without ASIO and without
+the saved device, and says so.
+
 ### Known limitations of the preview
 
-- macOS and Windows builds cannot export MP3 yet (Linux can).
-- ASIO on Windows is untested.
+- The apps are not signed (see the confirmation steps above).
+- macOS and Windows builds cannot export MP3 yet (Linux can), and use a simpler sample-rate converter.
+- ASIO on Windows is off by default (see above).
 
 ## Build
 
