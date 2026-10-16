@@ -987,6 +987,33 @@ void MainComponent::showNormalize()
               });
 }
 
+void MainComponent::showPitchShift()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->isEmpty())
+        return;
+
+    if (lastPitch.size() != 2)
+        lastPitch = { "+2", "Keep (voices stay natural)" };
+
+    showForm ("Pitch Shift", "Change the pitch of: " + doc->getTitle() + " (" + doc->describeProcessTarget() + ")",
+              { { "Shift by:", lastPitch[0], {}, "semitones", [] (const juce::String& t)
+                  { const auto v = wf::parseNumber (t); return v.has_value() && std::abs (*v) <= wf::maxPitchSemitones && std::abs (*v) > 0.0; } },
+                { "Formants:", lastPitch[1], { "Keep (voices stay natural)", "Shift with the pitch" }, {}, {} } },
+              "The length stays the same (Time Stretch changes both).\n"
+              "+12 = an octave up, -12 down; 0.5 = a quarter tone (50 cents).",
+              [this] (DataWindow& d, const juce::StringArray& v)
+              {
+                  lastPitch = v;
+                  wf::StretchSettings settings;
+                  settings.semitones = *wf::parseNumber (v[0]);
+                  settings.preserveFormants = v[1].startsWith ("Keep");
+                  runStretch (&d, d.processRange(), settings);
+                  rememberAction ("Pitch Shift", [this, settings] (DataWindow& w) { runStretch (&w, w.processRange(), settings); });
+              });
+}
+
 void MainComponent::showStatistics()
 {
     auto* doc = activeDocument();
@@ -2349,11 +2376,14 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
         // Bass Finder works on a copy of the audio and can write it back, so
         // the file mustn't be stretched meanwhile: one or the other.
-        case wf::procTimeStretch: available = available && doc != nullptr && ! toolWindowOpen() && job == nullptr; break;
+        case wf::procTimeStretch: case wf::fxPitchShift:
+            available = available && doc != nullptr && ! toolWindowOpen() && job == nullptr && doc->getView().getSelectedChannel() < 0;
+            break;
         case wf::toolsBassFinder: available = available && doc != nullptr && (bassFinderWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
         case wf::toolsDeEsser:    available = available && doc != nullptr && (deEsserWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
 
         case wf::procEqParametric: case wf::fxCompressor: case wf::fxDelay: case wf::fxReverb: case wf::toolsMp3Restore:
+        case wf::fxLimiter: case wf::fxGate: case wf::fxChorus: case wf::fxFlange: case wf::fxVibrato: case wf::fxDistortion:
             available = available && doc != nullptr && (effectWindow != nullptr || ! toolWindowOpen()) && job == nullptr;
             break;
 
@@ -2542,6 +2572,13 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::fxDelay:           showEffect (wf::EffectKind::delay); return true;
         case wf::fxReverb:          showEffect (wf::EffectKind::reverb); return true;
         case wf::toolsMp3Restore:   showEffect (wf::EffectKind::mp3Restore); return true;
+        case wf::fxLimiter:         showEffect (wf::EffectKind::limiter); return true;
+        case wf::fxGate:            showEffect (wf::EffectKind::gate); return true;
+        case wf::fxChorus:          showEffect (wf::EffectKind::chorus); return true;
+        case wf::fxFlange:          showEffect (wf::EffectKind::flanger); return true;
+        case wf::fxVibrato:         showEffect (wf::EffectKind::vibrato); return true;
+        case wf::fxDistortion:      showEffect (wf::EffectKind::distortion); return true;
+        case wf::fxPitchShift:      showPitchShift(); return true;
 
         case wf::optPlay:
             if (isPlaying())

@@ -92,6 +92,8 @@ private:
 
     // Package B: loudness.
     void showNormalize();
+    void showPitchShift();
+    juce::StringArray lastPitch;
     void showStatistics();
     void setMeterSections (bool channels, bool loudness);
     juce::StringArray lastNormalize;   // the Normalize window starts from the last choices

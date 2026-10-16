@@ -1,5 +1,6 @@
 #include "EffectWindow.h"
 #include "Mp3Restore.h"
+#include "MoreEffects.h"
 #include "Analysis.h"
 #include "DarkTheme.h"
 #include "Effects.h"
@@ -29,6 +30,26 @@ void paintCard (juce::Graphics& g, juce::Rectangle<int> r)
 juce::String formatHz (double hz)
 {
     return hz >= 1000.0 ? juce::String (hz / 1000.0, hz >= 10000.0 ? 1 : 2) + " kHz" : juce::String (juce::roundToInt (hz)) + " Hz";
+}
+
+juce::String effectName (EffectKind kind)
+{
+    switch (kind)
+    {
+        case EffectKind::eq:         return "Parametric EQ";
+        case EffectKind::compressor: return "Compressor";
+        case EffectKind::delay:      return "Delay / Echo";
+        case EffectKind::reverb:     return "Reverb";
+        case EffectKind::mp3Restore: return "MP3 Restore";
+        case EffectKind::limiter:    return "Limiter";
+        case EffectKind::gate:       return "Noise Gate";
+        case EffectKind::chorus:     return "Chorus";
+        case EffectKind::flanger:    return "Flanger";
+        case EffectKind::vibrato:    return "Vibrato";
+        case EffectKind::distortion: return "Distortion";
+    }
+
+    return "Effect";
 }
 
 //==============================================================================
@@ -1654,6 +1675,550 @@ private:
 };
 
 //==============================================================================
+//==============================================================================
+// Package C editors: limiter, noise gate, chorus / flanger / vibrato, distortion.
+
+// A vertical level meter (dB) or, with `reduction`, gain reduction drawn down from the top.
+void levelMeter (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& name, float db, bool reduction,
+                 float markDb = 1000.0f)
+{
+    auto text = r.removeFromBottom (18.0f);
+    g.setColour (colours::bg);
+    g.fillRoundedRectangle (r, 4.0f);
+    g.setColour (colours::muted);
+    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    g.drawText (name, text, juce::Justification::centred);
+
+    if (reduction)
+    {
+        const auto h = r.getHeight() * juce::jlimit (0.0f, 1.0f, -db / 24.0f);
+        g.setColour (colours::warn);
+        g.fillRect (r.getX() + 2.0f, r.getY(), r.getWidth() - 4.0f, h);
+        g.setColour (colours::ink);
+        g.drawText (juce::String (db, 1), r.withHeight (16.0f).translated (0.0f, r.getHeight() - 18.0f), juce::Justification::centred);
+        return;
+    }
+
+    const auto h = r.getHeight() * juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 60.0f);
+    g.setColour (db > -3.0f ? colours::bad : db > -12.0f ? colours::warn : colours::ok);
+    g.fillRect (r.getX() + 2.0f, r.getBottom() - h, r.getWidth() - 4.0f, h);
+
+    if (markDb < 100.0f)
+    {
+        const auto y = r.getBottom() - r.getHeight() * juce::jlimit (0.0f, 1.0f, (markDb + 60.0f) / 60.0f);
+        g.setColour (colours::ink);
+        g.fillRect (r.getX(), y - 1.0f, r.getWidth(), 2.0f);
+    }
+}
+
+// Falls back slowly, so the meters can be read.
+void meterFall (float& shown, float now, float fall)   { shown = now > shown ? now : std::max (now, shown - fall); }
+
+// The In / reduction / Out meters fed from the processor while previewing.
+struct DynamicsMeters
+{
+    float in = -100.0f, out = -100.0f, reduction = 0.0f;
+
+    void update (const Shared& shared)
+    {
+        if (shared.previewing)
+        {
+            meterFall (in, shared.processor->inputLevelDb.load(), 1.2f);
+            meterFall (out, shared.processor->outputLevelDb.load(), 1.2f);
+            const auto now = std::min (0.0f, shared.processor->gainReductionDb.load());
+            reduction = now < reduction ? now : std::min (0.0f, reduction + 0.6f);
+        }
+        else
+        {
+            in = out = -100.0f;
+            reduction = 0.0f;
+        }
+    }
+
+    void paint (juce::Graphics& g, juce::Rectangle<float> area, const juce::String& reductionName, float markDb = 1000.0f) const
+    {
+        const auto w = area.getWidth() / 3.0f;
+        levelMeter (g, area.removeFromLeft (w).reduced (6.0f, 0.0f), "In", in, false, markDb);
+        levelMeter (g, area.removeFromLeft (w).reduced (6.0f, 0.0f), reductionName, reduction, true);
+        levelMeter (g, area.reduced (6.0f, 0.0f), "Out", out, false, markDb);
+    }
+};
+
+//==============================================================================
+// Limiter: louder without going over the ceiling; can find the gain for a
+// loudness target (what Normalize can't reach without limiting).
+class LimiterEditor final : public Editor
+{
+public:
+    explicit LimiterEditor (Shared& s) : Editor (s)
+    {
+        for (auto* c : { &input, &ceiling, &release })
+            addAndMakeVisible (c);
+
+        styleToggle (truePeak);
+        truePeak.setToggleState (true, juce::dontSendNotification);
+        truePeak.setTooltip ("Also catch the peaks between samples (what streaming services check, in dBTP)");
+        truePeak.onClick = [this] { push(); };
+        addAndMakeVisible (truePeak);
+
+        styleLabel (aimLabel, 12.0f, true, colours::muted);
+        aimLabel.setText ("Find the gain for a loudness", juce::dontSendNotification);
+        addAndMakeVisible (aimLabel);
+        aim.addItemList ({ "-14 LUFS  Spotify, YouTube", "-16 LUFS  Apple Music, podcast", "-23 LUFS  EBU R128 (TV)", "-9 LUFS  loud master" }, 1);
+        aim.setSelectedId (1, juce::dontSendNotification);
+        addAndMakeVisible (aim);
+        find.setTooltip ("Tries a few input gains on this audio and keeps the one that reaches the loudness");
+        find.onClick = [this] { findGain(); };
+        addAndMakeVisible (find);
+        styleLabel (result, 12.0f, false, colours::muted);
+        addAndMakeVisible (result);
+        push();
+    }
+
+    fx::LimiterParams params() const
+    {
+        fx::LimiterParams p;
+        p.inputDb = input.value();
+        p.ceilingDb = ceiling.value();
+        p.releaseMs = release.value();
+        p.truePeak = truePeak.getToggleState();
+        return p;
+    }
+
+    void push() override   { fx::setParams (*shared.processor, params()); repaint(); }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeLimiter();
+        fx::setParams (*p, params());
+        return p;
+    }
+
+    void tick() override   { meters.update (shared); repaint(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto a = infoArea.toFloat();
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (a, 8.0f);
+        a = a.reduced (16.0f, 12.0f);
+
+        const auto p = params();
+        g.setColour (colours::ink);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawFittedText ("Turns the audio up by " + juce::String (p.inputDb, 1) + " dB and holds every peak under "
+                          + juce::String (p.ceilingDb, 1) + (p.truePeak ? " dBTP" : " dBFS")
+                          + ".\nThe peaks are caught 2 ms ahead, so nothing gets through; the more gain,"
+                          " the more the peaks are squashed (watch GR).",
+                          a.removeFromTop (60.0f).toNearestInt(), juce::Justification::topLeft, 4);
+
+        meters.paint (g, meterArea.toFloat(), "GR", (float) p.ceilingDb);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        meterArea = r.removeFromRight (150);
+        r.removeFromRight (16);
+        infoArea = r.removeFromTop (90);
+        r.removeFromTop (12);
+
+        for (auto* c : { &input, &ceiling, &release })
+        {
+            c->setBounds (r.removeFromTop (46));
+            r.removeFromTop (4);
+        }
+
+        truePeak.setBounds (r.removeFromTop (30).removeFromLeft (240).reduced (2));
+        r.removeFromTop (12);
+        aimLabel.setBounds (r.removeFromTop (18));
+        auto row = r.removeFromTop (30);
+        aim.setBounds (row.removeFromLeft (260).reduced (2));
+        find.setBounds (row.removeFromLeft (110).reduced (2));
+        result.setBounds (row.reduced (8, 0));
+    }
+
+private:
+    void findGain()
+    {
+        if (shared.host.runJob == nullptr)
+            return;
+
+        const double targets[] { -14.0, -16.0, -23.0, -9.0 };
+        const auto target = targets[juce::jlimit (0, 3, aim.getSelectedItemIndex())];
+        auto audio = shared.audio;
+        const auto rate = shared.rate();
+        const auto p = params();
+        auto gain = std::make_shared<std::optional<double>>();
+        juce::Component::SafePointer<LimiterEditor> safeThis (this);
+        result.setText ("Searching...", juce::dontSendNotification);
+
+        shared.host.runJob ("Finding the gain for " + juce::String (target, 0) + " LUFS...",
+                            [audio, rate, p, target, gain] (std::function<bool (float)> progress)
+                            {
+                                *gain = fx::findLimiterGain (*audio, rate, p, target, progress);
+                                return true;
+                            },
+                            [safeThis, gain, target] (bool finished)
+                            {
+                                auto* self = safeThis.getComponent();
+
+                                if (self == nullptr)
+                                    return;
+
+                                if (! finished)
+                                    self->result.setText ("Cancelled.", juce::dontSendNotification);
+                                else if (! gain->has_value())
+                                    self->result.setText ("Can't reach it (silent, or needs over +30 dB).", juce::dontSendNotification);
+                                else
+                                {
+                                    self->input.slider.setValue (juce::jlimit (-12.0, 30.0, **gain));
+                                    self->result.setText ("Input " + juce::String (**gain, 1) + " dB gives " + juce::String (target, 0)
+                                                          + " LUFS.", juce::dontSendNotification);
+                                }
+                            });
+    }
+
+    LabelledSlider input { "Input gain (louder)", -12.0, 30.0, 0.1, " dB", 0.0, [this] { push(); } };
+    LabelledSlider ceiling { "Ceiling", -12.0, 0.0, 0.1, " dB", -1.0, [this] { push(); } };
+    LabelledSlider release { "Release", 5.0, 1000.0, 1.0, " ms", 80.0, [this] { push(); }, 100.0 };
+    juce::TextButton truePeak { "True peak (4x oversampled)" }, find { "Find gain" };
+    juce::Label aimLabel, result;
+    juce::ComboBox aim;
+    juce::Rectangle<int> infoArea, meterArea;
+    DynamicsMeters meters;
+};
+
+//==============================================================================
+// Noise Gate: turns the quiet parts down (hiss, hum, room noise between phrases).
+class GateEditor final : public Editor
+{
+public:
+    explicit GateEditor (Shared& s) : Editor (s)
+    {
+        for (auto* c : { &threshold, &range, &attack, &hold, &release })
+            addAndMakeVisible (c);
+
+        push();
+    }
+
+    fx::GateParams params() const
+    {
+        fx::GateParams p;
+        p.thresholdDb = threshold.value();
+        p.rangeDb = range.value();
+        p.attackMs = attack.value();
+        p.holdMs = hold.value();
+        p.releaseMs = release.value();
+        return p;
+    }
+
+    void push() override   { fx::setParams (*shared.processor, params()); repaint(); }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeGate();
+        fx::setParams (*p, params());
+        return p;
+    }
+
+    void tick() override   { meters.update (shared); repaint(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto a = infoArea.toFloat();
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (a, 8.0f);
+        const auto p = params();
+        g.setColour (colours::ink);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawFittedText ("Below " + juce::String (p.thresholdDb, 1) + " dB the sound is turned down by "
+                          + juce::String (-p.rangeDb, 0) + " dB (it opens again at the threshold).\n"
+                          "Preview and watch the white line on the In meter: set it just above the noise.",
+                          a.reduced (16.0f, 12.0f).toNearestInt(), juce::Justification::topLeft, 4);
+
+        meters.paint (g, meterArea.toFloat(), "Gate", (float) p.thresholdDb);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        meterArea = r.removeFromRight (150);
+        r.removeFromRight (16);
+        infoArea = r.removeFromTop (70);
+        r.removeFromTop (12);
+
+        for (auto* c : { &threshold, &range, &attack, &hold, &release })
+        {
+            c->setBounds (r.removeFromTop (46));
+            r.removeFromTop (4);
+        }
+    }
+
+private:
+    LabelledSlider threshold { "Threshold", -90.0, 0.0, 0.1, " dB", -45.0, [this] { push(); } };
+    LabelledSlider range { "Turn down by (range)", -100.0, 0.0, 1.0, " dB", -80.0, [this] { push(); } };
+    LabelledSlider attack { "Attack (opening)", 0.1, 100.0, 0.1, " ms", 1.0, [this] { push(); }, 5.0 };
+    LabelledSlider hold { "Hold", 0.0, 1000.0, 1.0, " ms", 60.0, [this] { push(); }, 100.0 };
+    LabelledSlider release { "Release (closing)", 5.0, 2000.0, 1.0, " ms", 150.0, [this] { push(); }, 200.0 };
+    juce::Rectangle<int> infoArea, meterArea;
+    DynamicsMeters meters;
+};
+
+//==============================================================================
+// Chorus, Flanger and Vibrato: one modulated delay; the drawing shows how the
+// delay sweeps in each channel over two seconds.
+class ModulationEditor final : public Editor
+{
+public:
+    ModulationEditor (Shared& s, fx::ModulationParams::Mode modeIn)
+        : Editor (s), mode (modeIn), defaults (fx::modulationDefaults (modeIn)),
+          rate { "Speed (rate)", 0.02, 15.0, 0.01, " Hz", defaults.rateHz, [this] { push(); }, 1.0 },
+          depth { "Depth", 0.0, 15.0, 0.01, " ms", defaults.depthMs, [this] { push(); }, 3.0 },
+          delay { "Delay", 0.1, 40.0, 0.1, " ms", defaults.delayMs, [this] { push(); }, 8.0 },
+          feedback { "Feedback", -95.0, 95.0, 1.0, " %", defaults.feedback * 100.0, [this] { push(); } },
+          mix { "Effect mix", 0.0, 100.0, 1.0, " %", defaults.mix * 100.0, [this] { push(); } },
+          spread { "Stereo spread", 0.0, 100.0, 1.0, " %", defaults.spread * 100.0, [this] { push(); } },
+          voices { "Voices", 1.0, 4.0, 1.0, "", (double) defaults.voices, [this] { push(); } }
+    {
+        for (auto* c : visible())
+            addAndMakeVisible (c);
+
+        push();
+    }
+
+    fx::ModulationParams params() const
+    {
+        auto p = defaults;
+        p.rateHz = rate.value();
+        p.depthMs = depth.value();
+        p.delayMs = delay.value();
+        p.feedback = feedback.value() / 100.0;
+        p.mix = mix.value() / 100.0;
+        p.spread = spread.value() / 100.0;
+        p.voices = juce::roundToInt (voices.value());
+        return p;
+    }
+
+    void push() override   { fx::setParams (*shared.processor, params()); repaint(); }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeModulation();
+        fx::setParams (*p, params());
+        return p;
+    }
+
+    bool hasTail() const override         { return mode == fx::ModulationParams::flanger; }
+    double tailSeconds() const override   { return 0.25; }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto a = drawArea.toFloat();
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (a, 8.0f);
+        const auto inner = a.reduced (40.0f, 18.0f);
+        const auto p = params();
+        // Zoomed onto the sweep: from just under the delay to just over delay + depth.
+        const auto margin = std::max (0.2, p.depthMs * 0.15);
+        const auto minMs = std::max (0.0, p.delayMs - margin), maxMs = p.delayMs + p.depthMs + margin;
+        auto Y = [&] (double ms) { return inner.getBottom() - inner.getHeight() * (float) ((ms - minMs) / (maxMs - minMs)); };
+
+        g.setFont (juce::FontOptions (10.0f));
+        g.setColour (colours::muted);
+        g.drawText (juce::String (maxMs, 1) + " ms", juce::Rectangle<float> (a.getX() + 2.0f, inner.getY() - 6.0f, 36.0f, 12.0f), juce::Justification::centredRight);
+        g.drawText (juce::String (minMs, 1) + " ms", juce::Rectangle<float> (a.getX() + 2.0f, inner.getBottom() - 6.0f, 36.0f, 12.0f), juce::Justification::centredRight);
+        g.drawText ("delay over 2 seconds  (L blue, R orange)", juce::Rectangle<float> (inner.getX(), a.getY() + 2.0f, inner.getWidth(), 14.0f),
+                    juce::Justification::centredLeft);
+
+        const auto voicesNow = mode == fx::ModulationParams::chorus ? p.voices : 1;
+
+        for (int ch = 0; ch < 2; ++ch)
+            for (int v = 0; v < voicesNow; ++v)
+            {
+                juce::Path path;
+
+                for (int i = 0; i <= 300; ++i)
+                {
+                    const auto t = 2.0 * i / 300.0;
+                    const auto phase = p.rateHz * t + (ch == 1 ? p.spread * 0.5 : 0.0) + (double) v / voicesNow;
+                    const auto ms = p.delayMs + p.depthMs * 0.5 * (1.0 + std::sin (juce::MathConstants<double>::twoPi * phase));
+                    const juce::Point<float> pt (inner.getX() + inner.getWidth() * (float) (t / 2.0), Y (ms));
+
+                    if (i == 0) path.startNewSubPath (pt);
+                    else        path.lineTo (pt);
+                }
+
+                g.setColour ((ch == 0 ? colours::accent : colours::bass).withAlpha (v == 0 ? 1.0f : 0.5f));
+                g.strokePath (path, juce::PathStrokeType (1.8f));
+            }
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        drawArea = r.removeFromTop (150);
+        r.removeFromTop (12);
+        auto items = visible();
+
+        for (size_t i = 0; i < items.size(); i += 2)
+        {
+            auto row = r.removeFromTop (46);
+            items[i]->setBounds (row.removeFromLeft (row.getWidth() / 2).reduced (6, 0));
+
+            if (i + 1 < items.size())
+                items[i + 1]->setBounds (row.reduced (6, 0));
+
+            r.removeFromTop (6);
+        }
+    }
+
+private:
+    std::vector<juce::Component*> visible()
+    {
+        switch (mode)
+        {
+            case fx::ModulationParams::chorus:  return { &rate, &depth, &delay, &voices, &mix, &spread };
+            case fx::ModulationParams::flanger: return { &rate, &depth, &delay, &feedback, &mix, &spread };
+            case fx::ModulationParams::vibrato: return { &rate, &depth, &spread };
+        }
+
+        return {};
+    }
+
+    fx::ModulationParams::Mode mode;
+    fx::ModulationParams defaults;
+    LabelledSlider rate, depth, delay, feedback, mix, spread, voices;
+    juce::Rectangle<int> drawArea;
+};
+
+//==============================================================================
+// Distortion: the shaping curve drawn as in -> out, with the drive applied.
+class DistortionEditor final : public Editor
+{
+public:
+    explicit DistortionEditor (Shared& s) : Editor (s)
+    {
+        for (int t = 0; t < 4; ++t)
+            type.addItem (fx::distortionTypeName ((fx::DistortionParams::Type) t), t + 1);
+
+        type.setSelectedId (1, juce::dontSendNotification);
+        type.onChange = [this] { push(); };
+        styleLabel (typeLabel, 12.0f, true, colours::muted);
+        typeLabel.setText ("Type", juce::dontSendNotification);
+        addAndMakeVisible (type);
+        addAndMakeVisible (typeLabel);
+
+        for (auto* c : { &drive, &tone, &output, &mix })
+            addAndMakeVisible (c);
+
+        push();
+    }
+
+    fx::DistortionParams params() const
+    {
+        fx::DistortionParams p;
+        p.type = (fx::DistortionParams::Type) juce::jlimit (0, 3, type.getSelectedItemIndex());
+        p.driveDb = drive.value();
+        p.toneHz = tone.value();
+        p.outputDb = output.value();
+        p.mix = mix.value() / 100.0;
+        return p;
+    }
+
+    void push() override   { fx::setParams (*shared.processor, params()); repaint(); }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeDistortion();
+        fx::setParams (*p, params());
+        return p;
+    }
+
+    void tick() override
+    {
+        if (shared.previewing)
+        {
+            meterFall (inDb, shared.processor->inputLevelDb.load(), 1.2f);
+            meterFall (outDb, shared.processor->outputLevelDb.load(), 1.2f);
+        }
+        else
+        {
+            inDb = outDb = -100.0f;
+        }
+
+        repaint();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto a = graphArea.toFloat();
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (a, 8.0f);
+        const auto inner = a.reduced (18.0f);
+        const auto p = params();
+        const auto driveGain = juce::Decibels::decibelsToGain (p.driveDb);
+        auto X = [&] (double x) { return inner.getCentreX() + inner.getWidth() * 0.5f * (float) x; };
+        auto Y = [&] (double y) { return inner.getCentreY() - inner.getHeight() * 0.5f * (float) juce::jlimit (-1.1, 1.1, y); };
+
+        g.setColour (colours::line);
+        g.fillRect (inner.getX(), inner.getCentreY(), inner.getWidth(), 1.0f);
+        g.fillRect (inner.getCentreX(), inner.getY(), 1.0f, inner.getHeight());
+        g.setColour (colours::muted.withAlpha (0.5f));
+        g.drawLine (X (-1.0), Y (-1.0), X (1.0), Y (1.0), 1.0f);
+
+        juce::Path curve;
+
+        for (int i = 0; i <= 400; ++i)
+        {
+            const auto x = -1.0 + 2.0 * i / 400.0;
+            const auto y = fx::distortionCurve (p.type, x * driveGain);
+            const juce::Point<float> pt (X (x), Y (y));
+
+            if (i == 0) curve.startNewSubPath (pt);
+            else        curve.lineTo (pt);
+        }
+
+        g.setColour (colours::accent);
+        g.strokePath (curve, juce::PathStrokeType (2.4f));
+        g.setColour (colours::muted);
+        g.setFont (juce::FontOptions (10.0f));
+        g.drawText ("input -> output", inner.withHeight (12.0f), juce::Justification::centredLeft);
+
+        auto m = meterArea.toFloat();
+        levelMeter (g, m.removeFromLeft (m.getWidth() / 2.0f).reduced (6.0f, 0.0f), "In", inDb, false);
+        levelMeter (g, m.reduced (6.0f, 0.0f), "Out", outDb, false);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        meterArea = r.removeFromRight (100);
+        r.removeFromRight (12);
+        graphArea = r.removeFromLeft (std::min (r.getHeight(), 300));
+        r.removeFromLeft (16);
+        typeLabel.setBounds (r.removeFromTop (16));
+        type.setBounds (r.removeFromTop (28));
+        r.removeFromTop (8);
+
+        for (auto* c : { &drive, &tone, &output, &mix })
+        {
+            c->setBounds (r.removeFromTop (46));
+            r.removeFromTop (4);
+        }
+    }
+
+private:
+    juce::ComboBox type;
+    juce::Label typeLabel;
+    LabelledSlider drive { "Drive", 0.0, 48.0, 0.1, " dB", 12.0, [this] { push(); } };
+    LabelledSlider tone { "Tone (high cut)", 500.0, 20000.0, 10.0, " Hz", 8000.0, [this] { push(); }, 4000.0 };
+    LabelledSlider output { "Output", -36.0, 12.0, 0.1, " dB", -6.0, [this] { push(); } };
+    LabelledSlider mix { "Mix (effect)", 0.0, 100.0, 1.0, " %", 100.0, [this] { push(); } };
+    juce::Rectangle<int> graphArea, meterArea;
+    float inDb = -100.0f, outDb = -100.0f;
+};
+
 class EffectPanel final : public juce::Component,
                           private juce::Timer
 {
@@ -1672,7 +2237,15 @@ public:
             case EffectKind::delay:       shared.processor = fx::makeDelay();      editor = std::make_unique<DelayEditor> (shared); name = "Delay / Echo"; break;
             case EffectKind::reverb:      shared.processor = fx::makeReverb();     editor = std::make_unique<ReverbEditor> (shared); name = "Reverb"; break;
             case EffectKind::mp3Restore:  shared.processor = fx::makeMp3Restore(); editor = std::make_unique<Mp3RestoreEditor> (shared); name = "MP3 Restore"; break;
+            case EffectKind::limiter:     shared.processor = fx::makeLimiter();    editor = std::make_unique<LimiterEditor> (shared); break;
+            case EffectKind::gate:        shared.processor = fx::makeGate();       editor = std::make_unique<GateEditor> (shared); break;
+            case EffectKind::chorus:      shared.processor = fx::makeModulation(); editor = std::make_unique<ModulationEditor> (shared, fx::ModulationParams::chorus); break;
+            case EffectKind::flanger:     shared.processor = fx::makeModulation(); editor = std::make_unique<ModulationEditor> (shared, fx::ModulationParams::flanger); break;
+            case EffectKind::vibrato:     shared.processor = fx::makeModulation(); editor = std::make_unique<ModulationEditor> (shared, fx::ModulationParams::vibrato); break;
+            case EffectKind::distortion:  shared.processor = fx::makeDistortion(); editor = std::make_unique<DistortionEditor> (shared); break;
         }
+
+        name = effectName (kind);
 
         // The editors pushed their values before the processor existed in some cases.
         editor->push();
@@ -1715,7 +2288,14 @@ public:
         }
 
         const auto big = kind == EffectKind::eq;
-        setSize (big ? 1080 : 820, big ? 700 : kind == EffectKind::compressor ? 480 : kind == EffectKind::mp3Restore ? 640 : 560);
+        const auto height = big ? 700
+                          : kind == EffectKind::compressor || kind == EffectKind::gate ? 480
+                          : kind == EffectKind::limiter ? 520
+                          : kind == EffectKind::chorus || kind == EffectKind::flanger ? 480
+                          : kind == EffectKind::distortion ? 440
+                          : kind == EffectKind::vibrato ? 420
+                          : kind == EffectKind::mp3Restore ? 640 : 560;
+        setSize (big ? 1080 : 820, height);
         startTimerHz (30);
     }
 
@@ -1897,8 +2477,7 @@ public:
         setUsingNativeTitleBar (false);
         setLookAndFeel (&look);
         auto* panel = new EffectPanel (kind, std::move (source), std::move (host), std::move (onClose));
-        setName (kind == EffectKind::eq ? "Parametric EQ" : kind == EffectKind::compressor ? "Compressor"
-                 : kind == EffectKind::delay ? "Delay / Echo" : kind == EffectKind::reverb ? "Reverb" : "MP3 Restore");
+        setName (effectName (kind));
         setContentOwned (panel, true);
         dark::adoptLook (*getContentComponent());
         setResizable (false, false);
