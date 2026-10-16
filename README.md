@@ -15,8 +15,11 @@ menu structure and default shortcuts so the workflow feels familiar.
 - Several files in overlapping windows; drag audio files in from Explorer / Finder / a file manager
 - Cut / copy / paste (also to a new file), trim / crop, Mix (Ctrl+M); undo / redo
 - Selection on both channels or one (L / R); drag a selection's edges to change it; drag it out into a new file, or onto another file to mix it in (volumes, live preview, snapping to markers)
-- Markers, Set Selection, Go To, Mark In / Out, Repeat Last Process (Ctrl+Y), Level Zoom, Save All
+- Markers (drag them left / right to move them) and regions (R): a region strip under the ruler, View > Regions List, Tools > Auto Region (split at silences), Tools > Extract Regions (one file per region); WAV files keep both, as cue points with labels
+- Markers and regions travel with the audio when you drag a selection out, mix it into another file, or copy and paste
+- Set Selection, Go To, Mark In / Out, W / E to the selection's left / right edge, Repeat Last Process (Ctrl+Y), Level Zoom, Save All
 - Record (Ctrl+R) with input meter, mono / stereo and bit depth; File > New from a tempo template with beat markers
+- Right-click the workspace for Create New (an empty window to paste or drag audio into) and Open Recent (also in the File menu)
 
 **Playback and meters**
 - Loop button on the toolbar; Q loops the selection, and a new selection while looping becomes the loop
@@ -38,10 +41,13 @@ menu structure and default shortcuts so the workflow feels familiar.
 - MP3 Restore: grows back the top end an MP3 cut off (by saturation or spectral copy), smooths the "swirl", adds warmth and punch
 - De-esser, Detect Clipping, Copy Other Channel, Statistics (peak, true peak, RMS, DC offset, LUFS, LRA)
 - Bass Finder: key, tempo, notes and a bass line
+- Batch Converter: many files at once through the same steps (channels, sample rate, trim silence, normalize to a peak or a LUFS target with the limiter if needed, fades) into WAV / FLAC / AIFF / MP3 / OGG; the originals are not changed
+
+**Remembered settings:** the effect windows, Mix, Volume and the small settings windows start where you left them (also after a restart); each effect window has a **Defaults** button. Values measured from each file (hum frequency, clip level, MP3 cut-off, tempo) are measured again.
 
 **Keyboard:** the classic default shortcuts (F1 lists them); change any of them in **Options > Customize Keyboard** (saved).
 
-Planned: regions, VST3 plug-ins, batch processing.
+Planned: VST3 plug-ins (Plug-In Manager and Plug-In Chainer).
 
 On macOS, `Ctrl` shortcuts use `Cmd` and `Alt` uses `Option`.
 
