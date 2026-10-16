@@ -13,8 +13,32 @@ public:
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);
         mainWindow = std::make_unique<MainWindow> (getApplicationName());
 
-        for (const auto& arg : getCommandLineParameterArray())
+        auto args = getCommandLineParameterArray();
+
+        // Self-test: WaveForge --list-commands report.txt [audio files...]
+        // opens the files, writes which menu commands are usable, then quits.
+        juce::File report;
+
+        if (args.size() >= 2 && args[0] == "--list-commands")
+        {
+            report = juce::File::getCurrentWorkingDirectory().getChildFile (args[1].unquoted());
+            args.removeRange (0, 2);
+        }
+
+        for (const auto& arg : args)
             openFile (juce::File::getCurrentWorkingDirectory().getChildFile (arg.unquoted()));
+
+        if (report != juce::File())
+        {
+            juce::Timer::callAfterDelay (3000, [this, report]
+            {
+                if (auto* content = mainWindow != nullptr ? dynamic_cast<MainComponent*> (mainWindow->getContentComponent()) : nullptr)
+                    report.replaceWithText ("== File open, nothing selected\n" + content->commandReport (false)
+                                            + "\n== Part of the file selected\n" + content->commandReport (true));
+
+                quit();
+            });
+        }
     }
 
     void anotherInstanceStarted (const juce::String& commandLine) override

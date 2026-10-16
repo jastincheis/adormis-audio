@@ -49,6 +49,11 @@ public:
 
     juce::ApplicationCommandManager& getCommandManager()  { return commandManager; }
 
+    // Self-test (--list-commands): one line per command, "+" usable or "-"
+    // greyed out, as the menus would show it now. With `selectPart`, a stretch
+    // of the active file is selected first (selection-only commands).
+    juce::String commandReport (bool selectPart);
+
     // Asks about unsaved files, then calls `quit` if it's fine to exit.
     void requestQuit (std::function<void()> quit);
 

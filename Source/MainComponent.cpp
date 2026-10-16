@@ -338,6 +338,37 @@ void MainComponent::resized()
 }
 
 //==============================================================================
+juce::String MainComponent::commandReport (bool selectPart)
+{
+    auto* doc = activeDocument();
+
+    if (doc != nullptr && selectPart)
+    {
+        const auto length = (juce::int64) doc->getBuffer().getNumSamples();
+        doc->getView().setSelection ({ length / 4, length / 2 });
+    }
+
+    juce::String report;
+    report << "Open documents: " << (workspace != nullptr ? workspace->getNumDocuments() : 0)
+           << ", active: " << (doc != nullptr ? doc->getTitle() : juce::String ("(none)"))
+           << ", selection: " << (doc != nullptr && ! doc->getView().getSelection().isEmpty() ? "yes" : "no") << "\n";
+
+    int usable = 0, total = 0;
+
+    for (const auto& def : wf::allCommands())
+    {
+        juce::ApplicationCommandInfo info (def.id);
+        getCommandInfo (def.id, info);
+        const auto on = (info.flags & juce::ApplicationCommandInfo::isDisabled) == 0;
+        usable += on ? 1 : 0;
+        ++total;
+        report << (on ? "+ " : "- ") << def.category << " > " << def.name << (def.implemented ? "" : "   (not written yet)") << "\n";
+    }
+
+    report << usable << " of " << total << " usable\n";
+    return report;
+}
+
 DataWindow* MainComponent::activeDocument() const
 {
     // Commands are registered (and queried) before the workspace exists.

@@ -66,6 +66,18 @@ jobs:
         run: cmake --build build --config Release -j 4
       - name: Package
         run: Compress-Archive -Path build/WaveForge_artefacts/Release/WaveForge.exe -DestinationPath WaveForge-Windows.zip
+      - name: Self-test (which menu commands are usable)
+        continue-on-error: true
+        run: |
+          python -c "import wave,struct,math; w=wave.open('test.wav','wb'); w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100); w.writeframes(b''.join(struct.pack('<hh',int(8000*math.sin(i/20)),int(8000*math.sin(i/20))) for i in range(88200))); w.close()"
+          $p = Start-Process -FilePath build/WaveForge_artefacts/Release/WaveForge.exe -ArgumentList '--list-commands','commands-windows.txt','test.wav' -PassThru
+          if (-not $p.WaitForExit(60000)) { $p.Kill(); throw "WaveForge did not quit" }
+          Get-Content commands-windows.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: commands-windows
+          path: commands-windows.txt
       - uses: actions/upload-artifact@v4
         with:
           name: WaveForge-Windows
