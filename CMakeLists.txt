@@ -42,6 +42,10 @@ set_target_properties(rubberband_single PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(APPLE)
     target_link_libraries(rubberband_single PUBLIC "-framework Accelerate")
 endif()
+if(WIN32)
+    # windows.h's min/max macros break std::min/std::max in Rubber Band.
+    target_compile_definitions(rubberband_single PRIVATE NOMINMAX _USE_MATH_DEFINES)
+endif()
 
 juce_add_gui_app(WaveForge
     PRODUCT_NAME "WaveForge"
