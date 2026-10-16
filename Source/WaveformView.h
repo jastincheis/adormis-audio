@@ -84,6 +84,8 @@ public:
     std::function<void()> onCursorOrSelectionChanged;
     std::function<void()> onPlayheadMoved;
     std::function<void (int markerIndex)> onRemoveMarker;
+    // A marker dragged to `position` (sent once, when the mouse is let go).
+    std::function<void (int markerIndex, juce::int64 position)> onMoveMarker;
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -138,6 +140,9 @@ private:
     juce::int64 dragAnchor = 0;
     bool pressedInSelection = false;   // a drag from here moves the selection out
     bool pressedOnMarker = false;      // a click picked a marker; no drag-select
+    int markerDragIndex = -1;          // the marker under the press (it can be dragged)
+    juce::int64 markerDragPos = 0;
+    bool markerDragged = false;
     std::vector<juce::int64> selectedMarkers;
     bool draggingOut = false;
     juce::Range<juce::int64> selection;

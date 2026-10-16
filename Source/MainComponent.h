@@ -105,6 +105,8 @@ private:
     void showAutoRegion();
     void extractRegions();
     std::unique_ptr<wf::RegionsWindow> regionsWindow;
+    void showBatch();   // Tools > Batch Converter
+    std::unique_ptr<juce::DocumentWindow> batchWindow;
     void captureNoisePrint();   // Tools > Noise Reduction > Capture Noise Print
     juce::StringArray lastPitch;
     void showStatistics();

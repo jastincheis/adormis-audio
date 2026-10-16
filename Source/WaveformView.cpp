@@ -322,6 +322,12 @@ void WaveformView::mouseMove (const juce::MouseEvent& e)
     static const auto leftCursor = makeCursor ("L");
     static const auto rightCursor = makeCursor ("R");
 
+    if (hasAudio() && markerAt (e.getPosition()) >= 0)
+    {
+        setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);   // markers can be dragged
+        return;
+    }
+
     if (markerAt (e.getPosition()) < 0 && selectionEdgeAt (e.getPosition()) >= 0)
     {
         setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
@@ -467,6 +473,9 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
         const auto position = (*markers)[(size_t) index];
         selectedMarkers = { position };
         pressedOnMarker = true;
+        markerDragIndex = index;
+        markerDragPos = position;
+        markerDragged = false;
         pressedInSelection = false;
         dragAnchor = position;
         cursor = position;
@@ -540,6 +549,21 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
 
 void WaveformView::mouseDrag (const juce::MouseEvent& e)
 {
+    // Dragging a marker (its flag or its line) moves it left / right.
+    if (hasAudio() && pressedOnMarker && markerDragIndex >= 0)
+    {
+        if (! markerDragged && e.getDistanceFromDragStartX() == 0)
+            return;
+
+        markerDragged = true;
+        markerDragPos = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
+        cursor = markerDragPos;
+        selectedMarkers = { markerDragPos };
+        setMouseCursor (juce::MouseCursor::LeftRightResizeCursor);
+        repaint();
+        return;
+    }
+
     if (! hasAudio() || pressedOnMarker)
         return;
 
@@ -573,6 +597,22 @@ void WaveformView::mouseUp (const juce::MouseEvent& e)
         setSelection ({});
     }
 
+    if (markerDragged && markerDragIndex >= 0)
+    {
+        const auto index = markerDragIndex;
+        const auto to = markerDragPos;
+        markerDragIndex = -1;
+        markerDragged = false;
+
+        if (onMoveMarker != nullptr)
+            onMoveMarker (index, to);
+
+        selectedMarkers = { to };
+        notifyChanged();
+    }
+
+    markerDragIndex = -1;
+    markerDragged = false;
     pressedInSelection = false;
     pressedOnMarker = false;
     draggingOut = false;
@@ -860,12 +900,14 @@ void WaveformView::paintMarkers (juce::Graphics& g, juce::Rectangle<int> rulerAr
 
     for (int i = 0; i < (int) markers->size(); ++i)
     {
-        const auto x = sampleToX ((double) (*markers)[(size_t) i]);
+        const auto dragged = markerDragged && i == markerDragIndex;
+        const auto position = dragged ? markerDragPos : (*markers)[(size_t) i];
+        const auto x = sampleToX ((double) position);
 
         if (x < (float) wave.getX() - 20.0f || x > (float) wave.getRight())
             continue;
 
-        const auto picked = isMarkerSelected ((*markers)[(size_t) i]);
+        const auto picked = dragged || isMarkerSelected (position);
         const auto barStart = barStarts != nullptr
                            && std::binary_search (barStarts->begin(), barStarts->end(), (*markers)[(size_t) i]);
         const auto colour = barStart ? barMarkerColour : markerColour;
@@ -899,6 +941,18 @@ void WaveformView::paintMarkers (juce::Graphics& g, juce::Rectangle<int> rulerAr
 
         g.setColour (picked ? colour : juce::Colours::white);
         g.drawText (juce::String (i + 1), tag, juce::Justification::centred);
+
+        // While dragging: where it is now.
+        if (dragged)
+        {
+            const auto text = formatTime ((double) position / sampleRate);
+            const juce::Rectangle<float> box (flipped ? x - 92.0f : x + 4.0f, (float) wave.getY() + 4.0f, 88.0f, 16.0f);
+            g.setColour (juce::Colours::black.withAlpha (0.7f));
+            g.fillRoundedRectangle (box, 3.0f);
+            g.setColour (juce::Colours::white);
+            g.drawText (text, box, juce::Justification::centred);
+            g.setFont (juce::FontOptions (10.5f, juce::Font::bold));
+        }
     }
 }
 

@@ -2,6 +2,7 @@
 #include "Analysis.h"
 #include "Tempo.h"
 #include "Restoration.h"
+#include "BatchWindow.h"
 #include "StartupLog.h"
 #include "BackgroundPattern.h"
 #include "Commands.h"
@@ -382,6 +383,7 @@ MainComponent::~MainComponent()
     transport.setSource (nullptr);
     statisticsWindow.reset();
     regionsWindow.reset();
+    batchWindow.reset();
     meters.reset();
     deviceManager.removeChangeListener (&audioSaver);
     deviceManager.removeAudioCallback (meterTap.get());
@@ -1591,6 +1593,35 @@ void MainComponent::extractRegions()
                                juce::String (saved) + (saved == 1 ? " file" : " files") + " saved in\n" + folder.getFullPathName()
                                + (failed.isEmpty() ? juce::String() : "\n\nNot saved:\n" + failed.joinIntoString ("\n")));
                        });
+}
+
+void MainComponent::showBatch()
+{
+    if (batchWindow != nullptr)
+    {
+        batchWindow->toFront (true);
+        return;
+    }
+
+    // Starts with the open files that are on disk.
+    juce::Array<juce::File> files;
+
+    for (int i = 0; i < workspace->getNumDocuments(); ++i)
+        if (auto* d = dynamic_cast<DataWindow*> (workspace->getDocument (i)); d != nullptr && d->getFile().existsAsFile())
+            files.addIfNotAlreadyThere (d->getFile());
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->batchWindow.reset();
+        });
+    };
+
+    batchWindow = wf::createBatchWindow (formatManager, filePicker, files, std::move (onClose));
+    batchWindow->setVisible (true);
+    batchWindow->toFront (true);
 }
 
 void MainComponent::showStatistics()
@@ -2892,7 +2923,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
     switch (id)
     {
-        case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice: case wf::optKeyboard:
+        case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice: case wf::optKeyboard: case wf::toolsBatch:
         case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord:
             break;
 
@@ -3180,6 +3211,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::viewRegionsList:   toggleRegionsList(); return true;
         case wf::toolsAutoRegion:   showAutoRegion(); return true;
         case wf::toolsExtractRegions: extractRegions(); return true;
+        case wf::toolsBatch:        showBatch(); return true;
 
         case wf::optPlay:
             if (isPlaying())

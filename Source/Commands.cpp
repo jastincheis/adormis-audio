@@ -144,6 +144,7 @@ std::vector<CommandDef> makeCommands()
         { toolsHumRemoval,        "Hum Removal...",           "Tools", {} },
         { toolsDeclick,           "Click and Crackle Removal...", "Tools", {} },
         { toolsClipRestore,       "Clipped Peak Restoration...",  "Tools", {} },
+        { toolsBatch,             "Batch Converter...",       "Tools", {} },
 
         // FX Favorites
         { favPluginManager, "Plug-In Manager...",             "FX Favorites", {} },
@@ -241,7 +242,7 @@ const std::vector<TopMenu>& menuBar()
                      sub ("Noise Reduction", { C (toolsNoiseReduction), C (toolsCaptureNoise), sep(),
                                                C (toolsHumRemoval), C (toolsDeclick), C (toolsClipRestore) }),
                      sub ("Repair", { C (toolsRepairInterpolate), C (toolsRepairReplace), C (toolsRepairCopyChannel) }),
-                     sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsBassFinder), C (toolsDeEsser), C (toolsMp3Restore) } },
+                     sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsBassFinder), C (toolsDeEsser), C (toolsMp3Restore), sep(), C (toolsBatch) } },
 
         { "FX Favorites", { C (favPluginManager), C (favPluginChain), sep(), C (favRescan) } },
 
@@ -287,7 +288,7 @@ const std::vector<CommandDef>& allCommands()
         viewChannelMeters, viewLoudnessMeters, toolsStatistics, optKeyboard,
         fxLimiter, fxGate, fxChorus, fxFlange, fxVibrato, fxDistortion, fxPitchShift,
         toolsNoiseReduction, toolsCaptureNoise, toolsHumRemoval, toolsDeclick, toolsClipRestore,
-        insertRegion, viewRegionsList, toolsAutoRegion, toolsExtractRegions,
+        insertRegion, viewRegionsList, toolsAutoRegion, toolsExtractRegions, toolsBatch,
         procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDeEsser, toolsMp3Restore, optRecord,
         procEqParametric, fxCompressor, fxDelay, fxReverb,
         winCascade, winTile, winNext, winPrev,

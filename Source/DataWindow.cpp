@@ -192,6 +192,7 @@ void DataWindow::initialise (const juce::String& newTitle)
     view.onCursorOrSelectionChanged = [this] { updateInfo(); if (onChanged) onChanged(); };
     view.onPlayheadMoved = [this] { updateInfo(); };
     view.onRemoveMarker = [this] (int index) { removeMarker (index); };
+    view.onMoveMarker = [this] (int index, juce::int64 position) { moveMarker (index, position); };
     view.setMarkers (&markers, &barStarts);
     view.setRegions (&regions);
     view.onRenameRegion = [this] (int index) { if (onRegionAction) onRegionAction (index, false); };
@@ -1087,6 +1088,35 @@ void DataWindow::addMarker (juce::int64 position)
     markers.insert (it, position);
     view.clearMarkerSelection();
     view.repaint();
+}
+
+void DataWindow::moveMarker (int index, juce::int64 position)
+{
+    if (! juce::isPositiveAndBelow (index, (int) markers.size()))
+        return;
+
+    position = juce::jlimit ((juce::int64) 0, (juce::int64) buffer.getNumSamples(), position);
+    const auto from = markers[(size_t) index];
+
+    if (position == from)
+        return;
+
+    pushUndo();
+    markers.erase (markers.begin() + index);
+
+    // A bar-start marker stays one where it lands.
+    if (const auto bar = std::lower_bound (barStarts.begin(), barStarts.end(), from); bar != barStarts.end() && *bar == from)
+    {
+        barStarts.erase (bar);
+        barStarts.insert (std::lower_bound (barStarts.begin(), barStarts.end(), position), position);
+    }
+
+    // Dropped onto another marker: the two become one.
+    if (! std::binary_search (markers.begin(), markers.end(), position))
+        markers.insert (std::lower_bound (markers.begin(), markers.end(), position), position);
+
+    pruneBarStarts();
+    regionsChanged();   // marks the file changed (markers are saved in WAV)
 }
 
 void DataWindow::removeMarker (int index)

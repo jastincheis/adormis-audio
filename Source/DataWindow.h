@@ -189,6 +189,7 @@ public:
     // Markers are kept sorted; adding one at an existing position does nothing.
     void addMarker (juce::int64 position);
     void removeMarker (int index);
+    void moveMarker (int index, juce::int64 position);   // dragged in the view (undoable)
 
     bool canUndo() const  { return ! undoStack.empty(); }
     bool canRedo() const  { return ! redoStack.empty(); }
