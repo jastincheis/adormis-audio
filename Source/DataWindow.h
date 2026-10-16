@@ -121,7 +121,22 @@ public:
     // Paste: `source` (at `sourceRate`, converted to this file's rate and
     // channels) replaces the selection, or goes in at the cursor when nothing
     // is selected. Later markers move along. Undoable; selects what came in.
-    void pasteAudio (const juce::AudioBuffer<float>& source, double sourceRate);
+    // Markers, bar starts and regions of a selection, from its start (copied
+    // and dragged along with its audio).
+    struct Marks
+    {
+        std::vector<juce::int64> markers, barStarts;
+        std::vector<AudioRegion> regions;
+        double sampleRate = 44100.0;
+        bool empty() const   { return markers.empty() && regions.empty(); }
+    };
+
+    Marks selectionMarks() const;
+
+    // Adds `marks` with their start at `offset` (converted to this file's rate).
+    void addMarks (const Marks& marks, juce::int64 offset);
+
+    void pasteAudio (const juce::AudioBuffer<float>& source, double sourceRate, const Marks* marks = nullptr);
 
     // Trim/Crop: keeps only the selection (markers inside it move along).
     // False when nothing, or only one channel, is selected.
@@ -172,7 +187,7 @@ public:
     // overlaps by `destGain`. The file grows if the source runs past its end.
     // Selects the mixed range afterwards.
     void mixIn (const juce::AudioBuffer<float>& source, double sourceRate, juce::int64 position,
-                float sourceGain, float destGain);
+                float sourceGain, float destGain, const Marks* marks = nullptr);
 
     // Regions (Insert > Region): kept in start order. Adding, renaming and
     // removing are undoable; edits move / trim them with the audio.

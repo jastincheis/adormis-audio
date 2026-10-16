@@ -179,6 +179,12 @@ std::unique_ptr<DataWindow> DataWindow::fromSelection (const DataWindow& source,
     // One picked channel becomes a mono file.
     doc->buffer = source.copySelection();
 
+    // The markers and regions inside it come along.
+    const auto marks = source.selectionMarks();
+    doc->markers = marks.markers;
+    doc->barStarts = marks.barStarts;
+    doc->regions = marks.regions;
+
     doc->modified = true;
     doc->initialise (newTitle);
     return doc;
@@ -775,8 +781,62 @@ juce::AudioBuffer<float> DataWindow::prepareForMix (const juce::AudioBuffer<floa
     return out;
 }
 
+DataWindow::Marks DataWindow::selectionMarks() const
+{
+    Marks m;
+    m.sampleRate = sampleRate;
+    const auto selection = view.getSelection();
+
+    if (selection.isEmpty())
+        return m;
+
+    const auto s = selection.getStart(), e = selection.getEnd();
+
+    // Its edges count (a selection between two markers keeps both).
+    for (auto x : markers)
+        if (x >= s && x <= e)
+            m.markers.push_back (x - s);
+
+    for (auto x : barStarts)
+        if (x >= s && x <= e)
+            m.barStarts.push_back (x - s);
+
+    for (const auto& r : regions)
+    {
+        const auto a = std::max (r.start, s), b = std::min (r.end, e);
+
+        if (b > a)
+            m.regions.push_back ({ a - s, b - s, r.name });
+    }
+
+    return m;
+}
+
+void DataWindow::addMarks (const Marks& marks, juce::int64 offset)
+{
+    const auto ratio = sampleRate / marks.sampleRate;
+    const auto total = (juce::int64) buffer.getNumSamples();
+    auto at = [&] (juce::int64 x) { return juce::jlimit ((juce::int64) 0, total, offset + (juce::int64) std::llround ((double) x * ratio)); };
+
+    for (auto x : marks.markers)
+        if (const auto p = at (x); ! std::binary_search (markers.begin(), markers.end(), p))
+            markers.insert (std::lower_bound (markers.begin(), markers.end(), p), p);
+
+    for (auto x : marks.barStarts)
+        if (const auto p = at (x); ! std::binary_search (barStarts.begin(), barStarts.end(), p))
+            barStarts.insert (std::lower_bound (barStarts.begin(), barStarts.end(), p), p);
+
+    for (const auto& r : marks.regions)
+        if (const auto a = at (r.start), b = at (r.end); b > a)
+            regions.push_back ({ a, b, r.name });
+
+    std::stable_sort (regions.begin(), regions.end(), [] (const auto& x, const auto& y) { return x.start < y.start; });
+    view.setRegions (&regions);
+    view.repaint();
+}
+
 void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRate, juce::int64 position,
-                        float sourceGain, float destGain)
+                        float sourceGain, float destGain, const Marks* marks)
 {
     // An empty file takes the format of what comes in.
     setEmptyFormat (sourceRate, source.getNumChannels());
@@ -802,11 +862,14 @@ void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRat
             dest[i] = dest[i] * destGain + in[i] * sourceGain;
     }
 
+    if (marks != nullptr)
+        addMarks (*marks, start);
+
     view.setSelection ({ start, start + length });
     audioChanged();
 }
 
-void DataWindow::pasteAudio (const juce::AudioBuffer<float>& source, double sourceRate)
+void DataWindow::pasteAudio (const juce::AudioBuffer<float>& source, double sourceRate, const Marks* marks)
 {
     // An empty file takes the format of what comes in.
     setEmptyFormat (sourceRate, source.getNumChannels());
@@ -843,6 +906,10 @@ void DataWindow::pasteAudio (const juce::AudioBuffer<float>& source, double sour
         if (m >= start + removed)                        return m - removed + length;
         return {};
     });
+
+    if (marks != nullptr)
+        addMarks (*marks, start);
+
     view.setSelection ({ start, start + length });
     audioChanged();
 }

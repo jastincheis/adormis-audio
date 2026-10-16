@@ -149,7 +149,8 @@ public:
         if (targetDoc->isEmpty())
         {
             owner.releasePlaybackSource();
-            targetDoc->mixIn (sourceDoc->copySelection(), sourceDoc->getSampleRate(), 0, 1.0f, 1.0f);
+            const auto marks = sourceDoc->selectionMarks();
+            targetDoc->mixIn (sourceDoc->copySelection(), sourceDoc->getSampleRate(), 0, 1.0f, 1.0f, &marks);
             setActiveDocument (targetDoc);
             return;
         }
@@ -160,6 +161,7 @@ public:
         const auto position = planMix (*sourceDoc, *targetDoc, details.localPosition, snappedTo);
         auto audio = std::make_shared<juce::AudioBuffer<float>> (sourceDoc->copySelection());
         const auto sourceRate = sourceDoc->getSampleRate();
+        const auto marks = std::make_shared<DataWindow::Marks> (sourceDoc->selectionMarks());
 
         const auto description = "Mix " + WaveformView::formatTime ((double) audio->getNumSamples() / sourceRate).substring (3)
                                + " from \"" + sourceDoc->getTitle() + "\"\ninto \"" + targetDoc->getTitle() + "\" at "
@@ -169,12 +171,12 @@ public:
         const juce::Component::SafePointer<DataWindow> target (targetDoc);
 
         wf::MixDialogCallbacks callbacks;
-        callbacks.onOk = [this, target, audio, sourceRate, position, gains]
+        callbacks.onOk = [this, target, audio, sourceRate, position, gains, marks]
         {
             if (auto* doc = target.getComponent())
             {
                 owner.releasePlaybackSource();
-                doc->mixIn (*audio, sourceRate, position, gains->source, gains->dest);
+                doc->mixIn (*audio, sourceRate, position, gains->source, gains->dest, marks.get());
                 setActiveDocument (doc);
 
                 if (auto* window = getWindowFor (doc))
@@ -1858,18 +1860,19 @@ void MainComponent::mixClipboard()
     auto audio = std::make_shared<juce::AudioBuffer<float>> (clipboard.audio);
     const auto sourceRate = clipboard.sampleRate;
     auto gains = std::make_shared<wf::MixGains>();
+    const auto marks = std::make_shared<DataWindow::Marks> (clipboard.marks);
 
     const auto description = "Mix " + WaveformView::formatTime ((double) audio->getNumSamples() / sourceRate).substring (3)
                            + " of copied audio\ninto \"" + doc->getTitle() + "\" at "
                            + WaveformView::formatTime ((double) position / doc->getSampleRate()) + ".";
 
     wf::MixDialogCallbacks callbacks;
-    callbacks.onOk = [this, target, audio, sourceRate, position, gains]
+    callbacks.onOk = [this, target, audio, sourceRate, position, gains, marks]
     {
         if (auto* d = target.getComponent())
         {
             releasePlaybackSource();
-            d->mixIn (*audio, sourceRate, position, gains->source, gains->dest);
+            d->mixIn (*audio, sourceRate, position, gains->source, gains->dest, marks.get());
         }
     };
     callbacks.onPreview = [this, target, audio, sourceRate, position, gains] (bool play)
@@ -3244,8 +3247,15 @@ bool MainComponent::perform (const InvocationInfo& info)
 
         case wf::editPasteToNew:
             if (hasClipboard())
-                addDocument (DataWindow::fromAudio ("Untitled " + juce::String (++untitledCount), clipboard.sampleRate,
-                                                    clipboard.audio, {}));
+            {
+                auto pasted = DataWindow::fromAudio ("Untitled " + juce::String (++untitledCount), clipboard.sampleRate,
+                                                     clipboard.audio, {});
+
+                if (pasted != nullptr)
+                    pasted->addMarks (clipboard.marks, 0);
+
+                addDocument (std::move (pasted));
+            }
             return true;
 
         default: break;
@@ -3272,7 +3282,7 @@ bool MainComponent::perform (const InvocationInfo& info)
             if (view.getSelection().isEmpty())
                 return true;
 
-            clipboard = { doc->copySelection(), doc->getSampleRate() };
+            clipboard = { doc->copySelection(), doc->getSampleRate(), doc->selectionMarks() };
 
             if (info.commandID == wf::editCut)
             {
@@ -3287,7 +3297,7 @@ bool MainComponent::perform (const InvocationInfo& info)
             if (hasClipboard())
             {
                 releasePlaybackSource();
-                doc->pasteAudio (clipboard.audio, clipboard.sampleRate);
+                doc->pasteAudio (clipboard.audio, clipboard.sampleRate, &clipboard.marks);
             }
             return true;
 

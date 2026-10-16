@@ -255,6 +255,7 @@ private:
     {
         juce::AudioBuffer<float> audio;
         double sampleRate = 44100.0;
+        DataWindow::Marks marks;   // the markers and regions that were in it
     };
 
     Clipboard clipboard;
