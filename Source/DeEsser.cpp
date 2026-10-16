@@ -1375,6 +1375,7 @@ public:
         setUsingNativeTitleBar (false);
         setLookAndFeel (&look);
         setContentOwned (new DeEsserPanel (std::move (source), std::move (host), std::move (onClose)), true);
+        dark::adoptLook (*getContentComponent());
         setResizable (false, false);
         centreWithSize (getWidth(), getHeight());
     }

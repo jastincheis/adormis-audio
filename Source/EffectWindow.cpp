@@ -1188,11 +1188,19 @@ class DelayEditor final : public Editor
 public:
     explicit DelayEditor (Shared& s) : Editor (s)
     {
-        // The tempo of the audio, for the note values.
+        // The tempo of the audio itself (there is no other tempo to follow),
+        // for the note values; shown above so it's clear where it came from.
         if (const auto tempo = detectTempo (*shared.audio, { 0, shared.audio->getNumSamples() }, shared.rate()))
-            bpmField.setText (juce::String (tempo->bpm, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd ("."), false);
+        {
+            const auto bpm = juce::String (tempo->bpm, 2).trimCharactersAtEnd ("0").trimCharactersAtEnd (".");
+            bpmField.setText (bpm, false);
+            bpmLabel.setText ("Song tempo (BPM): " + bpm + " detected in this audio", juce::dontSendNotification);
+        }
         else
+        {
             bpmField.setText ("120", false);
+            bpmLabel.setText ("Song tempo (BPM): none detected, type it in", juce::dontSendNotification);
+        }
 
         for (auto* c : { &time, &feedback, &mix, &lowCut, &highCut })
             addAndMakeVisible (c);
@@ -1210,7 +1218,6 @@ public:
         bpmField.setInputRestrictions (6, "0123456789.,");
         bpmField.onTextChange = [this] { push(); };
         styleLabel (bpmLabel, 12.0f, true, colours::muted);
-        bpmLabel.setText ("Tempo (BPM)", juce::dontSendNotification);
 
         for (auto* c : { (juce::Component*) &sync, (juce::Component*) &pingPong, (juce::Component*) &noteBox,
                          (juce::Component*) &bpmField, (juce::Component*) &bpmLabel })
@@ -1297,9 +1304,9 @@ public:
         auto syncArea = row.reduced (6, 0);
         bpmLabel.setBounds (syncArea.removeFromTop (16));
         auto line = syncArea.removeFromTop (28);
-        sync.setBounds (line.removeFromLeft (120).reduced (2));
-        noteBox.setBounds (line.removeFromLeft (130).reduced (2));
-        bpmField.setBounds (line.removeFromLeft (80).reduced (2));
+        sync.setBounds (line.removeFromLeft (172).reduced (2));
+        noteBox.setBounds (line.removeFromLeft (118).reduced (2));
+        bpmField.setBounds (line.removeFromLeft (64).reduced (2));
         r.removeFromTop (8);
 
         row = r.removeFromTop (46);
@@ -1319,7 +1326,7 @@ private:
     LabelledSlider mix { "Echo level", 0.0, 100.0, 1.0, " %", 30.0, [this] { push(); } };
     LabelledSlider lowCut { "Low cut on the echoes", 20.0, 2000.0, 1.0, " Hz", 80.0, [this] { push(); }, 200.0 };
     LabelledSlider highCut { "High cut on the echoes", 1000.0, 20000.0, 10.0, " Hz", 9000.0, [this] { push(); }, 6000.0 };
-    juce::TextButton sync { "Sync to tempo" }, pingPong { "Ping-pong (L / R)" };
+    juce::TextButton sync { "Follow the song's tempo" }, pingPong { "Ping-pong (L / R)" };
     juce::ComboBox noteBox;
     juce::TextEditor bpmField;
     juce::Label bpmLabel;
@@ -1684,6 +1691,7 @@ public:
         setName (kind == EffectKind::eq ? "Parametric EQ" : kind == EffectKind::compressor ? "Compressor"
                  : kind == EffectKind::delay ? "Delay / Echo" : "Reverb");
         setContentOwned (panel, true);
+        dark::adoptLook (*getContentComponent());
         setResizable (false, false);
         centreWithSize (getWidth(), getHeight());
     }

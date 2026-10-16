@@ -29,6 +29,11 @@ public:
         setColour (juce::ComboBox::outlineColourId, line);
         setColour (juce::ComboBox::arrowColourId, muted);
         setColour (juce::TextEditor::backgroundColourId, bg);
+        setColour (juce::TextEditor::textColourId, ink);
+        setColour (juce::TextEditor::highlightColourId, accent.withAlpha (0.35f));
+        setColour (juce::TextEditor::highlightedTextColourId, ink);
+        setColour (juce::CaretComponent::caretColourId, ink);
+        setColour (juce::Label::textWhenEditingColourId, ink);
         setColour (juce::TextEditor::outlineColourId, line);
         setColour (juce::TextEditor::focusedOutlineColourId, accent);
         setColour (juce::Slider::trackColourId, accent);
@@ -52,4 +57,22 @@ public:
         setColour (juce::ResizableWindow::backgroundColourId, bg);
     }
 };
+// A panel builds its controls before it is put into its dark window, so they
+// start with the app's light look: switch the whole tree over, including text
+// already typed into text boxes (which keeps the colour it was written in).
+inline void adoptLook (juce::Component& root)
+{
+    root.sendLookAndFeelChange();
+
+    std::function<void (juce::Component&)> recolour = [&] (juce::Component& c)
+    {
+        if (auto* editor = dynamic_cast<juce::TextEditor*> (&c))
+            editor->applyColourToAllText (editor->findColour (juce::TextEditor::textColourId));
+
+        for (auto* child : c.getChildren())
+            recolour (*child);
+    };
+
+    recolour (root);
+}
 } // namespace wf::dark

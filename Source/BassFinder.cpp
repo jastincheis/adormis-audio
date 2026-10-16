@@ -2457,6 +2457,7 @@ public:
         setUsingNativeTitleBar (false);
         setLookAndFeel (&look);
         setContentOwned (new BassFinderPanel (std::move (source), std::move (host), std::move (onClose)), true);
+        dark::adoptLook (*getContentComponent());
         // Fixed size so tiling window managers (Hyprland) float it instead of
         // tiling it next to the main window.
         setResizable (false, false);
