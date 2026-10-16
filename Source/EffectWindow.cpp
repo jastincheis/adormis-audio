@@ -823,6 +823,13 @@ public:
         rangeButtons[1]->setToggleState (true, juce::dontSendNotification);
         graph.dbRange = 12.0;
 
+        // Nothing exists above half the sample rate (11 kHz in a 22 kHz file),
+        // so the graph and the Frequency slider end there.
+        graph.fit();
+        const auto top = std::min (20000.0, shared.rate() * 0.48);
+        freq.slider.setRange (20.0, top, 1.0);
+        freq.slider.setSkewFactorFromMidPoint (1000.0);
+
         for (auto* l : { &bandLabel, &typeLabel, &hint })
             addAndMakeVisible (l);
 
