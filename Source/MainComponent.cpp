@@ -3238,6 +3238,23 @@ bool MainComponent::perform (const InvocationInfo& info)
 
         case wf::optGoStart:        view.setSelection ({}); view.setCursor (0); view.ensureVisible (0); return true;
         case wf::optGoEnd:          view.setSelection ({}); view.setCursor (total); view.ensureVisible (total); return true;
+
+        // W / E: the left / right edge of the selection (it stays selected),
+        // or the start / end of the file when nothing is selected.
+        case wf::optGoLeftEdge: case wf::optGoRightEdge:
+        {
+            const auto selection = view.getSelection();
+            const auto left = info.commandID == wf::optGoLeftEdge;
+            const auto to = selection.isEmpty() ? (left ? (juce::int64) 0 : total)
+                                                : (left ? selection.getStart() : selection.getEnd());
+            view.setCursor (to);
+
+            if (! selection.isEmpty())
+                view.setSelection (selection, view.getSelectedChannel());
+
+            view.ensureVisible (to);
+            return true;
+        }
         default: break;
     }
 

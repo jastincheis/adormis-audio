@@ -162,6 +162,8 @@ std::vector<CommandDef> makeCommands()
         { optSwitchPlayMode, "Switch Play Mode",              "Transport", { key ('x') } },
         { optGoStart,        "Go to Start",                   "Transport", { key (KeyPress::homeKey, ctrl) } },
         { optGoEnd,          "Go to End",                     "Transport", { key (KeyPress::endKey, ctrl) } },
+        { optGoLeftEdge,     "Go to Left Edge",               "Transport", { key ('w') } },
+        { optGoRightEdge,    "Go to Right Edge",              "Transport", { key ('e') } },
         { optPreferences,    "Preferences...",                "Options", {} },
         { optAudioDevice,    "Audio Device...",               "Options", {} },
         { optKeyboard,       "Customize Keyboard...",         "Options", {} },
@@ -249,7 +251,7 @@ const std::vector<TopMenu>& menuBar()
         { "Options", { sub ("Transport", { C (optPlay), C (optPlayAll), C (optPlayPause), C (optStop), sep(),
                                            C (optRecord), C (optArm), sep(),
                                            C (optLoop), C (optSwitchPlayMode), sep(),
-                                           C (optGoStart), C (optGoEnd) }),
+                                           C (optGoStart), C (optGoEnd), C (optGoLeftEdge), C (optGoRightEdge) }),
                        sep(), C (optAudioDevice), C (optKeyboard), C (optPreferences) } },
 
         { "Window", { C (winCascade), C (winTile), C (winMaximizeAll), sep(), C (winNext), C (winPrev) } },
@@ -293,7 +295,7 @@ const std::vector<CommandDef>& allCommands()
         procEqParametric, fxCompressor, fxDelay, fxReverb,
         winCascade, winTile, winNext, winPrev,
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,
-        optPlay, optPlayAll, optPlayPause, optStop, optGoStart, optGoEnd, optAudioDevice,
+        optPlay, optPlayAll, optPlayPause, optStop, optGoStart, optGoEnd, optGoLeftEdge, optGoRightEdge, optAudioDevice,
         helpShortcuts, helpAbout
     };
 
