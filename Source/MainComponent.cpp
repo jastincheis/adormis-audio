@@ -15,7 +15,8 @@ const juce::Colour panelColour (0xffd4d0c8);
 
 //==============================================================================
 class MainComponent::Workspace final : public juce::MultiDocumentPanel,
-                                       public juce::DragAndDropTarget
+                                       public juce::DragAndDropTarget,
+                                       public juce::FileDragAndDropTarget
 {
 public:
     explicit Workspace (MainComponent& ownerIn) : owner (ownerIn)
@@ -42,6 +43,46 @@ public:
     }
 
     void activeDocumentChanged() override  { owner.activeDocumentChanged(); }
+
+    // Audio files dragged in from Explorer / Finder / a file manager open
+    // where they are dropped, one window per file.
+    bool isInterestedInFileDrag (const juce::StringArray& files) override
+    {
+        for (const auto& path : files)
+            if (owner.formatManager.findFormatForFileExtension (juce::File (path).getFileExtension()) != nullptr)
+                return true;
+
+        return false;
+    }
+
+    void fileDragEnter (const juce::StringArray&, int, int) override  { setFileDragHighlight (true); }
+    void fileDragExit (const juce::StringArray&) override             { setFileDragHighlight (false); }
+
+    void filesDropped (const juce::StringArray& files, int x, int y) override
+    {
+        setFileDragHighlight (false);
+        int opened = 0;
+
+        for (const auto& path : files)
+        {
+            const juce::File file (path);
+
+            if (file.existsAsFile() && owner.formatManager.findFormatForFileExtension (file.getFileExtension()) != nullptr)
+            {
+                owner.loadFile (file, juce::Point<int> (x, y) + juce::Point<int> (cascadeStep, cascadeStep) * opened);
+                ++opened;
+            }
+        }
+    }
+
+    void paintOverChildren (juce::Graphics& g) override
+    {
+        if (fileDragHighlight)
+        {
+            g.setColour (juce::Colour (0xff3478f6));
+            g.drawRect (getLocalBounds(), 4);
+        }
+    }
 
     void tryToCloseDocumentAsync (juce::Component* component, std::function<void (bool)> callback) override
     {
@@ -197,7 +238,14 @@ public:
     }
 
 private:
+    void setFileDragHighlight (bool on)
+    {
+        fileDragHighlight = on;
+        repaint();
+    }
+
     MainComponent& owner;
+    bool fileDragHighlight = false;
     juce::Component::SafePointer<DataWindow> previewDoc;
     juce::Image tile;
     float tileScale = 0.0f;
@@ -296,7 +344,7 @@ DataWindow* MainComponent::activeDocument() const
     return workspace != nullptr ? dynamic_cast<DataWindow*> (workspace->getActiveDocument()) : nullptr;
 }
 
-bool MainComponent::loadFile (const juce::File& file)
+bool MainComponent::loadFile (const juce::File& file, std::optional<juce::Point<int>> position)
 {
     juce::String error;
     auto doc = DataWindow::load (file, formatManager, error);
@@ -307,7 +355,7 @@ bool MainComponent::loadFile (const juce::File& file)
         return false;
     }
 
-    addDocument (std::move (doc));
+    addDocument (std::move (doc), position);
     return true;
 }
 
@@ -1535,6 +1583,19 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
                                              || ! doc->getView().getSelectedMarkers().empty()); break;
         case wf::optStop:   available = available && isPlaying(); break;
 
+        case wf::editCopy:
+            available = available && doc != nullptr && ! doc->getView().getSelection().isEmpty();
+            break;
+
+        // Cut and Trim change the file's length, so not on one channel only.
+        case wf::editCut: case wf::editTrim:
+            available = available && doc != nullptr && ! doc->getView().getSelection().isEmpty()
+                        && doc->getView().getSelectedChannel() < 0;
+            break;
+
+        case wf::editPaste:      available = available && doc != nullptr && hasClipboard(); break;
+        case wf::editPasteToNew: available = available && hasClipboard(); break;
+
         // Bass Finder works on a copy of the audio and can write it back, so
         // the file mustn't be stretched meanwhile: one or the other.
         case wf::procTimeStretch: available = available && doc != nullptr && ! toolWindowOpen() && job == nullptr; break;
@@ -1598,6 +1659,13 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::winNext:           cycleWindows (1); return true;
         case wf::winPrev:           cycleWindows (-1); return true;
         case wf::optStop:           stopPlayback (true); return true;
+
+        case wf::editPasteToNew:
+            if (hasClipboard())
+                addDocument (DataWindow::fromAudio ("Untitled " + juce::String (++untitledCount), clipboard.sampleRate,
+                                                    clipboard.audio, {}));
+            return true;
+
         default: break;
     }
 
@@ -1617,6 +1685,35 @@ bool MainComponent::perform (const InvocationInfo& info)
             releasePlaybackSource();
             doc->deleteSelection();
             return true;
+        case wf::editCopy:
+        case wf::editCut:
+            if (view.getSelection().isEmpty())
+                return true;
+
+            clipboard = { doc->copySelection(), doc->getSampleRate() };
+
+            if (info.commandID == wf::editCut)
+            {
+                releasePlaybackSource();
+                doc->deleteSelection();
+            }
+
+            commandManager.commandStatusChanged();
+            return true;
+
+        case wf::editPaste:
+            if (hasClipboard())
+            {
+                releasePlaybackSource();
+                doc->pasteAudio (clipboard.audio, clipboard.sampleRate);
+            }
+            return true;
+
+        case wf::editTrim:
+            releasePlaybackSource();
+            doc->trimToSelection();
+            return true;
+
         case wf::editSelectAll:     view.selectAll(); return true;
         case wf::insertMarker:      doc->addMarker (view.getCursor()); return true;
 

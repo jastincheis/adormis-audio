@@ -729,6 +729,76 @@ void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRat
     audioChanged();
 }
 
+void DataWindow::pasteAudio (const juce::AudioBuffer<float>& source, double sourceRate)
+{
+    const auto channels = buffer.getNumChannels();
+    const auto src = prepareForMix (source, sourceRate, sampleRate, channels);
+    const auto length = src.getNumSamples();
+
+    if (length == 0)
+        return;
+
+    const auto selection = view.getSelection();
+    const auto start = (int) juce::jlimit ((juce::int64) 0, (juce::int64) buffer.getNumSamples(),
+                                           selection.isEmpty() ? view.getCursor() : selection.getStart());
+    const auto removed = selection.isEmpty() ? 0 : (int) selection.getLength();
+    const auto after = buffer.getNumSamples() - start - removed;
+
+    pushUndo();
+
+    juce::AudioBuffer<float> result (channels, start + length + after);
+
+    for (int ch = 0; ch < channels; ++ch)
+    {
+        result.copyFrom (ch, 0, buffer, ch, 0, start);
+        result.copyFrom (ch, start, src, ch, 0, length);
+        result.copyFrom (ch, start + length, buffer, ch, start + removed, after);
+    }
+
+    buffer = std::move (result);
+
+    // Markers in a replaced selection go away; later ones move with the audio.
+    remapMarkers ([start, removed, length] (juce::int64 m) -> std::optional<juce::int64>
+    {
+        if (m < start || (removed == 0 && m == start))   return m;
+        if (m >= start + removed)                        return m - removed + length;
+        return {};
+    });
+    view.setSelection ({ start, start + length });
+    audioChanged();
+}
+
+bool DataWindow::trimToSelection()
+{
+    const auto selection = view.getSelection();
+
+    if (selection.isEmpty() || view.getSelectedChannel() >= 0)
+        return false;
+
+    const auto start = (int) selection.getStart();
+    const auto length = (int) selection.getLength();
+
+    pushUndo();
+
+    juce::AudioBuffer<float> result (buffer.getNumChannels(), length);
+
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        result.copyFrom (ch, 0, buffer, ch, start, length);
+
+    buffer = std::move (result);
+
+    remapMarkers ([start, length] (juce::int64 m) -> std::optional<juce::int64>
+    {
+        if (m < start || m > start + length)
+            return {};
+
+        return m - start;
+    });
+    view.setSelection ({ 0, length });
+    audioChanged();
+    return true;
+}
+
 bool DataWindow::deleteSelectedMarkers()
 {
     const auto& picked = view.getSelectedMarkers();

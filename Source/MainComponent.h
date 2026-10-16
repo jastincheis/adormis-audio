@@ -30,7 +30,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    bool loadFile (const juce::File& file);
+    bool loadFile (const juce::File& file, std::optional<juce::Point<int>> position = {});
 
     // Opens `doc` in a new workspace window; `position` is its top-left corner
     // in workspace coordinates (or cascaded when not given).
@@ -147,6 +147,16 @@ private:
     juce::int64 playStartCursor = 0;
 
     int untitledCount = 0;
+
+    // Edit > Copy / Cut keep the audio here for Paste (inside WaveForge).
+    struct Clipboard
+    {
+        juce::AudioBuffer<float> audio;
+        double sampleRate = 44100.0;
+    };
+
+    Clipboard clipboard;
+    bool hasClipboard() const   { return clipboard.audio.getNumSamples() > 0; }
     int recordCount = 0;
     int lastRecordBits = 24;   // a new recording starts with the last bit depth chosen
 

@@ -270,7 +270,7 @@ const std::vector<CommandDef>& allCommands()
 {
     // Commands that work so far; everything else stays greyed out in the menus.
     static const juce::CommandID implemented[] {
-        fileNew, fileOpen, fileClose, fileSave, fileSaveAs, fileExit, editUndo, editRedo, editDelete, editSelectAll, insertMarker,
+        fileNew, fileOpen, fileClose, fileSave, fileSaveAs, fileExit, editUndo, editRedo, editCut, editCopy, editPaste, editPasteToNew, editDelete, editTrim, editSelectAll, insertMarker,
         procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDeEsser, optRecord,
         procEqParametric, fxCompressor, fxDelay, fxReverb,
         winCascade, winTile, winNext, winPrev,

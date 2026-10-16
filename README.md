@@ -12,14 +12,15 @@ menu structure and default shortcuts so the workflow feels familiar.
 
 - Open WAV / FLAC / AIFF / OGG / MP3; save WAV / FLAC / AIFF / OGG and MP3, with sample-rate conversion
 - Several files in overlapping windows; drag a selection out into a new file, or onto another file to mix it in (volumes, live preview, snapping to markers)
-- Selection per channel (L / R), markers, undo / redo
+- Cut / copy / paste (also to a new file), trim / crop; selection per channel (L / R), markers, undo / redo
+- Drag audio files from Explorer / Finder / a file manager into the window to open them
 - Processes: fade in / out, mute, normalize, reverse, invert, DC offset, volume
 - Effects with live preview: parametric EQ, compressor, delay / echo, reverb
 - Time Stretch (Rubber Band), De-esser, Bass Finder (key, tempo, notes, bass line)
 - Record (Ctrl+R) with input meter, mono / stereo and bit depth
 - File > New from a tempo template with beat markers
 
-Planned: cut / copy / paste, regions, VST3 plug-ins.
+Planned: regions, more effects, VST3 plug-ins.
 
 On macOS, `Ctrl` shortcuts use `Cmd` and `Alt` uses `Option`.
 

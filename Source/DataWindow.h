@@ -92,6 +92,15 @@ public:
     // Removes the selected samples; returns false when nothing is selected.
     bool deleteSelection();
 
+    // Paste: `source` (at `sourceRate`, converted to this file's rate and
+    // channels) replaces the selection, or goes in at the cursor when nothing
+    // is selected. Later markers move along. Undoable; selects what came in.
+    void pasteAudio (const juce::AudioBuffer<float>& source, double sourceRate);
+
+    // Trim/Crop: keeps only the selection (markers inside it move along).
+    // False when nothing, or only one channel, is selected.
+    bool trimToSelection();
+
     // Removes the markers picked in the view (undoable); false when none are.
     bool deleteSelectedMarkers();
 
