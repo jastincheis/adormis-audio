@@ -563,5 +563,7 @@ void ProcessToolbar::resized()
 
     // The tempo comes right after the last group, with a divider before it.
     tempoX = x + groupGap;
-    tempo->setBounds (tempoX, (getHeight() - 38) / 2, 300, 38);
+    // 300 px when there's room, narrower on small screens (at least 170).
+    const auto width = juce::jlimit (170, 300, getWidth() - tempoX - 8);
+    tempo->setBounds (tempoX, (getHeight() - 38) / 2, width, 38);
 }

@@ -55,7 +55,17 @@ def make_wav(path, seconds=6, rate=44100):
         w.writeframes(bytes(frames))
 
 def main_window():
-    return Desktop(backend="uia").window(title_re=r".*WaveForge$")
+    """The main window: of WaveForge's top-level windows whose title ends in
+    "WaveForge", the largest (popups such as an open list can match too)."""
+    best = None
+    for w in Desktop(backend="uia").windows(process=app.pid):
+        if w.window_text().endswith("WaveForge"):
+            r = w.rectangle()
+            if best is None or r.width() * r.height() > best[0]:
+                best = (r.width() * r.height(), w.handle)
+    if best is None:
+        return Desktop(backend="uia").window(title_re=r".*WaveForge$")
+    return Desktop(backend="uia").window(handle=best[1])
 
 def menu(*path):
     """Clicks a menu bar item, then each sub-item by its name."""
@@ -105,6 +115,7 @@ def _():
 def _():
     # What UI Automation sees (names of menus, buttons...) for later steps.
     main_window().print_control_identifiers(depth=4, filename="uia-tree.txt")
+    send_keys("{ESC}"); time.sleep(0.3)   # reading the tree can open a list
 
 for name in ["File", "Edit", "View", "Insert", "Process", "Effects", "Tools", "FX Favorites", "Options", "Window", "Help"]:
     @step(f"menu-{name}")
