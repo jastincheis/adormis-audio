@@ -6,7 +6,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 # Visual C++ Redistributable installed.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(WaveForge VERSION 0.1.5 LANGUAGES C CXX)
+project(WaveForge VERSION 0.1.6 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -87,6 +87,7 @@ target_sources(WaveForge PRIVATE
     Source/MoreEffects.cpp
     Source/Tempo.cpp
     Source/Restoration.cpp
+    Source/StartupLog.cpp
     Source/StatisticsWindow.cpp
     Source/ProcessToolbar.cpp
     Source/Recorder.cpp

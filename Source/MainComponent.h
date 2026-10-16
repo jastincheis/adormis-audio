@@ -195,7 +195,30 @@ private:
 
     // Playback (always of one document at a time)
     juce::AudioFormatManager formatManager;
-    juce::AudioDeviceManager deviceManager;
+    // The audio devices. ASIO drivers (audio interfaces) are only looked at
+    // when turned on in Options > Audio Device: loading some of them can hang
+    // or take long, and JUCE loads every installed one when it scans.
+    class DeviceManager final : public juce::AudioDeviceManager
+    {
+    public:
+        bool allowAsio = false;
+
+        void createAudioDeviceTypes (juce::OwnedArray<juce::AudioIODeviceType>& types) override
+        {
+            juce::AudioDeviceManager::createAudioDeviceTypes (types);
+
+            if (! allowAsio)
+                for (int i = types.size(); --i >= 0;)
+                    if (types[i]->getTypeName() == "ASIO")
+                        types.remove (i);
+        }
+    };
+
+    DeviceManager deviceManager;
+    void startAudio();   // a moment after the window shows (a slow driver can't keep it hidden)
+    static juce::File asioFlagFile();
+    static juce::File audioStateFile();
+    ChangeCall audioSaver;
     juce::AudioSourcePlayer sourcePlayer;
     juce::AudioTransportSource transport;
     std::unique_ptr<wf::MeterTap> meterTap;     // the device plays through this (for the meters)

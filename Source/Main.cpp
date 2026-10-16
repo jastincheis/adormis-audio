@@ -1,5 +1,6 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
+#include "StartupLog.h"
 
 class WaveForgeApplication final : public juce::JUCEApplication
 {
@@ -8,10 +9,13 @@ public:
     const juce::String getApplicationVersion() override  { return JUCE_APPLICATION_VERSION_STRING; }
     bool moreThanOneInstanceAllowed() override            { return true; }
 
-    void initialise (const juce::String&) override
+    void initialise (const juce::String& commandLine) override
     {
+        wf::startup::beginLog();
+        wf::startup::log ("start: " + commandLine);
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);
         mainWindow = std::make_unique<MainWindow> (getApplicationName());
+        wf::startup::log ("window shown");
 
         auto args = getCommandLineParameterArray();
 
@@ -57,7 +61,10 @@ public:
             return false;
 
         if (auto* content = dynamic_cast<MainComponent*> (mainWindow->getContentComponent()))
+        {
+            wf::startup::log ("open: " + file.getFullPathName());
             return content->loadFile (file);
+        }
 
         return false;
     }
@@ -66,6 +73,7 @@ public:
     {
         mainWindow = nullptr;
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
+        wf::startup::endLog();
     }
 
     void systemRequestedQuit() override

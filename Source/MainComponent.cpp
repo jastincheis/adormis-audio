@@ -2,6 +2,7 @@
 #include "Analysis.h"
 #include "Tempo.h"
 #include "Restoration.h"
+#include "StartupLog.h"
 #include "BackgroundPattern.h"
 #include "Commands.h"
 #include "MixDialog.h"
@@ -289,7 +290,6 @@ MainComponent::MainComponent()
     statusBar.setColour (juce::Label::textColourId, juce::Colours::black);
     addAndMakeVisible (statusBar);
 
-    deviceManager.initialiseWithDefaultDevices (0, 2);
     sourcePlayer.setSource (&transport);
     meterTap = std::make_unique<wf::MeterTap> (sourcePlayer);
     deviceManager.addAudioCallback (meterTap.get());
@@ -304,6 +304,60 @@ MainComponent::MainComponent()
     setSize (1100, 700);
     updateStatus();
     scheduleTempo();
+
+    // The audio device opens once the window is on screen.
+    juce::Timer::callAfterDelay (150, [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        if (auto* main = safeThis.getComponent())
+            main->startAudio();
+    });
+}
+
+juce::File MainComponent::asioFlagFile()    { return wf::startup::settingsFolder().getChildFile ("use-asio"); }
+juce::File MainComponent::audioStateFile()  { return wf::startup::settingsFolder().getChildFile ("audio-device.xml"); }
+
+void MainComponent::startAudio()
+{
+    // If the last start never got past this point (a driver hung or crashed),
+    // start this time without ASIO and without the saved device.
+    const auto safeMode = wf::startup::lastStartFailedAtAudio();
+
+    if (safeMode)
+        asioFlagFile().deleteFile();
+
+    deviceManager.allowAsio = asioFlagFile().existsAsFile();
+    wf::startup::log ("audio: opening the device (ASIO " + juce::String (deviceManager.allowAsio ? "on" : "off")
+                      + (safeMode ? ", safe start after a failed one)" : ")"));
+    wf::startup::markAudioStarting();
+
+    const auto started = juce::Time::getMillisecondCounterHiRes();
+    const auto saved = safeMode ? nullptr : juce::parseXML (audioStateFile());
+    const auto error = deviceManager.initialise (0, 2, saved.get(), true);
+
+    wf::startup::markAudioStarted();
+    auto* device = deviceManager.getCurrentAudioDevice();
+    wf::startup::log ("audio: " + (device != nullptr ? device->getTypeName() + " / " + device->getName()
+                                                         + " at " + juce::String (device->getCurrentSampleRate(), 0) + " Hz"
+                                                     : juce::String ("no device"))
+                      + (error.isNotEmpty() ? " - error: " + error : juce::String())
+                      + " (" + juce::String (juce::roundToInt (juce::Time::getMillisecondCounterHiRes() - started)) + " ms)");
+
+    // Remember the device chosen in Options > Audio Device for the next start.
+    audioSaver.onChange = [this]
+    {
+        if (auto xml = deviceManager.createStateXml())
+            xml->writeTo (audioStateFile());
+    };
+    deviceManager.addChangeListener (&audioSaver);
+
+    if (safeMode)
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Audio device",
+            "Last time WaveForge stopped while opening the audio device (often an ASIO driver).\n"
+            "This time it uses the system's default audio output and ASIO is off.\n\n"
+            "Options > Audio Device lets you choose the device, or turn ASIO on again.");
+
+    if (device == nullptr)
+        statusBar.setText ("  No audio output could be opened: Options > Audio Device to choose one.", juce::dontSendNotification);
 }
 
 MainComponent::~MainComponent()
@@ -328,6 +382,7 @@ MainComponent::~MainComponent()
     transport.setSource (nullptr);
     statisticsWindow.reset();
     meters.reset();
+    deviceManager.removeChangeListener (&audioSaver);
     deviceManager.removeAudioCallback (meterTap.get());
     sourcePlayer.setSource (nullptr);
     workspace->closeAllDocumentsAsync (false, nullptr);
@@ -2852,8 +2907,51 @@ void MainComponent::showAudioSettings()
     auto selector = std::make_unique<juce::AudioDeviceSelectorComponent> (deviceManager, 0, 2, 1, 2, false, false, true, false);
     selector->setSize (520, 360);
 
+   #if JUCE_WINDOWS
+    // ASIO (audio interfaces) is off unless turned on here; it takes effect
+    // at the next start, when the drivers are loaded.
+    struct Panel final : public juce::Component
+    {
+        Panel (std::unique_ptr<juce::Component> sel, juce::File flag) : selector (std::move (sel)), flagFile (flag)
+        {
+            asio.setButtonText ("Use ASIO drivers (audio interfaces) - after a restart");
+            asio.setColour (juce::ToggleButton::textColourId, juce::Colours::black);
+            asio.setToggleState (flagFile.existsAsFile(), juce::dontSendNotification);
+            asio.onClick = [this]
+            {
+                if (asio.getToggleState())
+                    flagFile.replaceWithText ("on");
+                else
+                    flagFile.deleteFile();
+
+                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "ASIO",
+                    asio.getToggleState() ? "Restart WaveForge to see the ASIO drivers here."
+                                          : "ASIO is off from the next start.");
+            };
+            addAndMakeVisible (asio);
+            addAndMakeVisible (*selector);
+            setSize (selector->getWidth(), selector->getHeight() + 40);
+        }
+
+        void resized() override
+        {
+            auto r = getLocalBounds();
+            asio.setBounds (r.removeFromTop (34).reduced (12, 4));
+            selector->setBounds (r);
+        }
+
+        std::unique_ptr<juce::Component> selector;
+        juce::File flagFile;
+        juce::ToggleButton asio;
+    };
+
+    auto content = std::make_unique<Panel> (std::move (selector), asioFlagFile());
+   #else
+    auto content = std::move (selector);
+   #endif
+
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned (selector.release());
+    options.content.setOwned (content.release());
     options.dialogTitle = "Audio Device";
     options.dialogBackgroundColour = panelColour;
     options.useNativeTitleBar = true;

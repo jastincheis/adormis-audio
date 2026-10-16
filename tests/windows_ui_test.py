@@ -175,6 +175,15 @@ def _():
     main_window().set_focus(); send_keys("^r"); time.sleep(2)
 close_top_window()
 
+# WaveForge's own start-up log (audio device, timings, any crash).
+import os, shutil
+startup_log = Path(os.environ.get("APPDATA", "")) / "WaveForge" / "waveforge.log"
+if startup_log.exists():
+    shutil.copy(startup_log, "waveforge.log")
+    log("\n== waveforge.log\n" + startup_log.read_text(errors="replace"))
+else:
+    log("\nno waveforge.log at " + str(startup_log))
+
 log(f"\n{failures} step(s) failed")
 app.kill()
 sys.exit(0)
