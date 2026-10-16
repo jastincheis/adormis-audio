@@ -139,6 +139,11 @@ std::vector<CommandDef> makeCommands()
         { toolsDeEsser,           "De-esser...",              "Tools", {} },
         { toolsMp3Restore,        "MP3 Restore...",           "Tools", {} },
         { toolsStatistics,        "Statistics...",            "Tools", {} },
+        { toolsNoiseReduction,    "Noise Reduction...",       "Tools", {} },
+        { toolsCaptureNoise,      "Capture Noise Print",      "Tools", {} },
+        { toolsHumRemoval,        "Hum Removal...",           "Tools", {} },
+        { toolsDeclick,           "Click and Crackle Removal...", "Tools", {} },
+        { toolsClipRestore,       "Clipped Peak Restoration...",  "Tools", {} },
 
         // FX Favorites
         { favPluginManager, "Plug-In Manager...",             "FX Favorites", {} },
@@ -233,6 +238,8 @@ const std::vector<TopMenu>& menuBar()
                        C (fxReverb), C (fxVibrato) } },
 
         { "Tools", { C (toolsAutoRegion), C (toolsExtractRegions), C (toolsClipDetect), C (toolsFind), C (toolsStatistics), sep(),
+                     sub ("Noise Reduction", { C (toolsNoiseReduction), C (toolsCaptureNoise), sep(),
+                                               C (toolsHumRemoval), C (toolsDeclick), C (toolsClipRestore) }),
                      sub ("Repair", { C (toolsRepairInterpolate), C (toolsRepairReplace), C (toolsRepairCopyChannel) }),
                      sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsBassFinder), C (toolsDeEsser), C (toolsMp3Restore) } },
 
@@ -279,6 +286,7 @@ const std::vector<CommandDef>& allCommands()
         toolsClipDetect, toolsRepairCopyChannel, optLoop, insertMarker,
         viewChannelMeters, viewLoudnessMeters, toolsStatistics, optKeyboard,
         fxLimiter, fxGate, fxChorus, fxFlange, fxVibrato, fxDistortion, fxPitchShift,
+        toolsNoiseReduction, toolsCaptureNoise, toolsHumRemoval, toolsDeclick, toolsClipRestore,
         procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDeEsser, toolsMp3Restore, optRecord,
         procEqParametric, fxCompressor, fxDelay, fxReverb,
         winCascade, winTile, winNext, winPrev,

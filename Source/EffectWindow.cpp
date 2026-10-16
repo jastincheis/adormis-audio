@@ -1,6 +1,7 @@
 #include "EffectWindow.h"
 #include "Mp3Restore.h"
 #include "MoreEffects.h"
+#include "Restoration.h"
 #include "Analysis.h"
 #include "DarkTheme.h"
 #include "Effects.h"
@@ -47,6 +48,10 @@ juce::String effectName (EffectKind kind)
         case EffectKind::flanger:    return "Flanger";
         case EffectKind::vibrato:    return "Vibrato";
         case EffectKind::distortion: return "Distortion";
+        case EffectKind::noiseReduction: return "Noise Reduction";
+        case EffectKind::humRemoval: return "Hum Removal";
+        case EffectKind::declick:    return "Click and Crackle Removal";
+        case EffectKind::clipRestore: return "Clipped Peak Restoration";
     }
 
     return "Effect";
@@ -2219,6 +2224,587 @@ private:
     float inDb = -100.0f, outDb = -100.0f;
 };
 
+//==============================================================================
+// Package D editors: noise reduction, hum removal, click / crackle removal,
+// clipped peak restoration.
+
+// A frequency axis (log, 20 Hz .. top) with dB lines, for the repair graphs.
+struct LogGraph
+{
+    juce::Rectangle<float> area;
+    double lowHz = 20.0, highHz = 20000.0, topDb = 0.0, bottomDb = -100.0;
+
+    float x (double hz) const
+    {
+        const auto t = std::log (juce::jlimit (lowHz, highHz, hz) / lowHz) / std::log (highHz / lowHz);
+        return area.getX() + area.getWidth() * (float) t;
+    }
+
+    float y (double db) const
+    {
+        return area.getY() + area.getHeight() * (float) ((topDb - juce::jlimit (bottomDb, topDb, db)) / (topDb - bottomDb));
+    }
+
+    void paintGrid (juce::Graphics& g) const
+    {
+        g.setFont (juce::FontOptions (10.0f));
+
+        for (double hz : { 50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10000.0, 20000.0 })
+        {
+            if (hz < lowHz || hz > highHz)
+                continue;
+
+            g.setColour (colours::line);
+            g.fillRect (x (hz), area.getY(), 1.0f, area.getHeight());
+            g.setColour (colours::muted);
+            g.drawText (formatHz (hz), juce::Rectangle<float> (x (hz) - 24.0f, area.getBottom() + 1.0f, 48.0f, 12.0f), juce::Justification::centred);
+        }
+
+        for (double db = topDb; db >= bottomDb; db -= 20.0)
+        {
+            g.setColour (colours::line);
+            g.fillRect (area.getX(), y (db), area.getWidth(), 1.0f);
+            g.setColour (colours::muted);
+            g.drawText (juce::String ((int) db), juce::Rectangle<float> (area.getX() - 30.0f, y (db) - 6.0f, 26.0f, 12.0f), juce::Justification::centredRight);
+        }
+    }
+
+    // A spectrum (dB per FFT bin of `hzPerBin`) as a line, the most per pixel.
+    juce::Path line (const std::vector<float>& db, double hzPerBin) const
+    {
+        juce::Path p;
+        bool started = false;
+        int lastX = -1;
+        float maxDb = -200.0f;
+
+        for (size_t k = 1; k < db.size(); ++k)
+        {
+            const auto hz = (double) k * hzPerBin;
+
+            if (hz < lowHz || hz > highHz)
+                continue;
+
+            const auto px = (int) std::floor (x (hz));
+            maxDb = std::max (maxDb, db[k]);
+
+            if (px == lastX)
+                continue;
+
+            if (! started) { p.startNewSubPath ((float) px, y (maxDb)); started = true; }
+            else           p.lineTo ((float) px, y (maxDb));
+
+            lastX = px;
+            maxDb = -200.0f;
+        }
+
+        return p;
+    }
+};
+
+//==============================================================================
+class NoiseReductionEditor final : public Editor
+{
+public:
+    explicit NoiseReductionEditor (Shared& s) : Editor (s)
+    {
+        if (auto captured = fx::capturedNoiseProfile())
+            profile = captured;
+        else
+            learn();
+
+        styleLabel (printLabel, 12.0f, true, colours::muted);
+        addAndMakeVisible (printLabel);
+
+        capture.setTooltip ("Select a stretch with only the noise in the file (no music or voice), then click");
+        capture.onClick = [this] { captureFromFile(); };
+        learnButton.setTooltip ("Estimate the noise from the quietest moments of this audio, band by band");
+        learnButton.onClick = [this] { learn(); push(); };
+        addAndMakeVisible (capture);
+        addAndMakeVisible (learnButton);
+
+        for (auto* c : { &reduction, &threshold, &smoothing })
+            addAndMakeVisible (c);
+
+        styleToggle (noiseOnly);
+        noiseOnly.setTooltip ("Hear what is being taken out: there should be no music in it");
+        noiseOnly.onClick = [this] { push(); };
+        addAndMakeVisible (noiseOnly);
+        showPrint();
+        push();
+    }
+
+    fx::NoiseReductionParams params() const
+    {
+        fx::NoiseReductionParams p;
+        p.profile = profile;
+        p.reductionDb = reduction.value();
+        p.thresholdDb = threshold.value();
+        p.smoothing = smoothing.value() / 100.0;
+        p.noiseOnly = noiseOnly.getToggleState();
+        return p;
+    }
+
+    void push() override   { fx::setParams (*shared.processor, params()); repaint(); }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeNoiseReduction();
+        auto values = params();
+        values.noiseOnly = false;   // Apply always removes the noise
+        fx::setParams (*p, values);
+        return p;
+    }
+
+    void tick() override   { if (shared.previewing) repaint(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (graphArea.toFloat(), 8.0f);
+        LogGraph graph;
+        graph.area = graphArea.toFloat().reduced (36.0f, 14.0f).withTrimmedBottom (6.0f);
+        graph.highHz = std::min (20000.0, shared.rate() * 0.48);
+        graph.topDb = -10.0;
+        graph.bottomDb = -130.0;
+        graph.paintGrid (g);
+
+        if (shared.previewing)
+        {
+            const auto hzPerBin = shared.rate() / SpectrumMeter::size;
+            g.setColour (colours::muted.withAlpha (0.7f));
+            g.strokePath (graph.line (shared.pre.db, hzPerBin), juce::PathStrokeType (1.0f));
+            g.setColour (colours::accent);
+            g.strokePath (graph.line (shared.post.db, hzPerBin), juce::PathStrokeType (1.4f));
+        }
+
+        if (profile != nullptr && ! profile->magnitude.empty())
+        {
+            // The print, scaled to the live meter's FFT size, plus the threshold.
+            const auto scale = std::sqrt ((double) SpectrumMeter::size / profile->fftSize) * 4.0 / SpectrumMeter::size;
+            std::vector<float> db (profile->magnitude[0].size());
+
+            for (size_t k = 0; k < db.size(); ++k)
+            {
+                double m = 0.0;
+
+                for (const auto& ch : profile->magnitude)
+                    m += ch[k] / (double) profile->magnitude.size();
+
+                db[k] = (float) juce::Decibels::gainToDecibels (m * scale, -200.0) + (float) threshold.value() / 2.0f;
+            }
+
+            g.setColour (colours::bass);
+            g.strokePath (graph.line (db, profile->sampleRate / profile->fftSize), juce::PathStrokeType (2.0f));
+        }
+
+        g.setColour (colours::muted);
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText (shared.previewing ? "orange: noise print   grey: before   blue: after" : "orange: the noise print (what gets taken out)",
+                    graphArea.toFloat().reduced (40.0f, 2.0f).withHeight (14.0f), juce::Justification::centredLeft);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        graphArea = r.removeFromTop (190);
+        r.removeFromTop (10);
+        auto row = r.removeFromTop (28);
+        learnButton.setBounds (row.removeFromRight (190).reduced (2));
+        capture.setBounds (row.removeFromRight (250).reduced (2));
+        printLabel.setBounds (row);
+        r.removeFromTop (8);
+
+        for (auto* c : { &reduction, &threshold, &smoothing })
+        {
+            c->setBounds (r.removeFromTop (46));
+            r.removeFromTop (2);
+        }
+
+        noiseOnly.setBounds (r.removeFromTop (30).removeFromLeft (260).reduced (2));
+    }
+
+private:
+    void learn()
+    {
+        profile = fx::makeNoiseProfile (*shared.audio, shared.rate(), true);
+
+        if (auto p = std::const_pointer_cast<fx::NoiseProfile> (profile))
+            p->source = "learned from the quietest moments of this audio";
+
+        showPrint();
+    }
+
+    void captureFromFile()
+    {
+        auto source = shared.host.currentSource != nullptr ? shared.host.currentSource() : std::nullopt;
+
+        if (! source.has_value() || source->audio.getNumSamples() < fx::noiseFftSize (source->sampleRate))
+        {
+            printLabel.setText ("Select some noise in the file first (at least 0.1 s).", juce::dontSendNotification);
+            return;
+        }
+
+        auto captured = fx::makeNoiseProfile (source->audio, source->sampleRate, false);
+
+        if (captured == nullptr)
+            return;
+
+        captured->source = "captured from " + juce::String ((double) source->audio.getNumSamples() / source->sampleRate, 2)
+                         + " s of " + source->title;
+        fx::setCapturedNoiseProfile (captured);
+        profile = captured;
+        showPrint();
+        push();
+    }
+
+    void showPrint()
+    {
+        printLabel.setText (profile != nullptr ? "Noise print " + profile->source : juce::String ("No noise print"),
+                            juce::dontSendNotification);
+    }
+
+    std::shared_ptr<const fx::NoiseProfile> profile;
+    juce::Label printLabel;
+    juce::TextButton capture { "Capture from the file's selection" }, learnButton { "Learn from this audio" };
+    LabelledSlider reduction { "Reduce the noise by", 0.0, 40.0, 0.5, " dB", 15.0, [this] { push(); } };
+    LabelledSlider threshold { "Noise threshold (above the print)", -6.0, 12.0, 0.1, " dB", 4.0, [this] { push(); } };
+    LabelledSlider smoothing { "Smoothing (less warbling)", 0.0, 100.0, 1.0, " %", 50.0, [this] { push(); } };
+    juce::TextButton noiseOnly { "Hear only the noise taken out" };
+    juce::Rectangle<int> graphArea;
+};
+
+//==============================================================================
+class HumEditor final : public Editor
+{
+public:
+    explicit HumEditor (Shared& s) : Editor (s)
+    {
+        styleLabel (found, 12.0f, true, colours::muted);
+        addAndMakeVisible (found);
+        addAndMakeVisible (frequency);
+        addAndMakeVisible (harmonics);
+        addAndMakeVisible (width);
+
+        for (auto* b : { &hz50, &hz60, &findAgain })
+            addAndMakeVisible (b);
+
+        hz50.onClick = [this] { frequency.slider.setValue (50.0); };
+        hz60.onClick = [this] { frequency.slider.setValue (60.0); };
+        findAgain.onClick = [this] { detect(); };
+        styleToggle (rumble);
+        rumble.setTooltip ("Also cut everything under 30 Hz (handling noise, wind, traffic)");
+        rumble.onClick = [this] { push(); };
+        addAndMakeVisible (rumble);
+        detect();
+        push();
+    }
+
+    fx::HumParams params() const
+    {
+        fx::HumParams p;
+        p.frequency = frequency.value();
+        p.harmonics = juce::roundToInt (harmonics.value());
+        p.widthHz = width.value();
+        p.removeRumble = rumble.getToggleState();
+        return p;
+    }
+
+    void push() override   { fx::setParams (*shared.processor, params()); repaint(); }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeHumRemoval();
+        fx::setParams (*p, params());
+        return p;
+    }
+
+    void tick() override   { if (shared.previewing) repaint(); }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (graphArea.toFloat(), 8.0f);
+        LogGraph graph;
+        graph.area = graphArea.toFloat().reduced (36.0f, 14.0f).withTrimmedBottom (6.0f);
+        graph.lowHz = 20.0;
+        graph.highHz = std::min (2000.0, shared.rate() * 0.45);
+        graph.topDb = 0.0;
+        graph.bottomDb = -100.0;
+        graph.paintGrid (g);
+
+        if (shared.previewing)
+        {
+            const auto hzPerBin = shared.rate() / SpectrumMeter::size;
+            g.setColour (colours::muted.withAlpha (0.7f));
+            g.strokePath (graph.line (shared.pre.db, hzPerBin), juce::PathStrokeType (1.0f));
+            g.setColour (colours::accent);
+            g.strokePath (graph.line (shared.post.db, hzPerBin), juce::PathStrokeType (1.4f));
+        }
+
+        // Where the notches cut.
+        const auto p = params();
+        g.setColour (colours::bass.withAlpha (0.8f));
+
+        for (int h = 1; h <= p.harmonics; ++h)
+        {
+            const auto hz = p.frequency * h;
+
+            if (hz > graph.highHz)
+                break;
+
+            const auto x0 = graph.x (hz - p.widthHz), x1 = graph.x (hz + p.widthHz);
+            g.fillRect (juce::Rectangle<float> (x0, graph.area.getY(), std::max (1.5f, x1 - x0), graph.area.getHeight()));
+        }
+
+        if (p.removeRumble)
+        {
+            g.setColour (colours::bass.withAlpha (0.25f));
+            g.fillRect (juce::Rectangle<float> (graph.area.getX(), graph.area.getY(), graph.x (30.0) - graph.area.getX(), graph.area.getHeight()));
+        }
+
+        g.setColour (colours::muted);
+        g.setFont (juce::FontOptions (11.0f));
+        g.drawText ("orange: the notches" + juce::String (shared.previewing ? "   grey: before   blue: after" : ""),
+                    graphArea.toFloat().reduced (40.0f, 2.0f).withHeight (14.0f), juce::Justification::centredLeft);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        graphArea = r.removeFromTop (180);
+        r.removeFromTop (10);
+        found.setBounds (r.removeFromTop (22));
+        r.removeFromTop (4);
+        auto row = r.removeFromTop (46);
+        findAgain.setBounds (row.removeFromRight (100).withTrimmedTop (16).reduced (2));
+        hz60.setBounds (row.removeFromRight (70).withTrimmedTop (16).reduced (2));
+        hz50.setBounds (row.removeFromRight (70).withTrimmedTop (16).reduced (2));
+        frequency.setBounds (row);
+        r.removeFromTop (4);
+        harmonics.setBounds (r.removeFromTop (46));
+        r.removeFromTop (4);
+        width.setBounds (r.removeFromTop (46));
+        r.removeFromTop (6);
+        rumble.setBounds (r.removeFromTop (30).removeFromLeft (300).reduced (2));
+    }
+
+private:
+    void detect()
+    {
+        if (const auto hum = fx::detectHum (*shared.audio, shared.rate()))
+        {
+            frequency.slider.setValue (hum->frequency, juce::dontSendNotification);
+            found.setText ("Hum found at " + juce::String (hum->frequency, 2) + " Hz, " + juce::String (hum->strengthDb, 0)
+                           + " dB above the sound around it.", juce::dontSendNotification);
+        }
+        else
+        {
+            found.setText ("No clear hum found: set 50 Hz (Europe) or 60 Hz (Americas) by hand.", juce::dontSendNotification);
+        }
+
+        push();
+    }
+
+    juce::Label found;
+    LabelledSlider frequency { "Hum frequency", 40.0, 70.0, 0.01, " Hz", 50.0, [this] { push(); } };
+    LabelledSlider harmonics { "Harmonics (the hum and its multiples)", 1.0, 30.0, 1.0, "", 8.0, [this] { push(); } };
+    LabelledSlider width { "Notch width", 0.5, 10.0, 0.1, " Hz", 2.0, [this] { push(); } };
+    juce::TextButton hz50 { "50 Hz" }, hz60 { "60 Hz" }, findAgain { "Find again" }, rumble { "Also remove rumble (under 30 Hz)" };
+    juce::Rectangle<int> graphArea;
+};
+
+//==============================================================================
+class DeclickEditor final : public Editor
+{
+public:
+    explicit DeclickEditor (Shared& s) : Editor (s)
+    {
+        addAndMakeVisible (sensitivity);
+        addAndMakeVisible (maxLength);
+        styleLabel (status, 13.0f, true, colours::ink);
+        addAndMakeVisible (status);
+        count.setTooltip ("Runs the removal over this audio (without changing it) and counts the clicks");
+        count.onClick = [this] { countClicks(); };
+        addAndMakeVisible (count);
+        push();
+    }
+
+    fx::DeclickParams params() const
+    {
+        fx::DeclickParams p;
+        p.sensitivity = sensitivity.value();
+        p.maxClickMs = maxLength.value();
+        return p;
+    }
+
+    void push() override   { fx::setParams (*shared.processor, params()); repaint(); }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeDeclick();
+        fx::setParams (*p, params());
+        return p;
+    }
+
+    void tick() override
+    {
+        if (shared.previewing)
+            status.setText ("Repaired while previewing: " + juce::String (fx::repairsMade (*shared.processor)) + " clicks",
+                            juce::dontSendNotification);
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto a = infoArea.toFloat();
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (a, 8.0f);
+        g.setColour (colours::ink);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawFittedText ("Finds the clicks and crackle (vinyl, bad edits, digital errors) as sudden jumps the music around "
+                          "them can't explain, and rebuilds those few samples from what comes before and after.\n"
+                          "Higher sensitivity catches smaller ticks (crackle); if drum hits start to lose their attack, "
+                          "lower it or shorten the longest click.",
+                          a.reduced (16.0f, 12.0f).toNearestInt(), juce::Justification::topLeft, 6);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        infoArea = r.removeFromTop (80);
+        r.removeFromTop (12);
+        sensitivity.setBounds (r.removeFromTop (46));
+        r.removeFromTop (4);
+        maxLength.setBounds (r.removeFromTop (46));
+        r.removeFromTop (12);
+        auto row = r.removeFromTop (30);
+        count.setBounds (row.removeFromLeft (150).reduced (2));
+        status.setBounds (row.reduced (10, 0));
+    }
+
+private:
+    void countClicks()
+    {
+        auto p = fx::makeDeclick();
+        fx::setParams (*p, params());
+        const auto rendered = fx::render (*p, *shared.audio, shared.rate(), 0, {});
+        juce::ignoreUnused (rendered);
+        const auto n = fx::repairsMade (*p);
+        status.setText (n == 0 ? juce::String ("No clicks found at this sensitivity.")
+                               : juce::String (n) + (n == 1 ? " click" : " clicks") + " would be repaired (all channels).",
+                        juce::dontSendNotification);
+    }
+
+    LabelledSlider sensitivity { "Sensitivity", 0.0, 100.0, 1.0, " %", 50.0, [this] { push(); } };
+    LabelledSlider maxLength { "Longest click", 0.1, 5.0, 0.1, " ms", 1.5, [this] { push(); } };
+    juce::Label status;
+    juce::TextButton count { "Count the clicks" };
+    juce::Rectangle<int> infoArea;
+};
+
+//==============================================================================
+class ClipRestoreEditor final : public Editor
+{
+public:
+    explicit ClipRestoreEditor (Shared& s) : Editor (s)
+    {
+        styleLabel (found, 13.0f, true, colours::ink);
+        addAndMakeVisible (found);
+        addAndMakeVisible (level);
+        addAndMakeVisible (output);
+        fit.setTooltip ("Sets the output so the rebuilt peaks stay under 0 dB");
+        fit.onClick = [this] { fitOutput(); };
+        addAndMakeVisible (fit);
+
+        int runs = 0;
+
+        if (const auto clipped = fx::detectClipLevelDb (*shared.audio, &runs))
+        {
+            level.slider.setValue (*clipped, juce::dontSendNotification);
+            found.setText ("Clipped at " + juce::String (*clipped, 2) + " dB: " + juce::String (runs) + " flattened peaks found.",
+                           juce::dontSendNotification);
+        }
+        else
+        {
+            found.setText ("No clipping found (no flat runs at the top level). Set the level by hand if you hear it.",
+                           juce::dontSendNotification);
+        }
+
+        push();
+        fitOutput();
+    }
+
+    fx::ClipRestoreParams params() const
+    {
+        fx::ClipRestoreParams p;
+        p.clipLevelDb = level.value();
+        p.outputDb = output.value();
+        return p;
+    }
+
+    void push() override   { fx::setParams (*shared.processor, params()); repaint(); }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeClipRestore();
+        fx::setParams (*p, params());
+        return p;
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto a = infoArea.toFloat();
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (a, 8.0f);
+        g.setColour (colours::ink);
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawFittedText ("Where the waveform was cut flat at the top (too loud when recorded or mastered), the missing "
+                          "peak is redrawn from the curve of the samples either side. The rebuilt peaks go above the old "
+                          "limit, so the output is turned down to make room for them.",
+                          a.reduced (16.0f, 12.0f).toNearestInt(), juce::Justification::topLeft, 5);
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        infoArea = r.removeFromTop (64);
+        r.removeFromTop (12);
+        found.setBounds (r.removeFromTop (24));
+        r.removeFromTop (6);
+        level.setBounds (r.removeFromTop (46));
+        r.removeFromTop (4);
+        auto row = r.removeFromTop (46);
+        fit.setBounds (row.removeFromRight (170).withTrimmedTop (16).reduced (2));
+        output.setBounds (row);
+    }
+
+private:
+    // Rebuilds the peaks once (without changing anything) to see how high they go.
+    void fitOutput()
+    {
+        auto values = params();
+        values.outputDb = 0.0;
+        auto p = fx::makeClipRestore();
+        fx::setParams (*p, values);
+
+        if (const auto rendered = fx::render (*p, *shared.audio, shared.rate(), 0, {}))
+        {
+            float peak = 0.0f;
+
+            for (int ch = 0; ch < rendered->getNumChannels(); ++ch)
+                peak = std::max (peak, rendered->getMagnitude (ch, 0, rendered->getNumSamples()));
+
+            const auto needed = std::min (0.0, -juce::Decibels::gainToDecibels ((double) peak, -100.0) - 0.3);
+            output.slider.setValue (juce::jlimit (-24.0, 0.0, needed));
+        }
+    }
+
+    juce::Label found;
+    LabelledSlider level { "Clipped at (level)", -24.0, 0.0, 0.01, " dB", -0.1, [this] { push(); } };
+    LabelledSlider output { "Output (room for the peaks)", -24.0, 0.0, 0.1, " dB", -3.0, [this] { push(); } };
+    juce::TextButton fit { "Fit under 0 dB" };
+    juce::Rectangle<int> infoArea;
+};
+
 class EffectPanel final : public juce::Component,
                           private juce::Timer
 {
@@ -2243,6 +2829,10 @@ public:
             case EffectKind::flanger:     shared.processor = fx::makeModulation(); editor = std::make_unique<ModulationEditor> (shared, fx::ModulationParams::flanger); break;
             case EffectKind::vibrato:     shared.processor = fx::makeModulation(); editor = std::make_unique<ModulationEditor> (shared, fx::ModulationParams::vibrato); break;
             case EffectKind::distortion:  shared.processor = fx::makeDistortion(); editor = std::make_unique<DistortionEditor> (shared); break;
+            case EffectKind::noiseReduction: shared.processor = fx::makeNoiseReduction(); editor = std::make_unique<NoiseReductionEditor> (shared); break;
+            case EffectKind::humRemoval:  shared.processor = fx::makeHumRemoval(); editor = std::make_unique<HumEditor> (shared); break;
+            case EffectKind::declick:     shared.processor = fx::makeDeclick();    editor = std::make_unique<DeclickEditor> (shared); break;
+            case EffectKind::clipRestore: shared.processor = fx::makeClipRestore(); editor = std::make_unique<ClipRestoreEditor> (shared); break;
         }
 
         name = effectName (kind);
@@ -2291,6 +2881,10 @@ public:
         const auto height = big ? 700
                           : kind == EffectKind::compressor || kind == EffectKind::gate ? 480
                           : kind == EffectKind::limiter ? 520
+                          : kind == EffectKind::noiseReduction ? 560
+                          : kind == EffectKind::humRemoval ? 520
+                          : kind == EffectKind::declick ? 370
+                          : kind == EffectKind::clipRestore ? 370
                           : kind == EffectKind::chorus || kind == EffectKind::flanger ? 480
                           : kind == EffectKind::distortion ? 440
                           : kind == EffectKind::vibrato ? 420

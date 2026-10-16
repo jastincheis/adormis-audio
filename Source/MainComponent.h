@@ -93,6 +93,7 @@ private:
     // Package B: loudness.
     void showNormalize();
     void showPitchShift();
+    void captureNoisePrint();   // Tools > Noise Reduction > Capture Noise Print
     juce::StringArray lastPitch;
     void showStatistics();
     void setMeterSections (bool channels, bool loudness);

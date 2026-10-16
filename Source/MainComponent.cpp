@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 #include "Analysis.h"
 #include "Tempo.h"
+#include "Restoration.h"
 #include "BackgroundPattern.h"
 #include "Commands.h"
 #include "MixDialog.h"
@@ -1205,6 +1206,27 @@ void MainComponent::showPitchShift()
                   runStretch (&d, d.processRange(), settings);
                   rememberAction ("Pitch Shift", [this, settings] (DataWindow& w) { runStretch (&w, w.processRange(), settings); });
               });
+}
+
+void MainComponent::captureNoisePrint()
+{
+    auto source = bassFinderSource();   // the selection (one channel if picked)
+
+    if (! source.has_value() || source->audio.getNumSamples() < wf::fx::noiseFftSize (source->sampleRate))
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::NoIcon, "Capture Noise Print",
+                                                "Select at least 0.1 s with only the noise in it (no music or voice).");
+        return;
+    }
+
+    if (auto profile = wf::fx::makeNoiseProfile (source->audio, source->sampleRate, false))
+    {
+        profile->source = "captured from " + juce::String ((double) source->audio.getNumSamples() / source->sampleRate, 2)
+                        + " s of " + source->title;
+        wf::fx::setCapturedNoiseProfile (profile);
+        statusBar.setText ("  Noise print " + profile->source + ". Now select what to clean and open Noise Reduction.",
+                           juce::dontSendNotification);
+    }
 }
 
 void MainComponent::showStatistics()
@@ -2556,6 +2578,10 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             available = available && doc != nullptr && job == nullptr && ! doc->isEmpty();
             break;
 
+        case wf::toolsCaptureNoise:
+            available = available && doc != nullptr && ! doc->getView().getSelection().isEmpty();
+            break;
+
         // Conversions change the whole file: not while a tool works on a copy of it.
         case wf::procResample: case wf::procBitDepth: case wf::procChannelConv: case wf::procAutoTrim:
         case wf::insertSilence:
@@ -2577,6 +2603,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
         case wf::procEqParametric: case wf::fxCompressor: case wf::fxDelay: case wf::fxReverb: case wf::toolsMp3Restore:
         case wf::fxLimiter: case wf::fxGate: case wf::fxChorus: case wf::fxFlange: case wf::fxVibrato: case wf::fxDistortion:
+        case wf::toolsNoiseReduction: case wf::toolsHumRemoval: case wf::toolsDeclick: case wf::toolsClipRestore:
             available = available && doc != nullptr && (effectWindow != nullptr || ! toolWindowOpen()) && job == nullptr;
             break;
 
@@ -2772,6 +2799,11 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::fxVibrato:         showEffect (wf::EffectKind::vibrato); return true;
         case wf::fxDistortion:      showEffect (wf::EffectKind::distortion); return true;
         case wf::fxPitchShift:      showPitchShift(); return true;
+        case wf::toolsNoiseReduction: showEffect (wf::EffectKind::noiseReduction); return true;
+        case wf::toolsHumRemoval:   showEffect (wf::EffectKind::humRemoval); return true;
+        case wf::toolsDeclick:      showEffect (wf::EffectKind::declick); return true;
+        case wf::toolsClipRestore:  showEffect (wf::EffectKind::clipRestore); return true;
+        case wf::toolsCaptureNoise: captureNoisePrint(); return true;
 
         case wf::optPlay:
             if (isPlaying())

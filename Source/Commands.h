@@ -42,6 +42,7 @@ enum CommandIDs : juce::CommandID
     toolsAutoRegion = 0x1600, toolsExtractRegions, toolsClipDetect, toolsFind,
     toolsRepairInterpolate, toolsRepairReplace, toolsRepairCopyChannel, toolsSynthSimple,
     toolsSynthFm, toolsBassFinder, toolsDeEsser, toolsMp3Restore, toolsStatistics,
+    toolsNoiseReduction, toolsCaptureNoise, toolsHumRemoval, toolsDeclick, toolsClipRestore,
 
     // FX Favorites
     favPluginManager = 0x1700, favPluginChain, favRescan,
