@@ -1,10 +1,15 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(WaveForge VERSION 0.1.0 LANGUAGES C CXX)
+# Both must be set before project() to take effect.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+# Windows: the C++ runtime inside the .exe, so it starts without the
+# Visual C++ Redistributable installed.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+project(WaveForge VERSION 0.1.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 
 # JUCE 9.0.4, pinned by commit and checksum.
 # For local builds, -DWAVEFORGE_JUCE_DIR=/path/to/JUCE skips the download.
