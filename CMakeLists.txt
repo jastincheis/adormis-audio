@@ -88,6 +88,7 @@ target_sources(WaveForge PRIVATE
     Source/Tempo.cpp
     Source/Restoration.cpp
     Source/StartupLog.cpp
+    Source/RegionsWindow.cpp
     Source/StatisticsWindow.cpp
     Source/ProcessToolbar.cpp
     Source/Recorder.cpp

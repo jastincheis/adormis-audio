@@ -381,6 +381,7 @@ MainComponent::~MainComponent()
     transport.stop();
     transport.setSource (nullptr);
     statisticsWindow.reset();
+    regionsWindow.reset();
     meters.reset();
     deviceManager.removeChangeListener (&audioSaver);
     deviceManager.removeAudioCallback (meterTap.get());
@@ -478,9 +479,18 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
         return;
 
     auto* raw = doc.get();
+    raw->onRegionAction = [this, raw] (int index, bool menu)
+    {
+        if (menu) regionMenu (raw, index);
+        else      renameRegion (raw, index);
+    };
+
     raw->onChanged = [this, raw]
     {
         followSelectionLoop (raw);
+
+        if (raw == activeDocument())
+            refreshRegionsList();
 
         if (raw == activeDocument())
         {
@@ -515,6 +525,7 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
 void MainComponent::activeDocumentChanged()
 {
     scheduleTempo();
+    refreshRegionsList();
     updateTitle();
     updateStatus();
     commandManager.commandStatusChanged();
@@ -1282,6 +1293,304 @@ void MainComponent::captureNoisePrint()
         statusBar.setText ("  Noise print " + profile->source + ". Now select what to clean and open Noise Reduction.",
                            juce::dontSendNotification);
     }
+}
+
+//==============================================================================
+void MainComponent::insertRegion()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->getView().getSelection().isEmpty())
+    {
+        statusBar.setText ("  Select the audio the region should cover, then press R.", juce::dontSendNotification);
+        return;
+    }
+
+    doc->addRegion (doc->getView().getSelection(), doc->nextRegionName());
+}
+
+void MainComponent::renameRegion (DataWindow* doc, int index)
+{
+    if (doc == nullptr || ! juce::isPositiveAndBelow (index, (int) doc->getRegions().size()))
+        return;
+
+    const juce::Component::SafePointer<DataWindow> safeDoc (doc);
+    auto apply = [safeDoc, index] (const juce::StringArray& v)
+    {
+        if (auto* d = safeDoc.getComponent())
+            d->renameRegion (index, v[0]);
+    };
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->formWindow.reset();
+        });
+    };
+
+    formWindow = wf::createFormWindow ("Rename Region", "Region " + juce::String (index + 1) + " of " + doc->getTitle(),
+                                       { { "Name:", doc->getRegions()[(size_t) index].name, {}, {},
+                                           [] (const juce::String& t) { return t.trim().isNotEmpty() && t.length() <= 200; } } },
+                                       {}, std::move (apply), std::move (onClose));
+    formWindow->setVisible (true);
+    formWindow->toFront (true);
+}
+
+void MainComponent::playRegion (DataWindow* doc, int index)
+{
+    if (doc == nullptr || ! juce::isPositiveAndBelow (index, (int) doc->getRegions().size()))
+        return;
+
+    const auto& r = doc->getRegions()[(size_t) index];
+    doc->getView().setSelection ({ r.start, r.end });
+
+    if (doc == activeDocument())
+        startPlayback ({ r.start, r.end });
+}
+
+void MainComponent::regionMenu (DataWindow* doc, int index)
+{
+    juce::PopupMenu menu;
+    menu.addItem (1, "Play");
+    menu.addItem (2, "Rename...");
+    menu.addItem (3, "Delete region");
+
+    const juce::Component::SafePointer<DataWindow> safeDoc (doc);
+    const juce::Component::SafePointer<MainComponent> safeThis (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition().withParentComponent (getTopLevelComponent()),
+                        [safeThis, safeDoc, index] (int result)
+                        {
+                            auto* main = safeThis.getComponent();
+                            auto* d = safeDoc.getComponent();
+
+                            if (main == nullptr || d == nullptr)
+                                return;
+
+                            if (result == 1) main->playRegion (d, index);
+                            if (result == 2) main->renameRegion (d, index);
+                            if (result == 3) d->removeRegion (index);
+                        });
+}
+
+void MainComponent::toggleRegionsList()
+{
+    if (regionsWindow != nullptr)
+    {
+        regionsWindow.reset();
+        commandManager.commandStatusChanged();
+        return;
+    }
+
+    wf::RegionsCallbacks callbacks;
+    callbacks.select = [this] (int i)
+    {
+        if (auto* d = activeDocument(); d != nullptr && juce::isPositiveAndBelow (i, (int) d->getRegions().size()))
+        {
+            const auto& r = d->getRegions()[(size_t) i];
+            d->getView().setSelection ({ r.start, r.end });
+            d->getView().ensureVisible (r.start);
+        }
+    };
+    callbacks.play = [this] (int i)   { playRegion (activeDocument(), i); };
+    callbacks.rename = [this] (int i) { renameRegion (activeDocument(), i); };
+    callbacks.remove = [this] (int i) { if (auto* d = activeDocument()) d->removeRegion (i); };
+    callbacks.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->regionsWindow.reset();
+                main->commandManager.commandStatusChanged();
+            }
+        });
+    };
+
+    regionsWindow = std::make_unique<wf::RegionsWindow> (std::move (callbacks));
+    refreshRegionsList();
+    regionsWindow->setVisible (true);
+    regionsWindow->toFront (false);
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::refreshRegionsList()
+{
+    if (regionsWindow == nullptr)
+        return;
+
+    if (auto* doc = activeDocument())
+        regionsWindow->refresh (doc->getTitle(), doc->getRegions(), doc->getSampleRate());
+    else
+        regionsWindow->refresh ({}, {}, 44100.0);
+}
+
+namespace
+{
+// The stretches of sound between silences of at least `minSilence` seconds
+// (quieter than `thresholdDb`, measured in 10 ms steps).
+std::vector<AudioRegion> findSoundRegions (const juce::AudioBuffer<float>& audio, double rate, double thresholdDb,
+                                           double minSilence, double minRegion)
+{
+    const auto step = std::max (1, (int) (rate * 0.01));
+    const auto threshold = juce::Decibels::decibelsToGain ((float) thresholdDb);
+    const auto steps = audio.getNumSamples() / step + 1;
+    std::vector<bool> loud ((size_t) steps, false);
+
+    for (int k = 0; k < steps; ++k)
+    {
+        const auto start = k * step, n = std::min (step, audio.getNumSamples() - start);
+
+        if (n <= 0)
+            break;
+
+        float level = 0.0f;
+
+        for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+            level = std::max (level, audio.getRMSLevel (ch, start, n));
+
+        loud[(size_t) k] = level >= threshold;
+    }
+
+    const auto minQuietSteps = std::max (1, (int) std::lround (minSilence / 0.01));
+    std::vector<AudioRegion> found;
+    int k = 0;
+
+    while (k < steps)
+    {
+        while (k < steps && ! loud[(size_t) k]) ++k;   // skip silence
+
+        if (k >= steps)
+            break;
+
+        const auto first = k;
+        int lastLoud = k;
+
+        // Runs on until a silence long enough.
+        while (k < steps)
+        {
+            if (loud[(size_t) k]) { lastLoud = k; ++k; continue; }
+
+            int quiet = 0;
+            while (k < steps && ! loud[(size_t) k]) { ++quiet; ++k; }
+
+            if (quiet >= minQuietSteps || k >= steps)
+                break;
+        }
+
+        const auto start = (juce::int64) first * step;
+        const auto end = std::min ((juce::int64) audio.getNumSamples(), (juce::int64) (lastLoud + 1) * step);
+
+        if ((double) (end - start) / rate >= minRegion)
+            found.push_back ({ start, end, {} });
+    }
+
+    return found;
+}
+} // namespace
+
+void MainComponent::showAutoRegion()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->isEmpty())
+        return;
+
+    auto number = [] (double lo, double hi)
+    {
+        return [lo, hi] (const juce::String& t) { const auto v = wf::parseNumber (t); return v.has_value() && *v >= lo && *v <= hi; };
+    };
+
+    showForm ("Auto Region", "Make a region of every stretch of sound in " + doc->getTitle(),
+              { { "Silence is below:", "-45", {}, "dB", number (-100.0, -6.0) },
+                { "Silence lasts at least:", "0.5", {}, "seconds", number (0.05, 30.0) },
+                { "Shortest region:", "1", {}, "seconds", number (0.0, 600.0) },
+                { "Existing regions:", "Keep them", { "Keep them", "Replace them" }, {}, {} } },
+              "Good for splitting a recording of several takes,\nsongs or samples separated by silence.",
+              [this] (DataWindow& d, const juce::StringArray& v)
+              {
+                  auto found = findSoundRegions (d.getBuffer(), d.getSampleRate(), *wf::parseNumber (v[0]),
+                                                 *wf::parseNumber (v[1]), *wf::parseNumber (v[2]));
+                  auto all = v[3] == "Keep them" ? d.getRegions() : std::vector<AudioRegion>();
+                  int n = 1;
+
+                  for (auto& r : found)
+                  {
+                      r.name = "Region " + juce::String (n++);
+                      all.push_back (r);
+                  }
+
+                  if (found.empty())
+                  {
+                      juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::NoIcon, "Auto Region",
+                                                              "No stretch of sound found with these settings.");
+                      return;
+                  }
+
+                  d.setRegions (std::move (all));
+                  statusBar.setText ("  " + juce::String ((int) found.size()) + " regions made.", juce::dontSendNotification);
+              });
+}
+
+void MainComponent::extractRegions()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->getRegions().empty())
+        return;
+
+    const auto start = doc->getFile().existsAsFile() ? doc->getFile().getParentDirectory()
+                                                     : juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+    const juce::Component::SafePointer<DataWindow> safeDoc (doc);
+
+    filePicker.launch ("Folder to save the regions in", start, "*",
+                       juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                       [this, safeDoc] (const juce::Array<juce::File>& chosen)
+                       {
+                           auto* d = safeDoc.getComponent();
+
+                           if (d == nullptr || chosen.isEmpty() || ! chosen[0].isDirectory())
+                               return;
+
+                           const auto folder = chosen[0];
+                           const auto base = d->getFile().existsAsFile() ? d->getFile().getFileNameWithoutExtension() : d->getTitle();
+                           const auto keep = d->getFile().existsAsFile() && DataWindow::isSaveExtension (d->getFile().getFileExtension())
+                                             && ! d->getFile().hasFileExtension (".mp3");
+                           wf::SaveFormat format;
+                           format.extension = keep ? d->getFile().getFileExtension().toLowerCase() : ".wav";
+                           format.bitsPerSample = d->getBitDepth() > 0 ? d->getBitDepth() : 24;
+                           format.floatingPoint = d->isFloatingPoint();
+                           int saved = 0;
+                           juce::StringArray failed;
+
+                           for (const auto& r : d->getRegions())
+                           {
+                               const auto length = (int) (r.end - r.start);
+                               juce::AudioBuffer<float> audio (d->getBuffer().getNumChannels(), length);
+
+                               for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+                                   audio.copyFrom (ch, 0, d->getBuffer(), ch, (int) r.start, length);
+
+                               auto name = juce::File::createLegalFileName (base + " - " + r.name);
+                               auto file = folder.getChildFile (name + format.extension);
+
+                               for (int n = 2; file.exists(); ++n)
+                                   file = folder.getChildFile (name + " (" + juce::String (n) + ")" + format.extension);
+
+                               auto part = DataWindow::fromAudio (name, d->getSampleRate(), std::move (audio), {});
+                               juce::String error;
+
+                               if (part != nullptr && part->saveTo (file, formatManager, error, &format))
+                                   ++saved;
+                               else
+                                   failed.add (r.name + (error.isNotEmpty() ? ": " + error : juce::String()));
+                           }
+
+                           juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::NoIcon, "Extract Regions",
+                               juce::String (saved) + (saved == 1 ? " file" : " files") + " saved in\n" + folder.getFullPathName()
+                               + (failed.isEmpty() ? juce::String() : "\n\nNot saved:\n" + failed.joinIntoString ("\n")));
+                       });
 }
 
 void MainComponent::showStatistics()
@@ -2633,8 +2942,16 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             available = available && doc != nullptr && job == nullptr && ! doc->isEmpty();
             break;
 
-        case wf::toolsCaptureNoise:
+        case wf::toolsCaptureNoise: case wf::insertRegion:
             available = available && doc != nullptr && ! doc->getView().getSelection().isEmpty();
+            break;
+
+        case wf::viewRegionsList:
+            info.setTicked (regionsWindow != nullptr);
+            break;
+
+        case wf::toolsExtractRegions:
+            available = available && doc != nullptr && ! doc->getRegions().empty() && job == nullptr;
             break;
 
         // Conversions change the whole file: not while a tool works on a copy of it.
@@ -2679,10 +2996,10 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
     // while recording, only Record (to stop), the windows and zoom work.
     const auto editsOrPlays = (id >= wf::editUndo && id < wf::favPluginManager) || (id >= wf::optPlay && id <= wf::optGoEnd);
     const auto stillWorksWhileRecording = id == wf::optRecord || id == wf::helpShortcuts || id == wf::helpAbout
-                                       || id == wf::viewChannelMeters || id == wf::viewLoudnessMeters
+                                       || id == wf::viewChannelMeters || id == wf::viewLoudnessMeters || id == wf::viewRegionsList
                                        || (id >= wf::winCascade && id <= wf::winPrev) || (id >= wf::viewZoomIn && id <= wf::viewZoomNormal);
 
-    if (editsOrPlays && id != wf::optRecord && id != wf::viewChannelMeters && id != wf::viewLoudnessMeters
+    if (editsOrPlays && id != wf::optRecord && id != wf::viewChannelMeters && id != wf::viewLoudnessMeters && id != wf::viewRegionsList
         && doc != nullptr && doc->isEmpty())
         available = false;
 
@@ -2859,6 +3176,10 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::toolsDeclick:      showEffect (wf::EffectKind::declick); return true;
         case wf::toolsClipRestore:  showEffect (wf::EffectKind::clipRestore); return true;
         case wf::toolsCaptureNoise: captureNoisePrint(); return true;
+        case wf::insertRegion:      insertRegion(); return true;
+        case wf::viewRegionsList:   toggleRegionsList(); return true;
+        case wf::toolsAutoRegion:   showAutoRegion(); return true;
+        case wf::toolsExtractRegions: extractRegions(); return true;
 
         case wf::optPlay:
             if (isPlaying())

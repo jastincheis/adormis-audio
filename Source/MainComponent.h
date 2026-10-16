@@ -17,6 +17,7 @@
 #include "FormDialog.h"
 #include "MeterPanel.h"
 #include "StatisticsWindow.h"
+#include "RegionsWindow.h"
 
 class ShortcutsWindow;
 
@@ -93,6 +94,17 @@ private:
     // Package B: loudness.
     void showNormalize();
     void showPitchShift();
+
+    // Package E: regions.
+    void insertRegion();
+    void renameRegion (DataWindow* doc, int index);
+    void regionMenu (DataWindow* doc, int index);
+    void playRegion (DataWindow* doc, int index);
+    void toggleRegionsList();
+    void refreshRegionsList();
+    void showAutoRegion();
+    void extractRegions();
+    std::unique_ptr<wf::RegionsWindow> regionsWindow;
     void captureNoisePrint();   // Tools > Noise Reduction > Capture Noise Print
     juce::StringArray lastPitch;
     void showStatistics();

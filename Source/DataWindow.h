@@ -174,6 +174,18 @@ public:
     void mixIn (const juce::AudioBuffer<float>& source, double sourceRate, juce::int64 position,
                 float sourceGain, float destGain);
 
+    // Regions (Insert > Region): kept in start order. Adding, renaming and
+    // removing are undoable; edits move / trim them with the audio.
+    const std::vector<AudioRegion>& getRegions() const   { return regions; }
+    int addRegion (juce::Range<juce::int64> range, const juce::String& name);   // its index
+    void renameRegion (int index, const juce::String& name);
+    void removeRegion (int index);
+    void setRegions (std::vector<AudioRegion> newRegions);   // Auto Region (undoable)
+    juce::String nextRegionName() const;   // "Region 3"
+
+    // The region strip asks to rename (false) or offers a menu (true).
+    std::function<void (int regionIndex, bool menu)> onRegionAction;
+
     // Markers are kept sorted; adding one at an existing position does nothing.
     void addMarker (juce::int64 position);
     void removeMarker (int index);
@@ -201,6 +213,9 @@ private:
 
     void pushUndo();
     void audioChanged();
+    void regionsChanged();
+    std::unordered_map<juce::String, juce::String> cueMetadata (double ratio) const;   // markers + regions for WAV
+    void readCues (const juce::StringPairArray& metadata);
 
     // Runs `fn` (undoably) on the process range of the picked channel, or of
     // every channel when none is picked.
@@ -224,6 +239,7 @@ private:
 
     std::vector<juce::int64> markers;
     std::vector<juce::int64> barStarts;   // sorted; the markers that begin a bar
+    std::vector<AudioRegion> regions;     // sorted by start
 
     // Moves (or, for an empty result, removes) every marker, bar starts included.
     void remapMarkers (const std::function<std::optional<juce::int64> (juce::int64)>& fn);
@@ -237,6 +253,7 @@ private:
     {
         juce::AudioBuffer<float> audio;
         std::vector<juce::int64> markers, barStarts;
+        std::vector<AudioRegion> regions;
         double rate = 44100.0;
         int bitDepth = 0, resolutionBits = 0;
         bool floatingPoint = false;

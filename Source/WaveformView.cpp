@@ -1,10 +1,12 @@
 #include "WaveformView.h"
 #include "BackgroundPattern.h"
+#include <numeric>
 
 namespace
 {
 constexpr int rulerHeight     = 22;
 constexpr int scrollBarHeight = 14;
+constexpr int regionLaneHeight = 17;
 constexpr int laneGap         = 4;
 
 const juce::Colour waveColour      (0xffd8ecff);
@@ -56,7 +58,79 @@ juce::String WaveformView::formatTime (double seconds)
 //==============================================================================
 juce::Rectangle<int> WaveformView::waveArea() const
 {
-    return getLocalBounds().withTrimmedTop (rulerHeight).withTrimmedBottom (scrollBarHeight);
+    const auto lane = regions != nullptr && ! regions->empty() ? regionLaneHeight : 0;
+    return getLocalBounds().withTrimmedTop (rulerHeight + lane).withTrimmedBottom (scrollBarHeight);
+}
+
+juce::Rectangle<int> WaveformView::regionLane() const
+{
+    if (regions == nullptr || regions->empty())
+        return {};
+
+    return getLocalBounds().withTrimmedTop (rulerHeight).withHeight (regionLaneHeight);
+}
+
+int WaveformView::regionAt (juce::Point<int> position) const
+{
+    if (! regionLane().contains (position) || regions == nullptr)
+        return -1;
+
+    // The shortest region under the point (a short one drawn over a long one).
+    int best = -1;
+
+    for (int i = 0; i < (int) regions->size(); ++i)
+    {
+        const auto& r = (*regions)[(size_t) i];
+
+        if ((float) position.x >= sampleToX ((double) r.start) && (float) position.x <= sampleToX ((double) r.end)
+            && (best < 0 || r.end - r.start < (*regions)[(size_t) best].end - (*regions)[(size_t) best].start))
+            best = i;
+    }
+
+    return best;
+}
+
+void WaveformView::paintRegions (juce::Graphics& g, juce::Rectangle<int> lane)
+{
+    static const juce::Colour palette[] { juce::Colour (0xff4a90d9), juce::Colour (0xff3fb27f), juce::Colour (0xffd9a441),
+                                          juce::Colour (0xffb05fd0), juce::Colour (0xffd9534f), juce::Colour (0xff46b8c8) };
+    g.setColour (juce::Colour (0xff2b2f36));
+    g.fillRect (lane);
+
+    // Longest first, so short regions are drawn on top.
+    std::vector<int> order ((size_t) regions->size());
+    std::iota (order.begin(), order.end(), 0);
+    std::sort (order.begin(), order.end(), [this] (int a, int b)
+    {
+        const auto& ra = (*regions)[(size_t) a];
+        const auto& rb = (*regions)[(size_t) b];
+        return ra.end - ra.start > rb.end - rb.start;
+    });
+
+    const auto wave = waveArea();
+
+    for (auto i : order)
+    {
+        const auto& r = (*regions)[(size_t) i];
+        const auto x1 = sampleToX ((double) r.start), x2 = sampleToX ((double) r.end);
+
+        if (x2 < (float) lane.getX() || x1 > (float) lane.getRight())
+            continue;
+
+        const auto colour = palette[(size_t) i % std::size (palette)];
+        const juce::Rectangle<float> bar (x1, (float) lane.getY() + 2.0f, std::max (2.0f, x2 - x1), (float) lane.getHeight() - 4.0f);
+        g.setColour (colour.withAlpha (0.85f));
+        g.fillRoundedRectangle (bar, 3.0f);
+        g.setColour (juce::Colours::white);
+        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.drawText (r.name, bar.reduced (4.0f, 0.0f).withLeft (std::max (bar.getX() + 4.0f, (float) lane.getX() + 2.0f)),
+                    juce::Justification::centredLeft, true);
+
+        // The edges down through the waveform, faint.
+        g.setColour (colour.withAlpha (0.55f));
+        g.fillRect (x1, (float) wave.getY(), 1.0f, (float) wave.getHeight());
+        g.fillRect (x2 - 1.0f, (float) wave.getY(), 1.0f, (float) wave.getHeight());
+    }
 }
 
 double WaveformView::xToSample (float x) const
@@ -333,7 +407,7 @@ int WaveformView::markerNear (float x) const
 
 int WaveformView::markerAt (juce::Point<int> position) const
 {
-    if (markers == nullptr)
+    if (markers == nullptr || regionLane().contains (position))
         return -1;
 
     // The numbered flag in the ruler hangs right of its line (left at the far edge).
@@ -378,7 +452,7 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
         return;
 
     // Right-click on a marker removes it.
-    if (e.mods.isPopupMenu())
+    if (e.mods.isPopupMenu() && ! regionLane().contains (e.getPosition()))
     {
         if (const auto index = markerNear ((float) e.x); index >= 0 && onRemoveMarker != nullptr)
             onRemoveMarker (index);
@@ -404,6 +478,24 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     {
         selectedMarkers.clear();
         repaint();
+    }
+
+    // The region strip: a click selects the region, a right-click offers a menu.
+    if (regionLane().contains (e.getPosition()))
+    {
+        if (const auto index = regionAt (e.getPosition()); index >= 0)
+        {
+            const auto& r = (*regions)[(size_t) index];
+            dragAnchor = r.start;
+            cursor = r.start;
+            setSelection ({ r.start, r.end });
+
+            if (e.mods.isPopupMenu() && onRegionMenu != nullptr)
+                onRegionMenu (index);
+        }
+
+        pressedOnMarker = true;   // no drag-select from the strip
+        return;
     }
 
     if (! waveArea().contains (e.getPosition()))
@@ -537,6 +629,14 @@ void WaveformView::mouseDoubleClick (const juce::MouseEvent& e)
     if (! hasAudio())
         return;
 
+    if (const auto index = regionAt (e.getPosition()); index >= 0)
+    {
+        if (onRenameRegion != nullptr)
+            onRenameRegion (index);
+
+        return;
+    }
+
     // Double-click on a marker picks every marker.
     if (markers != nullptr && markerAt (e.getPosition()) >= 0)
     {
@@ -620,6 +720,9 @@ void WaveformView::paint (juce::Graphics& g)
 
     const auto area = waveArea();
     paintRuler (g, getLocalBounds().removeFromTop (rulerHeight));
+
+    if (const auto lane = regionLane(); ! lane.isEmpty() && hasAudio())
+        paintRegions (g, lane);
 
     if (! hasAudio())
     {

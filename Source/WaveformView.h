@@ -3,6 +3,13 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+// A named stretch of a file (Insert > Region, R).
+struct AudioRegion
+{
+    juce::int64 start = 0, end = 0;
+    juce::String name;
+};
+
 // The data window: time ruler, one lane per channel, cursor, selection and
 // playhead, drawn over the textured background.
 class WaveformView final : public juce::Component,
@@ -37,6 +44,13 @@ public:
         barStarts = bars;
         repaint();
     }
+
+    // The document's regions (may be nullptr): a strip under the ruler shows
+    // them; a click selects one, a double-click renames it, a right-click
+    // offers rename / delete.
+    void setRegions (const std::vector<AudioRegion>* newRegions)   { regions = newRegions; resized(); repaint(); }
+    std::function<void (int regionIndex)> onRenameRegion;
+    std::function<void (int regionIndex)> onRegionMenu;
 
     // Markers picked with a click on them (one) or a double-click (all),
     // by position; Delete removes them instead of audio.
@@ -98,6 +112,9 @@ private:
     void notifyChanged();
 
     void paintRuler (juce::Graphics&, juce::Rectangle<int> area);
+    void paintRegions (juce::Graphics&, juce::Rectangle<int> area);
+    juce::Rectangle<int> regionLane() const;   // empty when there are no regions
+    int regionAt (juce::Point<int> position) const;
     void paintMarkers (juce::Graphics&, juce::Rectangle<int> rulerArea, juce::Rectangle<int> waveArea);
     void paintDropPreview (juce::Graphics&, juce::Rectangle<int> waveArea);
     int markerNear (float x) const;  // index of a marker within a few pixels, or -1
@@ -109,6 +126,7 @@ private:
 
     const juce::AudioBuffer<float>* buffer = nullptr;
     const std::vector<juce::int64>* markers = nullptr;
+    const std::vector<AudioRegion>* regions = nullptr;
     const std::vector<juce::int64>* barStarts = nullptr;
     juce::String emptyText { "No file open" };
     double sampleRate = 44100.0;

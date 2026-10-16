@@ -1,4 +1,6 @@
 #include "DataWindow.h"
+#include <map>
+#include <set>
 #include "Mp3Encoder.h"
 
 #if WAVEFORGE_HAS_SAMPLERATE
@@ -155,6 +157,7 @@ std::unique_ptr<DataWindow> DataWindow::load (const juce::File& file, juce::Audi
     doc->formatName = reader->getFormatName();
     doc->buffer.setSize (channels, (int) length);
     reader->read (&doc->buffer, 0, (int) length, 0, true, true);
+    doc->readCues (reader->metadataValues);
 
     doc->initialise (file.getFileName());
     return doc;
@@ -190,6 +193,9 @@ void DataWindow::initialise (const juce::String& newTitle)
     view.onPlayheadMoved = [this] { updateInfo(); };
     view.onRemoveMarker = [this] (int index) { removeMarker (index); };
     view.setMarkers (&markers, &barStarts);
+    view.setRegions (&regions);
+    view.onRenameRegion = [this] (int index) { if (onRegionAction) onRegionAction (index, false); };
+    view.onRegionMenu = [this] (int index) { if (onRegionAction) onRegionAction (index, true); };
     addAndMakeVisible (view);
 
     for (auto* label : { &resolutionLabel, &lengthBox, &cursorBox })
@@ -298,6 +304,11 @@ bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager
     auto options = juce::AudioFormatWriterOptions{}.withSampleRate (targetRate)
                                                    .withNumChannels (audio.getNumChannels())
                                                    .withBitsPerSample (bits);
+
+    // WAV keeps the markers and regions (cue points and labels, as Sound
+    // Forge and most editors read them).
+    if (destination.hasFileExtension (".wav") && (! markers.empty() || ! regions.empty()))
+        options = options.withMetadataValues (cueMetadata (convert ? targetRate / sampleRate : 1.0));
 
     // Save (no choice made) keeps float data float, as long as it stays 32-bit.
     const auto useFloat = bits == 32 && (chosen != nullptr ? chosen->floatingPoint : floatingPoint);
@@ -1105,6 +1116,218 @@ void DataWindow::remapMarkers (const std::function<std::optional<juce::int64> (j
 
     remap (markers);
     remap (barStarts);
+
+    // A region's edge in removed audio moves to the nearest audio kept inside
+    // it (the removed part is one stretch, so a binary search finds it).
+    std::vector<AudioRegion> moved;
+
+    for (auto r : regions)
+    {
+        auto start = fn (r.start), end = fn (r.end);
+
+        if (! start.has_value())
+        {
+            juce::int64 lo = r.start, hi = r.end;   // first p in (start, end] that maps
+
+            if (fn (hi).has_value())
+            {
+                while (hi - lo > 1)
+                {
+                    const auto mid = lo + (hi - lo) / 2;
+                    (fn (mid).has_value() ? hi : lo) = mid;
+                }
+
+                start = fn (hi);
+            }
+        }
+
+        if (! end.has_value())
+        {
+            juce::int64 lo = r.start, hi = r.end;   // last p in [start, end) that maps
+
+            if (fn (lo).has_value())
+            {
+                while (hi - lo > 1)
+                {
+                    const auto mid = lo + (hi - lo) / 2;
+                    (fn (mid).has_value() ? lo : hi) = mid;
+                }
+
+                // Just past the last sample kept (the end is exclusive).
+                if (const auto last = fn (lo))
+                    end = std::min (*last + 1, (juce::int64) buffer.getNumSamples());
+            }
+        }
+
+        if (start.has_value() && end.has_value() && *end > *start)
+            moved.push_back ({ *start, *end, r.name });
+    }
+
+    std::sort (moved.begin(), moved.end(), [] (const auto& a, const auto& b) { return a.start < b.start; });
+    regions = std::move (moved);
+    view.repaint();
+}
+
+namespace
+{
+constexpr juce::uint32 regionPurpose = 0x206e6772;   // "rgn " (little-endian), what editors use for regions
+} // namespace
+
+std::unordered_map<juce::String, juce::String> DataWindow::cueMetadata (double ratio) const
+{
+    std::unordered_map<juce::String, juce::String> v;
+    auto at = [ratio] (juce::int64 p) { return juce::String ((juce::int64) std::llround ((double) p * ratio)); };
+    int cue = 0, label = 0;
+
+    auto addCue = [&] (int id, juce::int64 position, const juce::String& text)
+    {
+        const auto c = "Cue" + juce::String (cue++);
+        v[c + "Identifier"] = juce::String (id);
+        v[c + "Offset"] = at (position);
+        v[c + "SampleOffset"] = at (position);
+        const auto l = "CueLabel" + juce::String (label++);
+        v[l + "Identifier"] = juce::String (id);
+        v[l + "Text"] = text;
+    };
+
+    for (int i = 0; i < (int) markers.size(); ++i)
+        addCue (i + 1, markers[(size_t) i], "Marker " + juce::String (i + 1));
+
+    for (int i = 0; i < (int) regions.size(); ++i)
+    {
+        const auto& r = regions[(size_t) i];
+        const auto id = (int) markers.size() + i + 1;
+        addCue (id, r.start, r.name);
+        const auto k = "CueRegion" + juce::String (i);
+        v[k + "Identifier"] = juce::String (id);
+        v[k + "SampleLength"] = juce::String ((juce::int64) std::llround ((double) (r.end - r.start) * ratio));
+        v[k + "Purpose"] = juce::String ((juce::int64) regionPurpose);
+        v[k + "Text"] = r.name;
+    }
+
+    v["NumCuePoints"] = juce::String (cue);
+    v["NumCueLabels"] = juce::String (label);
+    v["NumCueRegions"] = juce::String ((int) regions.size());
+    return v;
+}
+
+void DataWindow::readCues (const juce::StringPairArray& meta)
+{
+    const auto total = (juce::int64) buffer.getNumSamples();
+    std::map<int, juce::int64> offsets;
+    std::map<int, juce::String> labels;
+
+    for (int i = 0; i < meta["NumCuePoints"].getIntValue(); ++i)
+    {
+        const auto c = "Cue" + juce::String (i);
+        offsets[meta[c + "Identifier"].getIntValue()] = meta[c + "Offset"].getLargeIntValue();
+    }
+
+    for (int i = 0; i < meta["NumCueLabels"].getIntValue(); ++i)
+    {
+        const auto l = "CueLabel" + juce::String (i);
+        labels[meta[l + "Identifier"].getIntValue()] = meta[l + "Text"];
+    }
+
+    std::set<int> regionIds;
+
+    for (int i = 0; i < meta["NumCueRegions"].getIntValue(); ++i)
+    {
+        const auto k = "CueRegion" + juce::String (i);
+        const auto id = meta[k + "Identifier"].getIntValue();
+        const auto length = meta[k + "SampleLength"].getLargeIntValue();
+
+        if (offsets.count (id) == 0 || length <= 0)
+            continue;
+
+        regionIds.insert (id);
+        const auto start = juce::jlimit ((juce::int64) 0, total, offsets[id]);
+        const auto end = juce::jlimit ((juce::int64) 0, total, start + length);
+        auto name = labels.count (id) != 0 && labels[id].isNotEmpty() ? labels[id] : meta[k + "Text"];
+
+        if (name.isEmpty())
+            name = "Region " + juce::String ((int) regions.size() + 1);
+
+        if (end > start)
+            regions.push_back ({ start, end, name });
+    }
+
+    for (const auto& [id, position] : offsets)
+        if (regionIds.count (id) == 0 && position >= 0 && position <= total)
+            markers.push_back (position);
+
+    std::sort (markers.begin(), markers.end());
+    markers.erase (std::unique (markers.begin(), markers.end()), markers.end());
+    std::stable_sort (regions.begin(), regions.end(), [] (const auto& a, const auto& b) { return a.start < b.start; });
+}
+
+int DataWindow::addRegion (juce::Range<juce::int64> range, const juce::String& name)
+{
+    range = range.getIntersectionWith ({ 0, (juce::int64) buffer.getNumSamples() });
+
+    if (range.isEmpty())
+        return -1;
+
+    pushUndo();
+    regions.push_back ({ range.getStart(), range.getEnd(), name });
+    std::stable_sort (regions.begin(), regions.end(), [] (const auto& a, const auto& b) { return a.start < b.start; });
+    regionsChanged();
+
+    for (int i = 0; i < (int) regions.size(); ++i)
+        if (regions[(size_t) i].start == range.getStart() && regions[(size_t) i].end == range.getEnd() && regions[(size_t) i].name == name)
+            return i;
+
+    return -1;
+}
+
+void DataWindow::renameRegion (int index, const juce::String& name)
+{
+    if (! juce::isPositiveAndBelow (index, (int) regions.size()) || regions[(size_t) index].name == name)
+        return;
+
+    pushUndo();
+    regions[(size_t) index].name = name;
+    regionsChanged();
+}
+
+void DataWindow::removeRegion (int index)
+{
+    if (! juce::isPositiveAndBelow (index, (int) regions.size()))
+        return;
+
+    pushUndo();
+    regions.erase (regions.begin() + index);
+    regionsChanged();
+}
+
+void DataWindow::setRegions (std::vector<AudioRegion> newRegions)
+{
+    pushUndo();
+    regions = std::move (newRegions);
+    std::stable_sort (regions.begin(), regions.end(), [] (const auto& a, const auto& b) { return a.start < b.start; });
+    regionsChanged();
+}
+
+juce::String DataWindow::nextRegionName() const
+{
+    int n = 1;
+
+    for (const auto& r : regions)
+        if (r.name.startsWith ("Region ") && r.name.substring (7).containsOnly ("0123456789"))
+            n = std::max (n, r.name.substring (7).getIntValue() + 1);
+
+    return "Region " + juce::String (n);
+}
+
+// Regions are part of the file (saved in WAV), so changing them is an edit.
+void DataWindow::regionsChanged()
+{
+    modified = true;
+    setName ("*" + title);
+    view.setRegions (&regions);
+
+    if (onChanged)
+        onChanged();
 }
 
 void DataWindow::pruneBarStarts()
@@ -1121,7 +1344,7 @@ void DataWindow::pruneBarStarts()
 void DataWindow::pushUndo()
 {
     redoStack.clear();
-    undoStack.push_back ({ buffer, markers, barStarts, sampleRate, bitDepth, resolutionBits, floatingPoint });
+    undoStack.push_back ({ buffer, markers, barStarts, regions, sampleRate, bitDepth, resolutionBits, floatingPoint });
 
     size_t total = 0;
     for (const auto& b : undoStack)
@@ -1136,12 +1359,13 @@ void DataWindow::pushUndo()
 
 void DataWindow::restore (Snapshot& from, std::vector<Snapshot>& saveTo)
 {
-    saveTo.push_back ({ std::move (buffer), std::move (markers), std::move (barStarts), sampleRate,
+    saveTo.push_back ({ std::move (buffer), std::move (markers), std::move (barStarts), std::move (regions), sampleRate,
                         bitDepth, resolutionBits, floatingPoint });
     const auto channelsBefore = saveTo.back().audio.getNumChannels();
     buffer = std::move (from.audio);
     markers = std::move (from.markers);
     barStarts = std::move (from.barStarts);
+    regions = std::move (from.regions);
     bitDepth = from.bitDepth;
     resolutionBits = from.resolutionBits;
     floatingPoint = from.floatingPoint;
@@ -1178,6 +1402,7 @@ void DataWindow::redo()
 
 void DataWindow::audioChanged()
 {
+    view.setRegions (&regions);   // the strip shows / hides with them
     ++editCount;
     modified = true;
     setName ("*" + title);

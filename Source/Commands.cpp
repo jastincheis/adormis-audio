@@ -287,6 +287,7 @@ const std::vector<CommandDef>& allCommands()
         viewChannelMeters, viewLoudnessMeters, toolsStatistics, optKeyboard,
         fxLimiter, fxGate, fxChorus, fxFlange, fxVibrato, fxDistortion, fxPitchShift,
         toolsNoiseReduction, toolsCaptureNoise, toolsHumRemoval, toolsDeclick, toolsClipRestore,
+        insertRegion, viewRegionsList, toolsAutoRegion, toolsExtractRegions,
         procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDeEsser, toolsMp3Restore, optRecord,
         procEqParametric, fxCompressor, fxDelay, fxReverb,
         winCascade, winTile, winNext, winPrev,
