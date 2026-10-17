@@ -177,7 +177,7 @@ std::vector<CommandDef> makeCommands()
 
         // Help
         { helpShortcuts, "Keyboard Shortcuts",                "Help", { key (KeyPress::F1Key) }, true },
-        { helpAbout,     "About WaveForge",                   "Help", {}, true },
+        { helpAbout,     "About Adormis Audio",                   "Help", {}, true },
     };
 }
 

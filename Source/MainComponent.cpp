@@ -380,7 +380,7 @@ void MainComponent::startAudio()
 
     if (safeMode)
         juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Audio device",
-            "Last time WaveForge stopped while opening the audio device (often an ASIO driver).\n"
+            "Last time Adormis Audio stopped while opening the audio device (often an ASIO driver).\n"
             "This time it uses the system's default audio output and ASIO is off.\n\n"
             "Options > Audio Device lets you choose the device, or turn ASIO on again.");
 
@@ -874,7 +874,7 @@ void MainComponent::askToSaveBeforeClosing (DataWindow* doc, std::function<void 
     }
 
     auto options = juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
-                                            .withTitle ("WaveForge")
+                                            .withTitle ("Adormis Audio")
                                             .withMessage ("Save changes to \"" + doc->getTitle() + "\" before closing?")
                                             .withButton ("Save")
                                             .withButton ("Don't Save")
@@ -903,7 +903,7 @@ void MainComponent::requestQuit (std::function<void()> quit)
     }
 
     auto options = juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon)
-                                            .withTitle ("WaveForge")
+                                            .withTitle ("Adormis Audio")
                                             .withMessage (juce::String (unsaved) + (unsaved == 1 ? " file has" : " files have")
                                                           + " unsaved changes. Quit and lose them?")
                                             .withButton ("Quit")
@@ -2820,8 +2820,7 @@ void MainComponent::followSelectionLoop (DataWindow* doc)
 
 juce::File MainComponent::keyMappingsFile()
 {
-    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
-               .getChildFile ("WaveForge").getChildFile ("keyboard.xml");
+    return wf::startup::settingsFolder().getChildFile ("keyboard.xml");
 }
 
 void MainComponent::loadKeyMappings()
@@ -3018,7 +3017,7 @@ void MainComponent::updateTitle()
     if (auto* window = findParentComponentOfClass<juce::DocumentWindow>())
     {
         auto* doc = activeDocument();
-        window->setName (doc != nullptr ? doc->getName() + " - WaveForge" : juce::String ("WaveForge"));
+        window->setName (doc != nullptr ? doc->getName() + " - Adormis Audio" : juce::String ("Adormis Audio"));
     }
 }
 
@@ -3458,7 +3457,7 @@ void MainComponent::showAudioSettings()
                     flagFile.deleteFile();
 
                 juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "ASIO",
-                    asio.getToggleState() ? "Restart WaveForge to see the ASIO drivers here."
+                    asio.getToggleState() ? "Restart Adormis Audio to see the ASIO drivers here."
                                           : "ASIO is off from the next start.");
             };
             addAndMakeVisible (asio);
@@ -3495,8 +3494,8 @@ void MainComponent::showAudioSettings()
 void MainComponent::showAbout()
 {
     juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon,
-                                            "About WaveForge",
-                                            "WaveForge " JUCE_APPLICATION_VERSION_STRING "\n\n"
+                                            "About Adormis Audio",
+                                            "Adormis Audio " JUCE_APPLICATION_VERSION_STRING "\n\n"
                                             "A destructive audio editor with a classic layout.\n"
                                             "Licensed under the GNU AGPL v3.\n\n"
                                             "Built with JUCE " + juce::SystemStats::getJUCEVersion().fromLastOccurrenceOf ("v", false, false));

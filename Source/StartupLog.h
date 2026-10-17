@@ -4,9 +4,9 @@
 
 // A small log of each start (what was done, how long the audio device took,
 // any crash with its stack), so a start that shows nothing can be explained:
-// %APPDATA%\WaveForge\waveforge.log on Windows, ~/Library/Application Support/
-// WaveForge on macOS, ~/.config/WaveForge on Linux. The previous start's log
-// is kept as waveforge-previous.log.
+// %APPDATA%\Adormis Audio\adormis-audio.log on Windows, ~/Library/Application Support/
+// Adormis Audio on macOS, ~/.config/Adormis Audio on Linux. The previous start's log
+// is kept as adormis-audio-previous.log.
 namespace wf::startup
 {
 juce::File settingsFolder();

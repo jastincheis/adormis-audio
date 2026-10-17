@@ -1,6 +1,6 @@
 #include "Mp3Encoder.h"
 
-#if WAVEFORGE_HAS_MP3
+#if ADORMIS_HAS_MP3
  #include <lame/lame.h>
 #endif
 
@@ -8,10 +8,10 @@ namespace wf
 {
 bool mp3EncodingAvailable()
 {
-    return WAVEFORGE_HAS_MP3 != 0;
+    return ADORMIS_HAS_MP3 != 0;
 }
 
-#if WAVEFORGE_HAS_MP3
+#if ADORMIS_HAS_MP3
 bool writeMp3 (const juce::File& destination, const juce::AudioBuffer<float>& audio, double sampleRate,
                int kbps, juce::String& error)
 {
@@ -98,7 +98,7 @@ bool writeMp3 (const juce::File& destination, const juce::AudioBuffer<float>& au
 #else
 bool writeMp3 (const juce::File&, const juce::AudioBuffer<float>&, double, int, juce::String& error)
 {
-    error = "This build of WaveForge has no MP3 encoder.";
+    error = "This build of Adormis Audio has no MP3 encoder.";
     return false;
 }
 #endif

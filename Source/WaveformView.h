@@ -99,7 +99,7 @@ public:
     static juce::String formatTime (double seconds);
 
     // Drag-and-drop description used when a selection is dragged out.
-    static constexpr const char* selectionDragId = "WaveForge selection";
+    static constexpr const char* selectionDragId = "Adormis Audio selection";
 
 private:
     void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;

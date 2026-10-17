@@ -3,7 +3,7 @@
 #include <set>
 #include "Mp3Encoder.h"
 
-#if WAVEFORGE_HAS_SAMPLERATE
+#if ADORMIS_HAS_SAMPLERATE
  #include <samplerate.h>
 #endif
 
@@ -76,7 +76,7 @@ juce::AudioBuffer<float> resampled (const juce::AudioBuffer<float>& in, double f
 
     for (int ch = 0; ch < in.getNumChannels(); ++ch)
     {
-       #if WAVEFORGE_HAS_SAMPLERATE
+       #if ADORMIS_HAS_SAMPLERATE
         std::unique_ptr<SRC_STATE, decltype (&src_delete)> state (nullptr, &src_delete);
         int srcError = 0;
         state.reset (src_new (SRC_SINC_BEST_QUALITY, 1, &srcError));

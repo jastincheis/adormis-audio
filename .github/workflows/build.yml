@@ -21,12 +21,12 @@ jobs:
         run: cmake --build build --config Release -j 4
       - name: Package
         run: |
-          cd build/WaveForge_artefacts/Release
-          ditto -c -k --keepParent WaveForge.app "$GITHUB_WORKSPACE/WaveForge-macOS.zip"
+          cd build/AdormisAudio_artefacts/Release
+          ditto -c -k --keepParent "Adormis Audio.app" "$GITHUB_WORKSPACE/AdormisAudio-macOS.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: WaveForge-macOS
-          path: WaveForge-macOS.zip
+          name: AdormisAudio-macOS
+          path: AdormisAudio-macOS.zip
 
   linux:
     name: Linux (${{ matrix.arch }})
@@ -49,11 +49,11 @@ jobs:
       - name: Build
         run: cmake --build build -j 4
       - name: Package
-        run: tar -C build/WaveForge_artefacts/Release -czf WaveForge-Linux-${{ matrix.arch }}.tar.gz WaveForge
+        run: tar -C build/AdormisAudio_artefacts/Release -czf AdormisAudio-Linux-${{ matrix.arch }}.tar.gz "Adormis Audio"
       - uses: actions/upload-artifact@v4
         with:
-          name: WaveForge-Linux-${{ matrix.arch }}
-          path: WaveForge-Linux-${{ matrix.arch }}.tar.gz
+          name: AdormisAudio-Linux-${{ matrix.arch }}
+          path: AdormisAudio-Linux-${{ matrix.arch }}.tar.gz
 
   windows:
     name: Windows (x64)
@@ -65,13 +65,13 @@ jobs:
       - name: Build
         run: cmake --build build --config Release -j 4
       - name: Package
-        run: Compress-Archive -Path build/WaveForge_artefacts/Release/WaveForge.exe -DestinationPath WaveForge-Windows.zip
+        run: Compress-Archive -Path 'build/AdormisAudio_artefacts/Release/Adormis Audio.exe' -DestinationPath AdormisAudio-Windows.zip
       - name: Self-test (which menu commands are usable)
         continue-on-error: true
         run: |
           python -c "import wave,struct,math; w=wave.open('test.wav','wb'); w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100); w.writeframes(b''.join(struct.pack('<hh',int(8000*math.sin(i/20)),int(8000*math.sin(i/20))) for i in range(88200))); w.close()"
-          $p = Start-Process -FilePath build/WaveForge_artefacts/Release/WaveForge.exe -ArgumentList '--list-commands','commands-windows.txt','test.wav' -PassThru
-          if (-not $p.WaitForExit(60000)) { $p.Kill(); throw "WaveForge did not quit" }
+          $p = Start-Process -FilePath 'build/AdormisAudio_artefacts/Release/Adormis Audio.exe' -ArgumentList '--list-commands','commands-windows.txt','test.wav' -PassThru
+          if (-not $p.WaitForExit(60000)) { $p.Kill(); throw "Adormis Audio did not quit" }
           Get-Content commands-windows.txt
       - uses: actions/upload-artifact@v4
         if: always()
@@ -80,5 +80,5 @@ jobs:
           path: commands-windows.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: WaveForge-Windows
-          path: WaveForge-Windows.zip
+          name: AdormisAudio-Windows
+          path: AdormisAudio-Windows.zip

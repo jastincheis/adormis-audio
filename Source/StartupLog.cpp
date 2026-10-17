@@ -20,20 +20,31 @@ void crashHandler (void*)
 
 juce::File settingsFolder()
 {
-    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("WaveForge");
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory).getChildFile ("Adormis Audio");
 }
 
 void beginLog()
 {
     const auto folder = settingsFolder();
+
+    // Settings from before the rename (WaveForge) carry over on the first start.
+    const auto oldFolder = folder.getSiblingFile ("WaveForge");
+
+    if (! folder.exists() && oldFolder.isDirectory())
+    {
+        oldFolder.copyDirectoryTo (folder);
+        folder.getChildFile ("waveforge.log").deleteFile();
+        folder.getChildFile ("waveforge-previous.log").deleteFile();
+    }
+
     folder.createDirectory();
-    const auto file = folder.getChildFile ("waveforge.log");
+    const auto file = folder.getChildFile ("adormis-audio.log");
 
     if (file.existsAsFile())
-        file.copyFileTo (folder.getChildFile ("waveforge-previous.log"));
+        file.copyFileTo (folder.getChildFile ("adormis-audio-previous.log"));
 
     file.deleteFile();
-    logger() = std::make_unique<juce::FileLogger> (file, "WaveForge " JUCE_APPLICATION_VERSION_STRING " - "
+    logger() = std::make_unique<juce::FileLogger> (file, "Adormis Audio " JUCE_APPLICATION_VERSION_STRING " - "
                                                          + juce::SystemStats::getOperatingSystemName()
                                                          + (juce::SystemStats::isOperatingSystem64Bit() ? " 64-bit" : ""));
     juce::SystemStats::setApplicationCrashHandler (crashHandler);

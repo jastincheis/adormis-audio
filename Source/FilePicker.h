@@ -9,7 +9,7 @@ namespace wf
 // Where the OS has a file dialog it is used. Otherwise (Linux without
 // zenity/kdialog) JUCE's own browser is shown in a fixed-size window: JUCE's
 // default one is resizable, so tiling window managers (Hyprland) tile it and
-// shrink the main window, and when the main window grows back while WaveForge
+// shrink the main window, and when the main window grows back while Adormis Audio
 // is busy opening or saving, JUCE misses that resize and leaves half of it
 // unpainted. Fixed-size windows float instead, like the Mix and Save As windows.
 class FilePicker

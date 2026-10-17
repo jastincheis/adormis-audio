@@ -1,10 +1,10 @@
-# WaveForge
+# Adormis Audio
 
 A destructive audio editor in the spirit of classic Sound Forge: the same menu
 layout and default keyboard shortcuts, running natively on **macOS** (Apple
 Silicon and Intel), **Linux** and **Windows**, with VST3 plug-in support planned.
 
-WaveForge is an independent project. It is not affiliated with, endorsed by or
+Adormis Audio (formerly WaveForge) is an independent project. It is not affiliated with, endorsed by or
 derived from Sound Forge or its owners; it only follows the publicly documented
 menu structure and default shortcuts so the workflow feels familiar.
 
@@ -59,52 +59,52 @@ The apps are not signed yet, so each system asks you to confirm the first time.
 
 ### macOS (11 Big Sur or newer, Apple Silicon and Intel)
 
-1. Download `WaveForge-macOS.zip` and double-click it to unzip (Safari may do this for you).
-2. Drag `WaveForge.app` into **Applications**.
+1. Download `AdormisAudio-macOS.zip` and double-click it to unzip (Safari may do this for you).
+2. Drag `Adormis Audio.app` into **Applications**.
 3. Open it. macOS says it cannot check the app for malware:
    - **macOS 15 Sequoia and newer:** click **Done**, open **System Settings → Privacy & Security**,
-     scroll down to *"WaveForge" was blocked* and click **Open Anyway**, then enter your password.
-   - **macOS 14 and older:** right-click `WaveForge.app` → **Open** → **Open**.
+     scroll down to *"Adormis Audio" was blocked* and click **Open Anyway**, then enter your password.
+   - **macOS 14 and older:** right-click `Adormis Audio.app` → **Open** → **Open**.
 4. The first time you record (Ctrl+R / Cmd+R), allow access to the microphone.
 
 You only do this once. Alternatively, in Terminal:
-`xattr -dr com.apple.quarantine /Applications/WaveForge.app`
+`xattr -dr com.apple.quarantine "/Applications/Adormis Audio.app"`
 
 ### Windows (10 / 11, 64-bit)
 
-1. Download `WaveForge-Windows.zip`, right-click it → **Extract All…** → **Extract**.
-2. Double-click `WaveForge.exe`.
+1. Download `AdormisAudio-Windows.zip`, right-click it → **Extract All…** → **Extract**.
+2. Double-click `Adormis Audio.exe`.
 3. If **Windows protected your PC** appears, click **More info** → **Run anyway**.
-4. Optional: right-click `WaveForge.exe` → **Show more options** → **Send to → Desktop (create shortcut)**.
+4. Optional: right-click `Adormis Audio.exe` → **Show more options** → **Send to → Desktop (create shortcut)**.
 
-WaveForge plays through Windows Audio. To use an audio interface's ASIO driver, tick
-**Options > Audio Device > Use ASIO drivers** and restart WaveForge.
+Adormis Audio plays through Windows Audio. To use an audio interface's ASIO driver, tick
+**Options > Audio Device > Use ASIO drivers** and restart Adormis Audio.
 
 ### Linux (x86_64 or ARM64)
 
 1. Check your processor: `uname -m` prints `x86_64` or `aarch64`, then download
-   `WaveForge-Linux-x86_64.tar.gz` or `WaveForge-Linux-arm64.tar.gz`.
+   `AdormisAudio-Linux-x86_64.tar.gz` or `AdormisAudio-Linux-arm64.tar.gz`.
 2. Install libsamplerate (the only extra library it needs):
    - Debian / Ubuntu / Mint: `sudo apt install libsamplerate0`
    - Fedora: `sudo dnf install libsamplerate`
    - Arch: `sudo pacman -S libsamplerate`
 3. Unpack and run:
    ```bash
-   tar -xzf WaveForge-Linux-*.tar.gz
-   ./WaveForge
+   tar -xzf AdormisAudio-Linux-*.tar.gz
+   ./"Adormis Audio"
    ```
-4. Optional, to start it by name from anywhere: `mkdir -p ~/.local/bin && mv WaveForge ~/.local/bin/`
+4. Optional, to start it by name from anywhere: `mkdir -p ~/.local/bin && mv "Adormis Audio" ~/.local/bin/adormis-audio`
 
 ### If it doesn't start
 
-WaveForge writes a start-up log that says how far it got (window, audio device,
+Adormis Audio writes a start-up log that says how far it got (window, audio device,
 timings, and the stack of a crash):
 
-- Windows: type `%APPDATA%\WaveForge` in the File Explorer address bar → `waveforge.log`
-- macOS: `~/Library/Application Support/WaveForge/waveforge.log`
-- Linux: `~/.config/WaveForge/waveforge.log`
+- Windows: type `%APPDATA%\Adormis Audio` in the File Explorer address bar → `adormis-audio.log`
+- macOS: `~/Library/Application Support/Adormis Audio/adormis-audio.log`
+- Linux: `~/.config/Adormis Audio/adormis-audio.log`
 
-The previous start's log is kept next to it as `waveforge-previous.log`. Please attach
+The previous start's log is kept next to it as `adormis-audio-previous.log`. Please attach
 both to an [issue](https://github.com/jastincheis/waveforge/issues). If a start ever
 gets stuck opening the audio device, the next one starts without ASIO and without
 the saved device, and says so.
@@ -130,7 +130,7 @@ fontconfig, X11, Xcomposite, Xcursor, Xext, Xi, Xinerama, Xrandr, Xrender,
 OpenGL). Optional: libmp3lame (MP3 export) and libsamplerate (best
 sample-rate conversion). Rubber Band 4.0.0 is downloaded automatically.
 To use an existing JUCE checkout instead of downloading it, add
-`-DWAVEFORGE_JUCE_DIR=/path/to/JUCE`.
+`-DADORMIS_JUCE_DIR=/path/to/JUCE`.
 
 ## Code signing policy
 
@@ -146,10 +146,10 @@ certificate by [SignPath Foundation](https://signpath.org).
 - Roles — authors, reviewers and approvers: [@jastincheis](https://github.com/jastincheis)
   (sole maintainer). Contributions from anyone else are reviewed by the
   maintainer before they are merged. Every signing request is approved manually.
-- Privacy: WaveForge does not connect to the internet and does not collect or
+- Privacy: Adormis Audio does not connect to the internet and does not collect or
   send any data. It only reads and writes the audio files you open or save, and
   keeps its settings and a start-up log in your user profile folder
-  (`%APPDATA%\WaveForge` on Windows).
+  (`%APPDATA%\Adormis Audio` on Windows).
 
 ## License
 

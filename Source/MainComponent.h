@@ -250,7 +250,7 @@ private:
 
     int untitledCount = 0;
 
-    // Edit > Copy / Cut keep the audio here for Paste (inside WaveForge).
+    // Edit > Copy / Cut keep the audio here for Paste (inside Adormis Audio).
     struct Clipboard
     {
         juce::AudioBuffer<float> audio;

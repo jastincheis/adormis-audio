@@ -6,17 +6,17 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 # Visual C++ Redistributable installed.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(WaveForge VERSION 0.1.7 LANGUAGES C CXX)
+project(AdormisAudio VERSION 0.1.7 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # JUCE 9.0.4, pinned by commit and checksum.
-# For local builds, -DWAVEFORGE_JUCE_DIR=/path/to/JUCE skips the download.
-set(WAVEFORGE_JUCE_DIR "" CACHE PATH "Local JUCE checkout (optional)")
+# For local builds, -DADORMIS_JUCE_DIR=/path/to/JUCE skips the download.
+set(ADORMIS_JUCE_DIR "" CACHE PATH "Local JUCE checkout (optional)")
 
-if(WAVEFORGE_JUCE_DIR)
-    add_subdirectory(${WAVEFORGE_JUCE_DIR} JUCE EXCLUDE_FROM_ALL)
+if(ADORMIS_JUCE_DIR)
+    add_subdirectory(${ADORMIS_JUCE_DIR} JUCE EXCLUDE_FROM_ALL)
 else()
     include(FetchContent)
     FetchContent_Declare(JUCE
@@ -27,11 +27,11 @@ endif()
 
 # Rubber Band Library 4.0.0 (GPL-2.0-or-later) for time stretch / pitch shift,
 # compiled from its single-file build so every platform gets the same engine.
-# -DWAVEFORGE_RUBBERBAND_DIR=/path/to/rubberband-4.0.0 skips the download.
-set(WAVEFORGE_RUBBERBAND_DIR "" CACHE PATH "Local Rubber Band source tree (optional)")
+# -DADORMIS_RUBBERBAND_DIR=/path/to/rubberband-4.0.0 skips the download.
+set(ADORMIS_RUBBERBAND_DIR "" CACHE PATH "Local Rubber Band source tree (optional)")
 
-if(WAVEFORGE_RUBBERBAND_DIR)
-    set(RUBBERBAND_SOURCE_DIR ${WAVEFORGE_RUBBERBAND_DIR})
+if(ADORMIS_RUBBERBAND_DIR)
+    set(RUBBERBAND_SOURCE_DIR ${ADORMIS_RUBBERBAND_DIR})
 else()
     include(FetchContent)
     FetchContent_Declare(rubberband
@@ -52,15 +52,15 @@ if(WIN32)
     target_compile_definitions(rubberband_single PRIVATE NOMINMAX _USE_MATH_DEFINES)
 endif()
 
-juce_add_gui_app(WaveForge
-    PRODUCT_NAME "WaveForge"
-    COMPANY_NAME "WaveForge"
-    BUNDLE_ID    "io.github.jastincheis.waveforge"
+juce_add_gui_app(AdormisAudio
+    PRODUCT_NAME "Adormis Audio"
+    COMPANY_NAME "Adormis"
+    BUNDLE_ID    "io.github.jastincheis.adormisaudio"
     MICROPHONE_PERMISSION_ENABLED TRUE
-    MICROPHONE_PERMISSION_TEXT "WaveForge records audio from the input you choose (Ctrl+R)."
+    MICROPHONE_PERMISSION_TEXT "Adormis Audio records audio from the input you choose (Ctrl+R)."
     VERSION      ${PROJECT_VERSION})
 
-target_sources(WaveForge PRIVATE
+target_sources(AdormisAudio PRIVATE
     Source/Main.cpp
     Source/Analysis.cpp
     Source/BackgroundPattern.cpp
@@ -101,17 +101,17 @@ target_sources(WaveForge PRIVATE
     Source/TimeStretch.cpp
     Source/WaveformView.cpp)
 
-target_compile_definitions(WaveForge PRIVATE
+target_compile_definitions(AdormisAudio PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
-    JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:WaveForge,JUCE_PRODUCT_NAME>"
-    JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:WaveForge,JUCE_VERSION>")
+    JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:AdormisAudio,JUCE_PRODUCT_NAME>"
+    JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:AdormisAudio,JUCE_VERSION>")
 
 # ASIO drivers on Windows (low-latency audio interfaces). JUCE bundles the
 # ASIO SDK headers, which Steinberg licenses under GPLv3 as an alternative to
-# its own licence: compatible with WaveForge's AGPLv3.
+# its own licence: compatible with Adormis Audio's AGPLv3.
 if(WIN32)
-    target_compile_definitions(WaveForge PRIVATE JUCE_ASIO=1)
+    target_compile_definitions(AdormisAudio PRIVATE JUCE_ASIO=1)
 endif()
 
 # MP3 export through LAME (libmp3lame, LGPL). Prefer the static library so the
@@ -121,12 +121,12 @@ find_library(LAME_LIBRARY NAMES libmp3lame.a mp3lame libmp3lame)
 
 if(LAME_INCLUDE_DIR AND LAME_LIBRARY)
     message(STATUS "MP3 export enabled: ${LAME_LIBRARY}")
-    target_include_directories(WaveForge PRIVATE ${LAME_INCLUDE_DIR})
-    target_link_libraries(WaveForge PRIVATE ${LAME_LIBRARY})
-    target_compile_definitions(WaveForge PRIVATE WAVEFORGE_HAS_MP3=1)
+    target_include_directories(AdormisAudio PRIVATE ${LAME_INCLUDE_DIR})
+    target_link_libraries(AdormisAudio PRIVATE ${LAME_LIBRARY})
+    target_compile_definitions(AdormisAudio PRIVATE ADORMIS_HAS_MP3=1)
 else()
     message(STATUS "MP3 export disabled: libmp3lame not found")
-    target_compile_definitions(WaveForge PRIVATE WAVEFORGE_HAS_MP3=0)
+    target_compile_definitions(AdormisAudio PRIVATE ADORMIS_HAS_MP3=0)
 endif()
 
 # High-quality sample rate conversion (libsamplerate, BSD). Without it, Save As
@@ -136,15 +136,15 @@ find_library(SAMPLERATE_LIBRARY NAMES libsamplerate.a samplerate libsamplerate)
 
 if(SAMPLERATE_INCLUDE_DIR AND SAMPLERATE_LIBRARY)
     message(STATUS "libsamplerate enabled: ${SAMPLERATE_LIBRARY}")
-    target_include_directories(WaveForge PRIVATE ${SAMPLERATE_INCLUDE_DIR})
-    target_link_libraries(WaveForge PRIVATE ${SAMPLERATE_LIBRARY})
-    target_compile_definitions(WaveForge PRIVATE WAVEFORGE_HAS_SAMPLERATE=1)
+    target_include_directories(AdormisAudio PRIVATE ${SAMPLERATE_INCLUDE_DIR})
+    target_link_libraries(AdormisAudio PRIVATE ${SAMPLERATE_LIBRARY})
+    target_compile_definitions(AdormisAudio PRIVATE ADORMIS_HAS_SAMPLERATE=1)
 else()
     message(STATUS "libsamplerate not found: sample rate conversion uses Lagrange")
-    target_compile_definitions(WaveForge PRIVATE WAVEFORGE_HAS_SAMPLERATE=0)
+    target_compile_definitions(AdormisAudio PRIVATE ADORMIS_HAS_SAMPLERATE=0)
 endif()
 
-target_link_libraries(WaveForge
+target_link_libraries(AdormisAudio
     PRIVATE
         juce::juce_gui_extra
         juce::juce_audio_utils

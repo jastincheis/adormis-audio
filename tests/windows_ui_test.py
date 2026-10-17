@@ -1,7 +1,8 @@
-"""Drives WaveForge.exe on a real Windows desktop (GitHub Actions) like a user:
+"""Drives Adormis Audio.exe on a real Windows desktop (GitHub Actions) like a user:
 menus through UI Automation, keys through SendInput, and saves a screenshot
 after every step to shots/. Every step is logged; a failing step does not stop
-the others. Usage: python windows_ui_test.py path\\to\\WaveForge.exe"""
+the others. Usage: python windows_ui_test.py "path\\to\\Adormis Audio.exe"
+"""
 
 import math, struct, subprocess, sys, time, traceback, wave
 from pathlib import Path
@@ -55,16 +56,16 @@ def make_wav(path, seconds=6, rate=44100):
         w.writeframes(bytes(frames))
 
 def main_window():
-    """The main window: of WaveForge's top-level windows whose title ends in
-    "WaveForge", the largest (popups such as an open list can match too)."""
+    """The main window: of Adormis Audio's top-level windows whose title ends in
+    "Adormis Audio", the largest (popups such as an open list can match too)."""
     best = None
     for w in Desktop(backend="uia").windows(process=app.pid):
-        if w.window_text().endswith("WaveForge"):
+        if w.window_text().endswith("Adormis Audio"):
             r = w.rectangle()
             if best is None or r.width() * r.height() > best[0]:
                 best = (r.width() * r.height(), w.handle)
     if best is None:
-        return Desktop(backend="uia").window(title_re=r".*WaveForge$")
+        return Desktop(backend="uia").window(title_re=r".*Adormis Audio$")
     return Desktop(backend="uia").window(handle=best[1])
 
 def menu(*path):
@@ -103,7 +104,7 @@ def waveform_point(fx, fy=0.5):
 # ---------------------------------------------------------------------------
 wav = Path("test.wav").resolve()
 make_wav(wav)
-log(f"WaveForge: {EXE}")
+log(f"Adormis Audio: {EXE}")
 app = subprocess.Popen([str(EXE), str(wav)])
 time.sleep(8)
 
@@ -155,7 +156,7 @@ for path in [("Process", "EQ", "Parametric EQ..."), ("Effects", "Dynamics", "Com
              ("Tools", "MP3 Restore..."), ("Insert", "Silence..."), ("Process", "Resample..."),
              ("Process", "Bit-Depth Converter..."), ("Process", "Channel Converter..."), ("Process", "Auto Trim/Crop..."),
              ("Tools", "Detect Clipping..."), ("Edit", "Set Selection..."), ("Edit", "Go To..."),
-             ("Options", "Audio Device..."), ("Help", "Keyboard Shortcuts"), ("Help", "About WaveForge")]:
+             ("Options", "Audio Device..."), ("Help", "Keyboard Shortcuts"), ("Help", "About Adormis Audio")]:
     @step("open-" + path[-1].strip(".").replace(" ", "-").replace("/", "-"))
     def _(path=path):
         menu(*path); time.sleep(2)
@@ -164,7 +165,7 @@ for path in [("Process", "EQ", "Parametric EQ..."), ("Effects", "Dynamics", "Com
     try:
         for w in Desktop(backend="uia").windows():
             t = w.window_text()
-            if t and "WaveForge" not in t and w.process_id() == app.pid:
+            if t and "Adormis Audio" not in t and w.process_id() == app.pid:
                 w.close()
     except Exception:
         pass
@@ -175,14 +176,14 @@ def _():
     main_window().set_focus(); send_keys("^r"); time.sleep(2)
 close_top_window()
 
-# WaveForge's own start-up log (audio device, timings, any crash).
+# Adormis Audio's own start-up log (audio device, timings, any crash).
 import os, shutil
-startup_log = Path(os.environ.get("APPDATA", "")) / "WaveForge" / "waveforge.log"
+startup_log = Path(os.environ.get("APPDATA", "")) / "Adormis Audio" / "adormis-audio.log"
 if startup_log.exists():
-    shutil.copy(startup_log, "waveforge.log")
-    log("\n== waveforge.log\n" + startup_log.read_text(errors="replace"))
+    shutil.copy(startup_log, "adormis-audio.log")
+    log("\n== adormis-audio.log\n" + startup_log.read_text(errors="replace"))
 else:
-    log("\nno waveforge.log at " + str(startup_log))
+    log("\nno adormis-audio.log at " + str(startup_log))
 
 log(f"\n{failures} step(s) failed")
 app.kill()

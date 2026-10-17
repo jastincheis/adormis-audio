@@ -3,7 +3,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 // MP3 export through LAME (libmp3lame, LGPL). Only available when the build
-// found the library (WAVEFORGE_HAS_MP3); JUCE itself can read MP3 but not write it.
+// found the library (ADORMIS_HAS_MP3); JUCE itself can read MP3 but not write it.
 namespace wf
 {
 bool mp3EncodingAvailable();

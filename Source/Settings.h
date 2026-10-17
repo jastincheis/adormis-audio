@@ -2,9 +2,9 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
-// What WaveForge remembers between starts: the last settings of the effect
+// What Adormis Audio remembers between starts: the last settings of the effect
 // windows, Mix, Volume and the small settings windows. Kept in settings.xml
-// in the settings folder (next to waveforge.log).
+// in the settings folder (next to adormis-audio.log).
 namespace wf::settings
 {
 juce::var get (const juce::String& key);

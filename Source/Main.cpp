@@ -2,7 +2,7 @@
 #include "MainComponent.h"
 #include "StartupLog.h"
 
-class WaveForgeApplication final : public juce::JUCEApplication
+class AdormisAudioApplication final : public juce::JUCEApplication
 {
 public:
     const juce::String getApplicationName() override     { return JUCE_APPLICATION_NAME_STRING; }
@@ -19,7 +19,7 @@ public:
 
         auto args = getCommandLineParameterArray();
 
-        // Self-test: WaveForge --list-commands report.txt [audio files...]
+        // Self-test: Adormis Audio --list-commands report.txt [audio files...]
         // opens the files, writes which menu commands are usable, then quits.
         juce::File report;
 
@@ -121,4 +121,4 @@ private:
     std::unique_ptr<MainWindow> mainWindow;
 };
 
-START_JUCE_APPLICATION (WaveForgeApplication)
+START_JUCE_APPLICATION (AdormisAudioApplication)
