@@ -317,6 +317,8 @@ MainComponent::MainComponent()
     tempoTimer.tick = [this] { updateTempo(); };
 
     // Remembered from last time.
+    WaveformView::snapToZeroCrossings = (bool) wf::settings::get ("edit.snapZero");
+
     if (const auto v = wf::settings::get ("volume.db"); ! v.isVoid())
         lastVolumeDecibels = (float) (double) v;
     toolbar->onTempoClicked = [this] { showTempoMenu(); };
@@ -3414,6 +3416,10 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord: case wf::optRecordComputer:
             break;
 
+        case wf::editSnapZero:   // an option: always there
+            info.setTicked (WaveformView::snapToZeroCrossings);
+            break;
+
         case wf::editUndo:  available = available && doc != nullptr && doc->canUndo(); break;
         case wf::editRedo:  available = available && doc != nullptr && doc->canRedo(); break;
         case wf::editDelete: available = available && doc != nullptr
@@ -3522,7 +3528,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
                                        || (id >= wf::winCascade && id <= wf::winPrev) || (id >= wf::viewZoomIn && id <= wf::viewZoomNormal);
 
     if (editsOrPlays && id != wf::optRecord && id != wf::viewChannelMeters && id != wf::viewLoudnessMeters && id != wf::viewRegionsList
-        && id != wf::viewSpectrum
+        && id != wf::viewSpectrum && id != wf::editSnapZero
         && id != wf::editPaste && id != wf::editMix
         && doc != nullptr && doc->isEmpty())
         available = false;
@@ -3713,6 +3719,13 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::insertRegion:      insertRegion(); return true;
         case wf::viewRegionsList:   toggleRegionsList(); return true;
         case wf::viewSpectrum:      toggleSpectrum(); return true;
+
+        case wf::editSnapZero:
+            WaveformView::snapToZeroCrossings = ! WaveformView::snapToZeroCrossings;
+            wf::settings::set ("edit.snapZero", WaveformView::snapToZeroCrossings);
+            updateStatus();
+            commandManager.commandStatusChanged();
+            return true;
         case wf::toolsAutoRegion:   showAutoRegion(); return true;
         case wf::toolsExtractRegions: extractRegions(); return true;
         case wf::toolsBatch:        showBatch(); return true;

@@ -105,6 +105,12 @@ public:
     // the step follows the zoom (fine when zoomed in, coarse when zoomed out);
     // `extend` grows the selection instead (Shift).
     void nudgeCursor (int direction, bool extend);
+
+    // Edit > Auto Snap to Zero Crossings (for every window): selection edges
+    // made with the mouse move to the nearest point where the wave crosses
+    // zero, so cuts and pastes don't click.
+    static bool snapToZeroCrossings;
+    juce::int64 nearestZeroCrossing (juce::int64 sample, int channel) const;
     juce::int64 arrowStep() const;   // the arrow-key step in samples at this zoom
 
     struct DragOptions

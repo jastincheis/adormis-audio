@@ -342,6 +342,52 @@ void WaveformView::showStripMenu()
     menu.showMenuAsync (juce::PopupMenu::Options().withParentComponent (getTopLevelComponent()).withMousePosition());
 }
 
+bool WaveformView::snapToZeroCrossings = false;
+
+// The nearest sample (within 50 ms, or a few pixels when zoomed out further)
+// where the wave changes sign: on `channel`, or on all channels together
+// (their sum) when it is -1. Of the two samples around the crossing, the one
+// nearer zero. Unchanged when there is none (silence, a DC offset).
+juce::int64 WaveformView::nearestZeroCrossing (juce::int64 sample, int channel) const
+{
+    if (! hasAudio())
+        return sample;
+
+    const auto total = totalSamples();
+    const auto reach = (juce::int64) std::max (0.05 * sampleRate, 6.0 * samplesPerPixel);
+    const auto channels = buffer->getNumChannels();
+
+    auto valueAt = [&] (juce::int64 i)
+    {
+        if (channel >= 0)
+            return buffer->getSample (std::min (channel, channels - 1), (int) i);
+
+        float sum = 0.0f;
+
+        for (int ch = 0; ch < channels; ++ch)
+            sum += buffer->getSample (ch, (int) i);
+
+        return sum;
+    };
+
+    if (sample <= 0 || sample >= total)
+        return sample;
+
+    for (juce::int64 d = 0; d <= reach; ++d)
+        for (auto i : { sample - d, sample + d })
+        {
+            if (i < 1 || i >= total)
+                continue;
+
+            const auto a = valueAt (i - 1), b = valueAt (i);
+
+            if ((a <= 0.0f && b > 0.0f) || (a >= 0.0f && b < 0.0f) || std::abs (b) < 1.0e-9f)
+                return std::abs (a) < std::abs (b) ? i - 1 : i;
+        }
+
+    return sample;
+}
+
 juce::int64 WaveformView::arrowStep() const
 {
     return std::max ((juce::int64) 1, (juce::int64) std::llround (dragOptions().arrowPixels * samplesPerPixel));
@@ -672,12 +718,13 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     if (e.mods.isShiftDown())
     {
         // Shift+click extends the existing selection or cursor to the click.
-        setSelection (juce::Range<juce::int64>::between (dragAnchor, sample), selectedChannel);
+        const auto to = snapToZeroCrossings ? nearestZeroCrossing (sample, selectedChannel) : sample;
+        setSelection (juce::Range<juce::int64>::between (dragAnchor, to), selectedChannel);
         return;
     }
 
     dragChannel = channelZoneAt (e.getPosition());
-    dragAnchor = sample;
+    dragAnchor = snapToZeroCrossings ? nearestZeroCrossing (sample, dragChannel) : sample;
     cursor = sample;
     setSelection ({});
 }
@@ -740,7 +787,11 @@ void WaveformView::mouseDrag (const juce::MouseEvent& e)
         return;
     }
 
-    const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
+    auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
+
+    if (snapToZeroCrossings)
+        sample = nearestZeroCrossing (sample, dragChannel);
+
     cursor = sample;
     setSelection (juce::Range<juce::int64>::between (dragAnchor, sample), dragChannel);
 }
