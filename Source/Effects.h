@@ -46,15 +46,16 @@ EqParams graphicEqParams (const std::vector<double>& hz, const std::vector<doubl
 
 // Volume envelope (Graphic Fade): a line of points over the selection, time
 // 0..1 from its start to its end, gain as a factor (1 = unchanged, 0 =
-// silence, up to 4 = +12 dB). `shape` is the curve from a point to the next
-// and `bend` (-1..1) how much it bends: a curve changes early (+) or late (-),
-// an S-curve is steeper (+) or flatter (-), a bell bulges up (+) or dips (-).
+// silence, up to 4 = +12 dB). Between two points the line is a Bezier curve,
+// as in drawing programs: each point has a handle on each side (offsets in
+// time and gain). A point that was never curved aims its handles at its
+// neighbours, so the lines stay straight when it is moved.
 struct EnvelopePoint
 {
-    enum Shape { linear, smooth, fast, slow, hold, curve, bell };   // fast / slow: older curves, kept for saved settings
     double time = 0.0, gain = 1.0;
-    Shape shape = linear;
-    double bend = 0.0;
+    bool curved = false;   // false: straight lines to the neighbours
+    bool smooth = true;    // the two handles stay in line (a corner when false)
+    double inTime = 0.0, inGain = 0.0, outTime = 0.0, outGain = 0.0;
 };
 
 constexpr int maxEnvelopePoints = 256;
@@ -66,8 +67,11 @@ struct EnvelopeParams
     juce::int64 length = 1;   // samples the envelope spans (the selection)
 };
 
-const char* envelopeShapeName (EnvelopePoint::Shape);
 double envelopeGainAt (const EnvelopeParams&, double time);   // time 0..1
+
+// Where point i's handles are (absolute time / gain): the ones of a straight
+// point lie on the lines to its neighbours, a third of the way.
+void envelopeHandles (const EnvelopeParams&, int i, double& inTime, double& inGain, double& outTime, double& outGain);
 
 struct CompressorParams
 {

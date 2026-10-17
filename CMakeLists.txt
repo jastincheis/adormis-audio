@@ -63,6 +63,7 @@ juce_add_gui_app(AdormisAudio
 target_sources(AdormisAudio PRIVATE
     Source/Main.cpp
     Source/Analysis.cpp
+    Source/AudioFilePreview.cpp
     Source/BackgroundPattern.cpp
     Source/BassFinder.cpp
     Source/BassGenerator.cpp

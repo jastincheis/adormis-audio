@@ -98,6 +98,9 @@ public:
     // While the file plays, playback goes on from there.
     std::function<void (juce::int64 sample)> onCursorClicked;
 
+    // A right-click in the waveform (not on a marker): the window's menu.
+    std::function<void()> onContextMenu;
+
     // Left / Right arrows: the cursor moves by a few pixels of the screen, so
     // the step follows the zoom (fine when zoomed in, coarse when zoomed out);
     // `extend` grows the selection instead (Shift).

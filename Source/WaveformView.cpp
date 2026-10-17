@@ -560,11 +560,14 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     if (! hasAudio())
         return;
 
-    // Right-click on a marker removes it (the drag strip has its own menu).
+    // Right-click on a marker removes it (the drag strip has its own menu);
+    // anywhere else it opens the window's menu.
     if (e.mods.isPopupMenu() && ! regionLane().contains (e.getPosition()) && scrubStripAt (e.getPosition()).isEmpty())
     {
         if (const auto index = markerNear ((float) e.x); index >= 0 && onRemoveMarker != nullptr)
             onRemoveMarker (index);
+        else if (onContextMenu != nullptr)
+            onContextMenu();
 
         return;
     }

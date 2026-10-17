@@ -232,17 +232,29 @@ public:
     {
         handoff.fetch (params);
         const auto length = std::max ((juce::int64) 1, params.length);
-        auto pos = position.load();
+        auto pos = position.load() % length;
 
-        for (int i = 0; i < numSamples; ++i, ++pos)
+        // The curve is worked out every 32 samples, straight in between (far
+        // finer than any envelope; solving the curve per sample would be slow).
+        for (int i = 0; i < numSamples;)
         {
-            const auto g = (float) envelopeGainAt (params, (double) (pos % length) / (double) length);
+            const auto n = (int) std::min ({ (juce::int64) 32, (juce::int64) (numSamples - i), length - pos });
+            const auto g0 = envelopeGainAt (params, (double) pos / (double) length);
+            const auto g1 = envelopeGainAt (params, (double) (pos + n) / (double) length);
 
             for (int ch = 0; ch < audio.getNumChannels(); ++ch)
-                audio.getWritePointer (ch, start)[i] *= g;
+            {
+                auto* d = audio.getWritePointer (ch, start + i);
+
+                for (int k = 0; k < n; ++k)
+                    d[k] *= (float) (g0 + (g1 - g0) * k / n);
+            }
+
+            i += n;
+            pos = (pos + n) % length;
         }
 
-        position = pos % length;
+        position = pos;
     }
 
     std::atomic<juce::int64> position { 0 };
@@ -575,54 +587,28 @@ double eqResponseDb (const EqParams& p, double hz, double rate)
     return total;
 }
 
-const char* envelopeShapeName (EnvelopePoint::Shape shape)
+void envelopeHandles (const EnvelopeParams& p, int i, double& inTime, double& inGain, double& outTime, double& outGain)
 {
-    switch (shape)
+    const auto& pt = p.points[(size_t) i];
+    inTime = outTime = pt.time;
+    inGain = outGain = pt.gain;
+
+    if (i > 0)
     {
-        case EnvelopePoint::linear: return "Straight";
-        case EnvelopePoint::curve:
-        case EnvelopePoint::fast:
-        case EnvelopePoint::slow:   return "Curve (bend it with the handle)";
-        case EnvelopePoint::smooth: return "S-curve (steeper or flatter with the handle)";
-        case EnvelopePoint::bell:   return "Bell (a bump or a dip, with the handle)";
-        case EnvelopePoint::hold:   return "Hold (a step at the next point)";
+        const auto& prev = p.points[(size_t) i - 1];
+        const auto span = pt.time - prev.time;
+        inTime = pt.time + (pt.curved ? juce::jlimit (-span, 0.0, pt.inTime) : -span / 3.0);
+        inGain = pt.gain + (pt.curved ? pt.inGain : (prev.gain - pt.gain) / 3.0);
     }
 
-    return "";
-}
-
-namespace
-{
-// 0..1 -> 0..1 for a segment's shape and bend.
-double shapeCurve (EnvelopePoint::Shape shape, double bend, double x)
-{
-    bend = juce::jlimit (-1.0, 1.0, bend);
-
-    switch (shape)
+    if (i + 1 < p.count)
     {
-        case EnvelopePoint::fast:   return shapeCurve (EnvelopePoint::curve, 0.6, x);
-        case EnvelopePoint::slow:   return shapeCurve (EnvelopePoint::curve, -0.6, x);
-        case EnvelopePoint::curve:
-        {
-            const auto e = 1.0 + 4.0 * std::abs (bend);
-            return bend >= 0.0 ? 1.0 - std::pow (1.0 - x, e) : std::pow (x, e);
-        }
-
-        case EnvelopePoint::smooth:
-        {
-            const auto k = std::pow (2.0, 1.0 + 2.0 * bend);   // 2 = gentle S, 8 = almost a step, 0.5 = the other way
-            const auto u = std::pow (x, k), v = std::pow (1.0 - x, k);
-            return u + v > 0.0 ? u / (u + v) : x;
-        }
-
-        case EnvelopePoint::hold:   return 0.0;
-        case EnvelopePoint::linear:
-        case EnvelopePoint::bell:   break;
+        const auto& next = p.points[(size_t) i + 1];
+        const auto span = next.time - pt.time;
+        outTime = pt.time + (pt.curved ? juce::jlimit (0.0, span, pt.outTime) : span / 3.0);
+        outGain = pt.gain + (pt.curved ? pt.outGain : (next.gain - pt.gain) / 3.0);
     }
-
-    return x;
 }
-} // namespace
 
 double envelopeGainAt (const EnvelopeParams& p, double t)
 {
@@ -640,15 +626,32 @@ double envelopeGainAt (const EnvelopeParams& p, double t)
         if (t > b.time)
             continue;
 
-        const auto span = b.time - a.time;
-        const auto x = span > 1.0e-12 ? (t - a.time) / span : 1.0;
-        auto g = a.gain + (b.gain - a.gain) * shapeCurve (a.shape, a.bend, x);
+        if (! a.curved && ! b.curved)   // straight: no curve to solve
+        {
+            const auto span = b.time - a.time;
+            return span > 1.0e-12 ? a.gain + (b.gain - a.gain) * (t - a.time) / span : b.gain;
+        }
 
-        // a bell: a bump (or dip) as high as `bend` says (1 = 200 %), round at both ends
-        if (a.shape == EnvelopePoint::bell)
-            g += 2.0 * juce::jlimit (-1.0, 1.0, a.bend) * std::pow (std::sin (juce::MathConstants<double>::pi * x), 2.0);
+        double unusedT, unusedG, x1, y1, x2, y2;
+        envelopeHandles (p, i, unusedT, unusedG, x1, y1);
+        envelopeHandles (p, i + 1, x2, y2, unusedT, unusedG);
 
-        return juce::jlimit (0.0, 4.0, g);
+        // the curve's u where its time is t (the time goes one way along it)
+        auto bezier = [] (double p0, double p1, double p2, double p3, double u)
+        {
+            const auto v = 1.0 - u;
+            return v * v * v * p0 + 3.0 * v * v * u * p1 + 3.0 * v * u * u * p2 + u * u * u * p3;
+        };
+
+        double lo = 0.0, hi = 1.0;
+
+        for (int k = 0; k < 30; ++k)
+        {
+            const auto mid = (lo + hi) / 2.0;
+            (bezier (a.time, x1, x2, b.time, mid) < t ? lo : hi) = mid;
+        }
+
+        return juce::jlimit (0.0, 4.0, bezier (a.gain, y1, y2, b.gain, (lo + hi) / 2.0));
     }
 
     return p.points[(size_t) p.count - 1].gain;

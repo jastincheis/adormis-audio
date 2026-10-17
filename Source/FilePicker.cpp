@@ -3,9 +3,10 @@
 namespace wf
 {
 void FilePicker::launch (const juce::String& title, const juce::File& start, const juce::String& patterns, int flags,
-                         std::function<void (const juce::Array<juce::File>&)> onResult)
+                         std::function<void (const juce::Array<juce::File>&)> onResult,
+                         std::unique_ptr<juce::FilePreviewComponent> preview)
 {
-    if (juce::FileChooser::isPlatformDialogAvailable())
+    if (juce::FileChooser::isPlatformDialogAvailable() && preview == nullptr)
     {
         chooser = std::make_unique<juce::FileChooser> (title, start, patterns);
         chooser->launchAsync (flags, [onResult] (const juce::FileChooser& c) { onResult (c.getResults()); });
@@ -17,9 +18,10 @@ void FilePicker::launch (const juce::String& title, const juce::File& start, con
 
     box.reset();
     browser.reset();
+    previewPanel = std::move (preview);
 
     filter = std::make_unique<juce::WildcardFileFilter> (patterns, juce::String(), juce::String());
-    browser = std::make_unique<juce::FileBrowserComponent> (flags, start, filter.get(), nullptr);
+    browser = std::make_unique<juce::FileBrowserComponent> (flags, start, filter.get(), previewPanel.get());
     box = std::make_unique<juce::FileChooserDialogBox> (title, juce::String(), *browser,
                                                         (flags & juce::FileBrowserComponent::warnAboutOverwriting) != 0,
                                                         browser->findColour (juce::AlertWindow::backgroundColourId).withAlpha (1.0f));
@@ -34,6 +36,9 @@ void FilePicker::launch (const juce::String& title, const juce::File& start, con
 
         juce::Array<juce::File> files;
 
+        if (previewPanel != nullptr)
+            previewPanel->selectedFileChanged ({});   // stops what it plays
+
         if (result != 0)
             for (int i = 0; i < browser->getNumSelectedFiles(); ++i)
                 files.add (browser->getSelectedFile (i));
@@ -45,6 +50,7 @@ void FilePicker::launch (const juce::String& title, const juce::File& start, con
             {
                 box.reset();
                 browser.reset();
+                previewPanel.reset();
             }
         });
 

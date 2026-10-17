@@ -15,10 +15,15 @@ namespace wf
 class FilePicker
 {
 public:
+    // `preview` (optional) sits on the right of the list and hears about the
+    // picked file; with it, the program's own window is used everywhere (the
+    // systems' dialogs can't show it).
     void launch (const juce::String& title, const juce::File& start, const juce::String& patterns, int flags,
-                 std::function<void (const juce::Array<juce::File>&)> onResult);
+                 std::function<void (const juce::Array<juce::File>&)> onResult,
+                 std::unique_ptr<juce::FilePreviewComponent> preview = nullptr);
 
 private:
+    std::unique_ptr<juce::FilePreviewComponent> previewPanel;
     std::unique_ptr<juce::FileChooser> chooser;
     std::unique_ptr<juce::WildcardFileFilter> filter;
     std::unique_ptr<juce::FileBrowserComponent> browser;

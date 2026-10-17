@@ -7,6 +7,7 @@
 #include "EffectWindow.h"
 #include "DataWindow.h"
 #include "FilePicker.h"
+#include "AudioFilePreview.h"
 #include "MixDialog.h"
 #include "MixPreview.h"
 #include "ProcessToolbar.h"
@@ -174,6 +175,7 @@ private:
     void releasePlaybackSource();   // before a document's buffer is changed
     void scrub (DataWindow* doc, WaveformView::Scrub phase, juce::int64 sample);
     void jumpPlayback (DataWindow* doc, juce::int64 sample);
+    void showWaveMenu (DataWindow* doc);
     void setLooping (bool shouldLoop);
     void toggleLoop();   // Q: loop on (a selection starts looping) / off
     void followSelectionLoop (DataWindow* doc);
@@ -246,6 +248,7 @@ private:
     static juce::File audioStateFile();
     ChangeCall audioSaver;
     juce::AudioSourcePlayer sourcePlayer;
+    juce::TimeSliceThread previewReadThread { "Adormis Audio file preview" };   // reads ahead for the Open window's preview
     juce::AudioTransportSource transport;
     std::unique_ptr<wf::MeterTap> meterTap;     // the device plays through this (for the meters)
     std::unique_ptr<wf::MeterPanel> meters;

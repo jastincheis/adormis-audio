@@ -513,6 +513,7 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
     auto* raw = doc.get();
     raw->getView().onScrub = [this, raw] (WaveformView::Scrub phase, juce::int64 sample) { scrub (raw, phase, sample); };
     raw->getView().onCursorClicked = [this, raw] (juce::int64 sample) { jumpPlayback (raw, sample); };
+    raw->getView().onContextMenu = [this, raw] { showWaveMenu (raw); };
     raw->onRegionAction = [this, raw] (int index, bool menu)
     {
         if (menu) regionMenu (raw, index);
@@ -762,15 +763,46 @@ void MainComponent::openFileDialog()
     if (auto* doc = activeDocument(); doc != nullptr && doc->getFile().existsAsFile())
         start = doc->getFile().getParentDirectory();
 
+    // The Open window plays the picked file (read ahead on a thread, so a
+    // long MP3 doesn't stutter).
+    wf::FilePreviewHost host;
+    host.play = [this] (const juce::File& file, double from)
+    {
+        std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
+
+        if (reader == nullptr)
+            return;
+
+        const auto rate = reader->sampleRate;
+        const auto channels = (int) reader->numChannels;
+        auto source = std::make_unique<juce::AudioFormatReaderSource> (reader.release(), true);
+        source->setNextReadPosition ((juce::int64) (from * rate));
+
+        releasePlaybackSource();
+
+        if (! previewReadThread.isThreadRunning())
+            previewReadThread.startThread();
+
+        toolPreview = std::move (source);
+        transport.setSource (toolPreview.get(), 65536, &previewReadThread, rate, juce::jmax (2, channels));
+        transport.setPosition (from);
+        transport.start();
+    };
+    host.stop = [this] { stopToolPreview(); };
+    host.position = [this] { return toolPreview != nullptr && transport.isPlaying() ? transport.getCurrentPosition() : -1.0; };
+
     filePicker.launch ("Open", start, formatManager.getWildcardForAllFormats(),
                        juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
                            | juce::FileBrowserComponent::canSelectMultipleItems,
                        [this] (const juce::Array<juce::File>& files)
                        {
+                           stopToolPreview();
+
                            for (const auto& file : files)
                                if (file.existsAsFile())
                                    loadFile (file);
-                       });
+                       },
+                       std::make_unique<wf::AudioFilePreview> (formatManager, std::move (host)));
 }
 
 void MainComponent::closeActiveDocument()
@@ -1824,6 +1856,45 @@ void MainComponent::showWorkspaceMenu (juce::Point<int> position)
         menu.addSeparator();
         menu.addCommandItem (&commandManager, wf::editPasteToNew);
     }
+
+    // Inside the main window: Hyprland moves focus onto separate menu windows
+    // and JUCE then closes them as soon as the mouse slips off.
+    menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition().withParentComponent (getTopLevelComponent()));
+}
+
+// Right-click in a file's waveform: the usual edits, a few tools, and files.
+void MainComponent::showWaveMenu (DataWindow* doc)
+{
+    if (doc != nullptr && workspace != nullptr && workspace->getActiveDocument() != doc)
+        workspace->setActiveDocument (doc);
+
+    commandManager.commandStatusChanged();
+    juce::PopupMenu menu;
+    const juce::Component::SafePointer<MainComponent> safeThis (this);
+
+    menu.addCommandItem (&commandManager, wf::optPlay);
+    menu.addCommandItem (&commandManager, wf::optPlayFromCursor);
+    menu.addSeparator();
+
+    for (auto id : { wf::editCut, wf::editCopy, wf::editPaste, wf::editPasteToNew, wf::editDelete, wf::editTrim, wf::editSelectAll })
+        menu.addCommandItem (&commandManager, id);
+
+    menu.addSeparator();
+
+    for (auto id : { wf::insertMarker, wf::insertRegion, wf::insertVolumeEnv })
+        menu.addCommandItem (&commandManager, id);
+
+    menu.addSeparator();
+    menu.addItem ("New (empty)", [safeThis]
+    {
+        if (auto* main = safeThis.getComponent())
+            main->createEmptyDocument ({});
+    });
+    menu.addCommandItem (&commandManager, wf::fileNew, "New from a Template...");
+    menu.addCommandItem (&commandManager, wf::fileOpen);
+
+    const auto recent = recentFilesMenu();
+    menu.addSubMenu ("Open Recent", recent, recent.getNumItems() > 0);
 
     // Inside the main window: Hyprland moves focus onto separate menu windows
     // and JUCE then closes them as soon as the mouse slips off.

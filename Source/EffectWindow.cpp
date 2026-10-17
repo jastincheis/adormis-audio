@@ -1161,7 +1161,7 @@ public:
         styleLabel (hint, 11.5f, false, colours::muted);
         hint.setJustificationType (juce::Justification::topLeft);
         hint.setText ("Drag a slider up or down, or drag across several to draw a curve.  Double-click: back to 0.  "
-                      "Wheel: half a dB.  Presets: ready-made curves, and your own.",
+                      "Wheel: half a dB.  Ready-made: curves to start from;  My presets (below): your own.",
                       juce::dontSendNotification);
 
         addAndMakeVisible (output);
@@ -1536,7 +1536,6 @@ private:
         };
 
         juce::PopupMenu menu;
-        menu.addSectionHeader ("Ready-made");
 
         for (const auto& p : builtIn)
             menu.addItem (p.name, [this, curve = p.curve]
@@ -1547,103 +1546,7 @@ private:
                 changed();
             });
 
-        const auto mine = settings::get ("graphicEq.presets");
-        juce::PopupMenu load, remove;
-
-        if (const auto* list = mine.getArray())
-            for (int i = 0; i < list->size(); ++i)
-            {
-                const auto preset = (*list)[i];
-                load.addItem (preset["name"].toString(), [this, preset] { loadUserPreset (preset); });
-                remove.addItem (preset["name"].toString(), [i] { removeUserPreset (i); });
-            }
-
-        menu.addSeparator();
-        menu.addSectionHeader ("Mine");
-
-        if (load.getNumItems() > 0)
-        {
-            menu.addSubMenu ("Load", load);
-            menu.addSubMenu ("Delete", remove);
-        }
-
-        menu.addItem ("Save these sliders as...", [this] { saveUserPreset(); });
         menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetsButton).withParentComponent (getTopLevelComponent()));
-    }
-
-    void loadUserPreset (const juce::var& preset)
-    {
-        const auto* fs = preset["hz"].getArray();
-        const auto* vs = preset["db"].getArray();
-
-        if (fs == nullptr || vs == nullptr || fs->size() != vs->size() || fs->size() < 2)
-            return;
-
-        std::vector<double> f, v;
-
-        for (int i = 0; i < fs->size(); ++i)
-        {
-            f.push_back ((*fs)[i]);
-            v.push_back ((*vs)[i]);
-        }
-
-        // same sliders: exactly; otherwise its shape
-        for (size_t i = 0; i < hz.size(); ++i)
-            db[i] = juce::jlimit (-range, range, curveAt (f, v, hz[i]));
-
-        changed();
-    }
-
-    static void removeUserPreset (int index)
-    {
-        const auto mine = settings::get ("graphicEq.presets");
-        juce::Array<juce::var> list;
-
-        if (const auto* old = mine.getArray())
-            list = *old;
-
-        list.remove (index);
-        settings::set ("graphicEq.presets", list);
-    }
-
-    void saveUserPreset()
-    {
-        auto* box = new juce::AlertWindow ("Save the sliders", "A name for this curve:", juce::MessageBoxIconType::NoIcon);
-        box->addTextEditor ("name", "My curve");
-        box->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
-        box->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
-        const juce::Component::SafePointer<GraphicEqEditor> safeThis (this);
-
-        box->enterModalState (true, juce::ModalCallbackFunction::create ([safeThis, box] (int result)
-        {
-            auto* self = safeThis.getComponent();
-            const auto name = box->getTextEditorContents ("name").trim();
-
-            if (result != 1 || self == nullptr || name.isEmpty())
-                return;
-
-            juce::Array<juce::var> fs, vs;
-
-            for (size_t i = 0; i < self->hz.size(); ++i)
-            {
-                fs.add (self->hz[i]);
-                vs.add (self->db[i]);
-            }
-
-            juce::DynamicObject::Ptr preset = new juce::DynamicObject();
-            preset->setProperty ("name", name);
-            preset->setProperty ("hz", fs);
-            preset->setProperty ("db", vs);
-
-            const auto mine = settings::get ("graphicEq.presets");
-            juce::Array<juce::var> list;
-
-            if (const auto* old = mine.getArray())
-                list = *old;
-
-            list.add (juce::var (preset.get()));
-            settings::set ("graphicEq.presets", list);
-        }), true);
     }
 
     // The selection's average spectrum (dB per bin), for the curve view.
@@ -1690,15 +1593,15 @@ private:
     std::vector<float> staticPre;
     juce::Rectangle<int> curveArea, faderArea;
     juce::OwnedArray<juce::TextButton> countButtons, rangeButtons;
-    juce::TextButton flatButton { "Flat" }, presetsButton { "Presets" };
+    juce::TextButton flatButton { "Flat" }, presetsButton { "Ready-made" };
     juce::Label countLabel, rangeLabel, hint;
     LabelledSlider output { "Output", -24.0, 24.0, 0.1, " dB", 0.0, [this] { changed(); } };
 };
 
 //==============================================================================
 // Volume Envelope / Graphic Fade: the selection's waveform with a volume line
-// over it. Click to add a point, drag to move it, right-click for the curve
-// to the next point; the waveform underneath shows the result.
+// over it. The line is drawn like a path in a drawing program: points joined
+// by curves, each point with a handle on each side that shapes the curve.
 class EnvelopeEditor final : public Editor
 {
 public:
@@ -1707,7 +1610,7 @@ public:
         params.length = std::max (1, shared.audio->getNumSamples());
         setPreset (0);
 
-        presetsButton.onClick = [this] { showPresets(); };
+        presetsButton.onClick = [this] { setPreset (-1); };
         addAndMakeVisible (presetsButton);
 
         for (int i = 0; i < 2; ++i)
@@ -1724,9 +1627,8 @@ public:
         readout.setJustificationType (juce::Justification::centredRight);
         styleLabel (hint, 11.5f, false, colours::muted);
         hint.setJustificationType (juce::Justification::topLeft);
-        hint.setText ("Double-click: new point; double-click a point: remove it.  Drag a point to move it (Shift: only up / down).  "
-                      "Drag the small diamond between two points to bend the line (double-click it: straight again).  "
-                      "Right-click a point: the kind of line to the next one (straight, curve, S-curve, bell, hold), 100 %, 0 %.",
+        hint.setText ("Double-click: new point; double-click a point: remove it.  Click a point to show its two handles, then drag a handle "
+                      "to bend the curve on both sides (Alt or Ctrl: one side only, for a corner).  Right-click a point: straight lines again, 100 %, 0 %.",
                       juce::dontSendNotification);
 
         for (auto* l : { &readout, &hint })
@@ -1757,7 +1659,7 @@ public:
         for (int i = 0; i < params.count; ++i)
         {
             const auto& p = params.points[(size_t) i];
-            list.add (juce::Array<juce::var> { p.time, p.gain, (int) p.shape, p.bend });
+            list.add (juce::Array<juce::var> { p.time, p.gain, p.curved, p.smooth, p.inTime, p.inGain, p.outTime, p.outGain });
         }
 
         juce::DynamicObject::Ptr state = new juce::DynamicObject();
@@ -1776,10 +1678,19 @@ public:
                 if (params.count < fx::maxEnvelopePoints)
                 {
                     auto& p = params.points[(size_t) params.count++];
+                    p = {};
                     p.time = juce::jlimit (0.0, 1.0, (double) v[0]);
                     p.gain = juce::jlimit (0.0, 4.0, (double) v[1]);
-                    p.shape = (fx::EnvelopePoint::Shape) juce::jlimit (0, (int) fx::EnvelopePoint::bell, (int) v[2]);
-                    p.bend = v.size() > 3 ? juce::jlimit (-1.0, 1.0, (double) v[3]) : 0.0;
+
+                    if (v.size() >= 8)   // older settings had other curves: straight lines then
+                    {
+                        p.curved = v[2];
+                        p.smooth = v[3];
+                        p.inTime = v[4];
+                        p.inGain = v[5];
+                        p.outTime = v[6];
+                        p.outGain = v[7];
+                    }
                 }
 
             params.points[0].time = 0.0;
@@ -1787,6 +1698,7 @@ public:
         }
 
         setTop ((double) state.getProperty ("top", 2.0) > 3.0 ? 4.0 : 2.0);
+        selected = -1;
         changed();
     }
 
@@ -1849,13 +1761,17 @@ public:
         if (overview.size() != (size_t) a.getWidth())
             buildOverview ((int) a.getWidth());
 
-        const auto mid = yFor (0.0) - (yFor (0.0) - yFor (1.0)) * 0.5f;   // waveform centred in the 0..100 % band
+        const auto mid = yFor (0.5);
         const auto scale = (yFor (0.0) - yFor (1.0)) * 0.5f;
+        std::vector<double> gains (overview.size() + 1);
+
+        for (size_t x = 0; x <= overview.size(); ++x)
+            gains[x] = fx::envelopeGainAt (params, (double) x / std::max ((size_t) 1, overview.size()));
 
         for (int x = 0; x < (int) overview.size(); ++x)
         {
             const auto peak = overview[(size_t) x];
-            const auto gain = (float) fx::envelopeGainAt (params, (x + 0.5) / overview.size());
+            const auto gain = (float) gains[(size_t) x];
             g.setColour (colours::muted.withAlpha (0.25f));
             g.fillRect (a.getX() + (float) x, mid - peak * scale, 1.0f, std::max (1.0f, 2.0f * peak * scale));
             g.setColour (colours::accent.withAlpha (0.75f));
@@ -1863,12 +1779,12 @@ public:
             g.fillRect (a.getX() + (float) x, mid - shaped * scale, 1.0f, std::max (1.0f, 2.0f * shaped * scale));
         }
 
-        // the envelope line and its points
+        // the envelope
         juce::Path line;
 
-        for (int x = 0; x <= (int) a.getWidth(); ++x)
+        for (size_t x = 0; x < gains.size(); ++x)
         {
-            const auto y = yFor (fx::envelopeGainAt (params, (double) x / a.getWidth()));
+            const auto y = yFor (gains[x]);
 
             if (x == 0) line.startNewSubPath (a.getX(), y);
             else        line.lineTo (a.getX() + (float) x, y);
@@ -1877,30 +1793,41 @@ public:
         g.setColour (colours::bass);
         g.strokePath (line, juce::PathStrokeType (2.0f));
 
+        // the handles of the picked point (and of the one under the mouse)
+        for (auto i : { selected, hovered == selected ? -1 : hovered })
+        {
+            if (! juce::isPositiveAndBelow (i, params.count))
+                continue;
+
+            const auto c = pointXY (i);
+            const auto [in, out] = handlesXY (i);
+
+            for (int side = 0; side < 2; ++side)
+            {
+                if ((side == 0 && i == 0) || (side == 1 && i == params.count - 1))
+                    continue;
+
+                const auto h = side == 0 ? in : out;
+                const auto active = draggingHandle == i * 2 + side || hoveredHandle == i * 2 + side;
+                g.setColour (colours::ink.withAlpha (i == selected ? 0.8f : 0.4f));
+                g.drawLine ({ c, h }, 1.2f);
+                g.setColour (active ? colours::bass : colours::bg);
+                g.fillEllipse (h.x - 4.5f, h.y - 4.5f, 9.0f, 9.0f);
+                g.setColour (colours::ink.withAlpha (i == selected ? 1.0f : 0.5f));
+                g.drawEllipse (h.x - 4.5f, h.y - 4.5f, 9.0f, 9.0f, 1.5f);
+            }
+        }
+
+        // the points: squares, filled when picked (as in drawing programs)
         for (int i = 0; i < params.count; ++i)
         {
             const auto c = pointXY (i);
-            const auto picked = i == dragging || i == hovered;
-            g.setColour (picked ? colours::ink : colours::bass);
-            g.fillEllipse (c.x - 5.0f, c.y - 5.0f, 10.0f, 10.0f);
-            g.setColour (colours::bg);
-            g.drawEllipse (c.x - 5.0f, c.y - 5.0f, 10.0f, 10.0f, 1.5f);
-        }
-
-        // the bend handles, half way along each line
-        for (int i = 0; i + 1 < params.count; ++i)
-        {
-            if (params.points[(size_t) i].shape == fx::EnvelopePoint::hold)
-                continue;
-
-            const auto c = handleXY (i);
-            const auto picked = i == bending || i == hoveredHandle;
-            juce::Path diamond;
-            diamond.addQuadrilateral (c.x, c.y - 6.0f, c.x + 6.0f, c.y, c.x, c.y + 6.0f, c.x - 6.0f, c.y);
+            const auto picked = i == selected || i == dragging || i == hovered;
+            const juce::Rectangle<float> box (c.x - 5.0f, c.y - 5.0f, 10.0f, 10.0f);
             g.setColour (picked ? colours::bass : colours::bg);
-            g.fillPath (diamond);
+            g.fillRect (box);
             g.setColour (colours::bass);
-            g.strokePath (diamond, juce::PathStrokeType (1.5f));
+            g.drawRect (box, 1.5f);
         }
 
         // where the preview is
@@ -1914,8 +1841,8 @@ public:
 
     void mouseMove (const juce::MouseEvent& e) override
     {
-        hovered = pointAt (e.position);
-        hoveredHandle = hovered < 0 ? handleAt (e.position) : -1;
+        hoveredHandle = handleAt (e.position);
+        hovered = hoveredHandle >= 0 ? hoveredHandle / 2 : pointAt (e.position);
         showReadout (e.position);
         repaint (graph);
     }
@@ -1929,8 +1856,15 @@ public:
 
     void mouseDown (const juce::MouseEvent& e) override
     {
-        if (! plot().expanded (6.0f).contains (e.position))
+        if (! plot().expanded (8.0f).contains (e.position))
             return;
+
+        if (const auto handle = handleAt (e.position); handle >= 0 && ! e.mods.isPopupMenu())
+        {
+            draggingHandle = handle;
+            curve (handle / 2);
+            return;
+        }
 
         const auto index = pointAt (e.position);
 
@@ -1942,45 +1876,16 @@ public:
             return;
         }
 
-        if (index >= 0)
-        {
-            dragging = index;
-            return;
-        }
-
-        if (const auto handle = handleAt (e.position); handle >= 0)
-            startBend (handle, e.position.y);
-    }
-
-    // A new point where double-clicked, taking over the curve of the line it splits.
-    void addPointAt (juce::Point<float> pos)
-    {
-        if (params.count >= fx::maxEnvelopePoints || ! plot().contains (pos))
-            return;
-
-        const auto t = timeAt (pos.x);
-        int at = 1;
-
-        while (at < params.count - 1 && params.points[(size_t) at].time < t)
-            ++at;
-
-        for (int i = params.count; i > at; --i)
-            params.points[(size_t) i] = params.points[(size_t) i - 1];
-
-        ++params.count;
-        auto& p = params.points[(size_t) at];
-        p.time = t;
-        p.gain = gainAt (pos.y);
-        p.shape = params.points[(size_t) at - 1].shape;
-        p.bend = params.points[(size_t) at - 1].bend;
-        changed();
+        selected = index;   // a click elsewhere hides the handles
+        dragging = index;
+        repaint (graph);
     }
 
     void mouseDrag (const juce::MouseEvent& e) override
     {
-        if (bending >= 0)
+        if (draggingHandle >= 0)
         {
-            bendTo (e.position.y);
+            moveHandle (draggingHandle / 2, draggingHandle % 2, e.position, e.mods.isAltDown() || e.mods.isCtrlDown() || e.mods.isCommandDown());
             return;
         }
 
@@ -1991,29 +1896,26 @@ public:
         const auto ends = dragging == 0 || dragging == params.count - 1;
 
         if (! ends && ! e.mods.isShiftDown())
-            p.time = juce::jlimit (params.points[(size_t) dragging - 1].time, params.points[(size_t) dragging + 1].time, timeAt (e.position.x));
+            p.time = juce::jlimit (params.points[(size_t) dragging - 1].time + 1.0e-4, params.points[(size_t) dragging + 1].time - 1.0e-4,
+                                   timeAt (e.position.x));
 
         p.gain = gainAt (e.position.y);
         showReadout (pointXY (dragging));
         changed();
     }
 
-    void mouseUp (const juce::MouseEvent&) override   { dragging = bending = -1; repaint (graph); }
+    void mouseUp (const juce::MouseEvent&) override   { dragging = draggingHandle = -1; repaint (graph); }
 
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
+        if (handleAt (e.position) >= 0)
+            return;
+
         if (const auto index = pointAt (e.position); index >= 0)
         {
             if (index > 0 && index < params.count - 1)
                 removePoint (index);
 
-            return;
-        }
-
-        if (const auto handle = handleAt (e.position); handle >= 0)
-        {
-            params.points[(size_t) handle].bend = 0.0;   // straight again (a bell: no bump)
-            changed();
             return;
         }
 
@@ -2023,16 +1925,23 @@ public:
 private:
     juce::Rectangle<float> plot() const   { return graph.toFloat().reduced (8.0f).withTrimmedLeft (44.0f).withTrimmedRight (52.0f).withTrimmedBottom (16.0f); }
 
+    float xFor (double time) const   { const auto a = plot(); return a.getX() + a.getWidth() * (float) time; }
+
     float yFor (double gain) const
     {
         const auto a = plot();
         return a.getBottom() - a.getHeight() * (float) (juce::jlimit (0.0, top, gain) / top);
     }
 
-    double gainAt (float y) const
+    double gainAt (float y, bool snap = true) const
     {
         const auto a = plot();
-        auto gain = juce::jlimit (0.0, top, (double) ((a.getBottom() - y) / a.getHeight()) * top);
+        auto gain = (double) ((a.getBottom() - y) / a.getHeight()) * top;
+
+        if (! snap)
+            return gain;
+
+        gain = juce::jlimit (0.0, top, gain);
 
         if (std::abs (gain - 1.0) < 0.025)   // 100 % catches the point
             gain = 1.0;
@@ -2048,83 +1957,18 @@ private:
 
     juce::Point<float> pointXY (int i) const
     {
-        const auto a = plot();
         const auto& p = params.points[(size_t) i];
-        return { a.getX() + a.getWidth() * (float) p.time, yFor (p.gain) };
+        return { xFor (p.time), yFor (p.gain) };
     }
 
-    // The bend handle of the line from point i: half way along it.
-    juce::Point<float> handleXY (int i) const
+    // The handles on screen (not limited to the scale, so a strong curve's handle stays visible).
+    std::pair<juce::Point<float>, juce::Point<float>> handlesXY (int i) const
     {
+        double it, ig, ot, og;
+        fx::envelopeHandles (params, i, it, ig, ot, og);
         const auto a = plot();
-        const auto t = (params.points[(size_t) i].time + params.points[(size_t) i + 1].time) / 2.0;
-        return { a.getX() + a.getWidth() * (float) t, yFor (fx::envelopeGainAt (params, t)) };
-    }
-
-    int handleAt (juce::Point<float> pos) const
-    {
-        for (int i = 0; i + 1 < params.count; ++i)
-            if (params.points[(size_t) i].shape != fx::EnvelopePoint::hold && handleXY (i).getDistanceFrom (pos) <= 8.0f)
-                return i;
-
-        return -1;
-    }
-
-    // Taking a handle: a straight line becomes a curve, or a bell when both
-    // ends are at the same level (a curve could not bend there).
-    void startBend (int i, float y)
-    {
-        auto& p = params.points[(size_t) i];
-        const auto& next = params.points[(size_t) i + 1];
-
-        if (p.shape == fx::EnvelopePoint::fast)   { p.shape = fx::EnvelopePoint::curve; p.bend = 0.6; }
-        if (p.shape == fx::EnvelopePoint::slow)   { p.shape = fx::EnvelopePoint::curve; p.bend = -0.6; }
-
-        if (p.shape == fx::EnvelopePoint::linear)
-        {
-            p.shape = std::abs (next.gain - p.gain) < 0.02 ? fx::EnvelopePoint::bell : fx::EnvelopePoint::curve;
-            p.bend = 0.0;
-        }
-
-        bending = i;
-        bendStartY = y;
-        bendStart = p.bend;
-    }
-
-    // Dragging a handle: the line goes through the mouse, half way along.
-    void bendTo (float y)
-    {
-        auto& p = params.points[(size_t) bending];
-        const auto& next = params.points[(size_t) bending + 1];
-        const auto target = gainAt (y);
-
-        switch (p.shape)
-        {
-            case fx::EnvelopePoint::curve:
-            {
-                if (std::abs (next.gain - p.gain) < 1.0e-6)
-                    break;
-
-                const auto frac = juce::jlimit (0.001, 0.999, (target - p.gain) / (next.gain - p.gain));
-                const auto e = std::log (frac >= 0.5 ? 1.0 - frac : frac) / std::log (0.5);
-                p.bend = juce::jlimit (-1.0, 1.0, (frac >= 0.5 ? 1.0 : -1.0) * (e - 1.0) / 4.0);
-                break;
-            }
-
-            case fx::EnvelopePoint::bell:
-                p.bend = juce::jlimit (-1.0, 1.0, (target - (p.gain + next.gain) / 2.0) / 2.0);
-                break;
-
-            case fx::EnvelopePoint::smooth:   // up: steeper, down: flatter
-                p.bend = juce::jlimit (-1.0, 1.0, bendStart + (double) (bendStartY - y) / 150.0);
-                break;
-
-            case fx::EnvelopePoint::linear: case fx::EnvelopePoint::fast: case fx::EnvelopePoint::slow: case fx::EnvelopePoint::hold:
-                break;
-        }
-
-        showReadout (handleXY (bending));
-        changed();
+        auto y = [&] (double gain) { return a.getBottom() - a.getHeight() * (float) (gain / top); };
+        return { { xFor (it), y (ig) }, { xFor (ot), y (og) } };
     }
 
     int pointAt (juce::Point<float> pos) const
@@ -2134,6 +1978,126 @@ private:
                 return i;
 
         return -1;
+    }
+
+    // A handle of the picked point (or the hovered one): point * 2 + 0 (left) or 1 (right).
+    int handleAt (juce::Point<float> pos) const
+    {
+        for (auto i : { selected, hovered })
+        {
+            if (! juce::isPositiveAndBelow (i, params.count))
+                continue;
+
+            const auto [in, out] = handlesXY (i);
+
+            if (i > 0 && in.getDistanceFrom (pos) <= 7.0f && in.getDistanceFrom (pointXY (i)) > 3.0f)
+                return i * 2;
+
+            if (i < params.count - 1 && out.getDistanceFrom (pos) <= 7.0f && out.getDistanceFrom (pointXY (i)) > 3.0f)
+                return i * 2 + 1;
+        }
+
+        return -1;
+    }
+
+    // A straight point becomes curved with its handles where they were (the
+    // lines don't change yet).
+    void curve (int i)
+    {
+        auto& p = params.points[(size_t) i];
+
+        if (p.curved)
+            return;
+
+        double it, ig, ot, og;
+        fx::envelopeHandles (params, i, it, ig, ot, og);
+        p.inTime = it - p.time;
+        p.inGain = ig - p.gain;
+        p.outTime = ot - p.time;
+        p.outGain = og - p.gain;
+        p.curved = true;
+        p.smooth = true;
+        selected = i;
+    }
+
+    // Dragging a handle: it follows the mouse (in time, within the line it
+    // shapes). A smooth point turns the other handle the opposite way (as
+    // seen on screen), keeping that handle's length; `alone` makes a corner.
+    void moveHandle (int i, int side, juce::Point<float> mouse, bool alone)
+    {
+        auto& p = params.points[(size_t) i];
+        const auto a = plot();
+        const auto prevSpan = i > 0 ? p.time - params.points[(size_t) i - 1].time : 0.0;
+        const auto nextSpan = i < params.count - 1 ? params.points[(size_t) i + 1].time - p.time : 0.0;
+        const auto dt = timeAt (mouse.x) - p.time;
+        const auto dg = gainAt (mouse.y, false) - p.gain;
+
+        if (alone)
+            p.smooth = false;
+
+        if (side == 0) { p.inTime = juce::jlimit (-prevSpan, 0.0, dt);  p.inGain = dg; }
+        else           { p.outTime = juce::jlimit (0.0, nextSpan, dt);  p.outGain = dg; }
+
+        if (p.smooth)
+        {
+            // the other handle: same screen length, pointing the other way
+            auto toPixels = [&] (double t, double g) { return juce::Point<double> (t * a.getWidth(), g / top * a.getHeight()); };
+            const auto moved = side == 0 ? toPixels (p.inTime, p.inGain) : toPixels (p.outTime, p.outGain);
+            const auto other = side == 0 ? toPixels (p.outTime, p.outGain) : toPixels (p.inTime, p.inGain);
+            const auto length = std::hypot (other.x, other.y), movedLength = std::hypot (moved.x, moved.y);
+
+            if (movedLength > 1.0e-6)
+            {
+                const auto ox = -moved.x / movedLength * length, oy = -moved.y / movedLength * length;
+                const auto t = ox / a.getWidth(), gv = oy / a.getHeight() * top;
+
+                if (side == 0) { p.outTime = juce::jlimit (0.0, nextSpan, t);  p.outGain = gv; }
+                else           { p.inTime = juce::jlimit (-prevSpan, 0.0, t);  p.inGain = gv; }
+            }
+        }
+
+        showReadout (mouse);
+        changed();
+    }
+
+    // A new point where double-clicked: on a curve it takes the curve's
+    // direction there, so the curve keeps its shape.
+    void addPointAt (juce::Point<float> pos)
+    {
+        if (params.count >= fx::maxEnvelopePoints || ! plot().contains (pos))
+            return;
+
+        const auto t = timeAt (pos.x);
+        int at = 1;
+
+        while (at < params.count - 1 && params.points[(size_t) at].time < t)
+            ++at;
+
+        const auto& prev = params.points[(size_t) at - 1];
+        const auto& next = params.points[(size_t) at];
+        const auto onCurve = prev.curved || next.curved;
+        const auto slope = (fx::envelopeGainAt (params, std::min (1.0, t + 1.0e-4)) - fx::envelopeGainAt (params, std::max (0.0, t - 1.0e-4))) / 2.0e-4;
+
+        fx::EnvelopePoint p;
+        p.time = juce::jlimit (prev.time + 1.0e-4, next.time - 1.0e-4, t);
+        p.gain = gainAt (pos.y);
+
+        if (onCurve)
+        {
+            p.curved = true;
+            p.inTime = -(p.time - prev.time) / 3.0;
+            p.inGain = slope * p.inTime;
+            p.outTime = (next.time - p.time) / 3.0;
+            p.outGain = slope * p.outTime;
+        }
+
+        for (int i = params.count; i > at; --i)
+            params.points[(size_t) i] = params.points[(size_t) i - 1];
+
+        params.points[(size_t) at] = p;
+        ++params.count;
+        selected = at;
+        changed();
     }
 
     static juce::String formatDb (double gain)
@@ -2153,7 +2117,7 @@ private:
 
     void showReadout (juce::Point<float> pos)
     {
-        if (! plot().contains (pos))
+        if (! plot().expanded (8.0f).contains (pos))
         {
             readout.setText ({}, juce::dontSendNotification);
             return;
@@ -2209,37 +2173,37 @@ private:
             params.points[(size_t) i] = params.points[(size_t) i + 1];
 
         --params.count;
-        hovered = dragging = -1;
+        hovered = dragging = selected = hoveredHandle = -1;
         changed();
     }
 
     void showPointMenu (int index)
     {
+        selected = index;
+        repaint (graph);
         juce::PopupMenu menu;
-        auto& p = params.points[(size_t) index];
+        const auto& p = params.points[(size_t) index];
 
-        if (index < params.count - 1)
+        menu.addItem ("Straight lines (no curve)", p.curved, false, [this, index] { params.points[(size_t) index].curved = false; changed(); });
+        menu.addItem ("Smooth point (the handles stay in line)", true, p.curved && p.smooth, [this, index]
         {
-            menu.addSectionHeader ("Curve to the next point");
+            curve (index);
+            auto& q = params.points[(size_t) index];
+            q.smooth = true;
 
-            using S = fx::EnvelopePoint::Shape;
-            const auto current = p.shape == S::fast || p.shape == S::slow ? S::curve : p.shape;
+            // line the handles up: the right one sets the direction
+            if (index > 0 && index < params.count - 1)
+                moveHandle (index, 1, handlesXY (index).second, false);
 
-            for (auto shape : { S::linear, S::curve, S::smooth, S::bell, S::hold })
-                menu.addItem (fx::envelopeShapeName (shape), true, current == shape, [this, index, shape]
-                {
-                    auto& q = params.points[(size_t) index];
-
-                    if (q.shape != shape)
-                        q.bend = shape == S::curve && q.shape == S::fast ? 0.6 : shape == S::curve && q.shape == S::slow ? -0.6 : 0.0;
-
-                    q.shape = shape;
-                    changed();
-                });
-
-            menu.addSeparator();
-        }
-
+            changed();
+        });
+        menu.addItem ("Corner point (each handle on its own)", true, p.curved && ! p.smooth, [this, index]
+        {
+            curve (index);
+            params.points[(size_t) index].smooth = false;
+            changed();
+        });
+        menu.addSeparator();
         menu.addItem ("100 % (unchanged)", [this, index] { params.points[(size_t) index].gain = 1.0; changed(); });
         menu.addItem ("0 % (silence)", [this, index] { params.points[(size_t) index].gain = 0.0; changed(); });
 
@@ -2252,21 +2216,27 @@ private:
         menu.showMenuAsync (juce::PopupMenu::Options().withParentComponent (getTopLevelComponent()).withMousePosition());
     }
 
-    // Ready-made envelopes.
+    // Ready-made envelopes. A point: { time, gain, curved, smooth, in time, in gain, out time, out gain }.
     void setPreset (int which)
     {
         using P = fx::EnvelopePoint;
         struct Def { const char* name; std::vector<P> points; };
         static const std::vector<Def> presets {
-            { "Flat (100 %)",                 { { 0.0, 1.0, P::linear }, { 1.0, 1.0, P::linear } } },
-            { "Fade in",                      { { 0.0, 0.0, P::smooth }, { 1.0, 1.0, P::linear } } },
-            { "Fade out",                     { { 0.0, 1.0, P::smooth }, { 1.0, 0.0, P::linear } } },
-            { "Fade in and out",              { { 0.0, 0.0, P::smooth }, { 0.15, 1.0, P::linear }, { 0.85, 1.0, P::smooth }, { 1.0, 0.0, P::linear } } },
-            { "Fade in fast",                 { { 0.0, 0.0, P::curve, 0.6 }, { 1.0, 1.0, P::linear } } },
-            { "Fade out slow (long tail)",    { { 0.0, 1.0, P::curve, -0.6 }, { 1.0, 0.0, P::linear } } },
-            { "Bump in the middle (bell)",    { { 0.0, 1.0, P::bell, 0.3 }, { 1.0, 1.0, P::linear } } },
-            { "Duck the middle (50 %)",       { { 0.0, 1.0, P::smooth }, { 0.2, 0.5, P::linear }, { 0.8, 0.5, P::smooth }, { 1.0, 1.0, P::linear } } },
-            { "Swell (up and down again)",    { { 0.0, 0.0, P::smooth }, { 0.5, 1.0, P::smooth }, { 1.0, 0.0, P::linear } } },
+            { "Flat (100 %)",                 { { 0.0, 1.0 }, { 1.0, 1.0 } } },
+            { "Fade in (smooth)",             { { 0.0, 0.0, true, true, 0, 0, 0.4, 0 }, { 1.0, 1.0, true, true, -0.4, 0, 0, 0 } } },
+            { "Fade out (smooth)",            { { 0.0, 1.0, true, true, 0, 0, 0.4, 0 }, { 1.0, 0.0, true, true, -0.4, 0, 0, 0 } } },
+            { "Fade in (straight)",           { { 0.0, 0.0 }, { 1.0, 1.0 } } },
+            { "Fade out (straight)",          { { 0.0, 1.0 }, { 1.0, 0.0 } } },
+            { "Fade in fast",                 { { 0.0, 0.0, true, true, 0, 0, 0.05, 0.6 }, { 1.0, 1.0, true, true, -0.5, 0, 0, 0 } } },
+            { "Fade out slow (long tail)",    { { 0.0, 1.0, true, true, 0, 0, 0.05, -0.6 }, { 1.0, 0.0, true, true, -0.5, 0, 0, 0 } } },
+            { "Fade in and out",              { { 0.0, 0.0, true, true, 0, 0, 0.06, 0 }, { 0.15, 1.0, true, true, -0.06, 0, 0, 0 },
+                                                { 0.85, 1.0, true, true, 0, 0, 0.06, 0 }, { 1.0, 0.0, true, true, -0.06, 0, 0, 0 } } },
+            { "Duck the middle (50 %)",       { { 0.0, 1.0, true, true, 0, 0, 0.08, 0 }, { 0.25, 0.5, true, true, -0.08, 0, 0.1, 0 },
+                                                { 0.75, 0.5, true, true, -0.1, 0, 0.08, 0 }, { 1.0, 1.0, true, true, -0.08, 0, 0, 0 } } },
+            { "Swell (a bell: up and down)",  { { 0.0, 0.0, true, true, 0, 0, 0.25, 0 }, { 0.5, 1.0, true, true, -0.2, 0, 0.2, 0 },
+                                                { 1.0, 0.0, true, true, -0.25, 0, 0, 0 } } },
+            { "Bump in the middle (bell)",    { { 0.0, 1.0, true, true, 0, 0, 0.2, 0 }, { 0.5, 1.6, true, true, -0.15, 0, 0.15, 0 },
+                                                { 1.0, 1.0, true, true, -0.2, 0, 0, 0 } } },
         };
 
         if (which < 0)
@@ -2286,19 +2256,16 @@ private:
         for (const auto& p : def.points)
             params.points[(size_t) params.count++] = p;
 
+        selected = -1;
         changed();
     }
 
-    void showPresets()   { setPreset (-1); }
-
     fx::EnvelopeParams params;
     double top = 2.0;   // the top of the scale: 200 % (+6 dB) or 400 % (+12 dB)
-    int dragging = -1, hovered = -1, bending = -1, hoveredHandle = -1;
-    float bendStartY = 0.0f;
-    double bendStart = 0.0;
+    int dragging = -1, hovered = -1, selected = -1, draggingHandle = -1, hoveredHandle = -1;
     std::vector<float> overview;
     juce::Rectangle<int> graph;
-    juce::TextButton presetsButton { "Presets" };
+    juce::TextButton presetsButton { "Ready-made" };
     juce::OwnedArray<juce::TextButton> rangeButtons;
     juce::Label readout, hint;
 };
@@ -4148,11 +4115,16 @@ public:
         defaultsButton.setTooltip ("Back to the original settings of this effect");
         defaultsButton.onClick = [this] { editor->setState (defaults); editor->push(); };
         addAndMakeVisible (defaultsButton);
+
+        presetsButton.setTooltip ("Your own settings of this effect: save them under a name, load them again");
+        presetsButton.onClick = [this] { showPresets(); };
+        addAndMakeVisible (presetsButton);
         addAndMakeVisible (*editor);
 
         styleLabel (title, 14.0f, true);
         title.setText (name + ":  " + shared.source.title, juce::dontSendNotification);
         styleLabel (status, 12.0f, false, colours::muted);
+        status.setJustificationType (juce::Justification::centredRight);
         styleLabel (tailLabel, 12.0f, true, colours::muted);
         tailLabel.setText ("Ring out after the selection", juce::dontSendNotification);
         addAndMakeVisible (title);
@@ -4253,7 +4225,9 @@ public:
     void resized() override
     {
         auto r = getLocalBounds().reduced (12);
-        title.setBounds (r.removeFromTop (24));
+        auto top = r.removeFromTop (24);
+        status.setBounds (top.removeFromRight (top.getWidth() / 2));   // messages on the right of the title
+        title.setBounds (top);
         r.removeFromTop (6);
         auto bottom = r.removeFromBottom (36);
         r.removeFromBottom (8);
@@ -4273,12 +4247,99 @@ public:
         preview.setBounds (bottom.removeFromLeft (170).reduced (2));
         bypass.setBounds (bottom.removeFromLeft (110).reduced (2));
         defaultsButton.setBounds (bottom.removeFromLeft (100).reduced (2));
+        presetsButton.setBounds (bottom.removeFromLeft (130).reduced (2));
         cancel.setBounds (bottom.removeFromRight (100).reduced (2));
         apply.setBounds (bottom.removeFromRight (150).reduced (2));
-        status.setBounds (bottom.reduced (10, 0));
     }
 
 private:
+    //==========================================================================
+    // My presets: every effect keeps its own list (name + settings) in the
+    // settings file, under "presets.<effect name>".
+    juce::String presetsKey() const   { return "presets." + name; }
+
+    juce::Array<juce::var> savedPresets() const
+    {
+        const auto stored = settings::get (presetsKey());
+
+        if (const auto* list = stored.getArray())
+            return *list;
+
+        return {};
+    }
+
+    void showPresets()
+    {
+        const auto list = savedPresets();
+        juce::PopupMenu menu, remove;
+        menu.addSectionHeader ("My presets for " + name);
+
+        for (int i = 0; i < list.size(); ++i)
+        {
+            const auto preset = list[i];
+            const auto presetName = preset["name"].toString();
+            menu.addItem (presetName, [this, preset, presetName]
+            {
+                editor->setState (preset["state"]);
+                editor->push();
+                status.setText ("Loaded \"" + presetName + "\".", juce::dontSendNotification);
+            });
+            remove.addItem (presetName, [this, i] { removePreset (i); });
+        }
+
+        if (list.isEmpty())
+            menu.addItem ("(none yet)", false, false, nullptr);
+
+        menu.addSeparator();
+        menu.addItem ("Save these settings as...", [this] { savePreset(); });
+
+        if (! list.isEmpty())
+            menu.addSubMenu ("Delete", remove);
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetsButton).withParentComponent (getTopLevelComponent()));
+    }
+
+    void savePreset()
+    {
+        auto* box = new juce::AlertWindow ("Save preset", "A name for these settings of " + name + ":", juce::MessageBoxIconType::NoIcon);
+        box->addTextEditor ("name", "My " + name);
+        box->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        box->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        const juce::Component::SafePointer<EffectPanel> safeThis (this);
+
+        box->enterModalState (true, juce::ModalCallbackFunction::create ([safeThis, box] (int result)
+        {
+            auto* self = safeThis.getComponent();
+            const auto presetName = box->getTextEditorContents ("name").trim();
+
+            if (result != 1 || self == nullptr || presetName.isEmpty())
+                return;
+
+            auto list = self->savedPresets();
+
+            // the same name again: replaced
+            for (int i = list.size(); --i >= 0;)
+                if (list[i]["name"].toString() == presetName)
+                    list.remove (i);
+
+            juce::DynamicObject::Ptr preset = new juce::DynamicObject();
+            preset->setProperty ("name", presetName);
+            preset->setProperty ("state", self->editor->getState());
+            list.add (juce::var (preset.get()));
+            settings::set (self->presetsKey(), list);
+            self->status.setText ("Saved as \"" + presetName + "\".", juce::dontSendNotification);
+        }), true);
+    }
+
+    void removePreset (int index)
+    {
+        auto list = savedPresets();
+        const auto removed = list[index]["name"].toString();
+        list.remove (index);
+        settings::set (presetsKey(), list);
+        status.setText ("Deleted \"" + removed + "\".", juce::dontSendNotification);
+    }
+
     void togglePreview()
     {
         if (shared.previewing)
@@ -4402,7 +4463,7 @@ private:
                      cancel { "Close" }, autoTail { "Auto" };
     juce::Slider tailSlider;
     juce::Rectangle<int> card;
-    juce::TextButton defaultsButton { "Defaults" };
+    juce::TextButton defaultsButton { "Defaults" }, presetsButton { juce::CharPointer_UTF8 ("My presets \xe2\x96\xbe") };
     juce::var defaults;
     juce::String settingsKey;
 };
