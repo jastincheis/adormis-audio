@@ -132,6 +132,25 @@ sample-rate conversion). Rubber Band 4.0.0 is downloaded automatically.
 To use an existing JUCE checkout instead of downloading it, add
 `-DWAVEFORGE_JUCE_DIR=/path/to/JUCE`.
 
+## Code signing policy
+
+Windows builds are going to be signed through the SignPath Foundation
+(application pending; until then the Windows builds are unsigned):
+free code signing provided by [SignPath.io](https://about.signpath.io),
+certificate by [SignPath Foundation](https://signpath.org).
+
+- Only binaries built by this repository's public GitHub Actions workflow
+  ([build.yml](.github/workflows/build.yml)) from the `main` branch are signed,
+  and only for releases published on the
+  [Releases page](https://github.com/jastincheis/waveforge/releases).
+- Roles — authors, reviewers and approvers: [@jastincheis](https://github.com/jastincheis)
+  (sole maintainer). Contributions from anyone else are reviewed by the
+  maintainer before they are merged. Every signing request is approved manually.
+- Privacy: WaveForge does not connect to the internet and does not collect or
+  send any data. It only reads and writes the audio files you open or save, and
+  keeps its settings and a start-up log in your user profile folder
+  (`%APPDATA%\WaveForge` on Windows).
+
 ## License
 
 GNU Affero General Public License v3.0 — see [LICENSE](LICENSE). Built with
