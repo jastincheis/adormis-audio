@@ -19,6 +19,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 - Markers (drag them left / right to move them) and regions (R): a region strip under the ruler, View > Regions List, Tools > Auto Region (split at silences), Tools > Extract Regions (one file per region); WAV files keep both, as cue points with labels
 - Markers and regions travel with the audio when you drag a selection out, mix it into another file, or copy and paste
 - Set Selection, Go To, Mark In / Out, W / E to the selection's left / right edge, Repeat Last Process (Ctrl+Y), Level Zoom, Save All
+- Auto Snap to Zero Crossings (Ctrl+B): selection edges land where the wave crosses zero, so edits don't click
 - Record (Ctrl+R) with input meter, mono / stereo and bit depth, or **record what the computer plays** (Ctrl+Shift+R: YouTube, music, any program); File > New from a tempo template with beat markers
 - Right-click the workspace for Create New (an empty window to paste or drag audio into) and Open Recent (also in the File menu); right-click a file's waveform for play, the edits, New, Open and Open Recent
 
@@ -26,6 +27,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 - Loop button on the toolbar; Q loops the selection, and a new selection while looping becomes the loop
 - A click in the waveform while playing goes on from there; the toolbar's Play starts again from the cursor
 - Drag strip between the channels: slides the audio past the cursor like tape, with or without sound
+- Smooth Playback Scrolling (Shift+F6): the playhead stays in the middle and the audio flows under it
 - Left / Right arrows move the cursor by a step that follows the zoom (Shift grows the selection); while playing they jump back / ahead
 - Channel Meters (Alt+5): peak, RMS, peak hold, clip lights
 - Loudness Meters (Alt+6): momentary, short-term and integrated LUFS, loudness range, true peak, a minute of history, streaming / broadcast targets (ITU BS.1770 / EBU R128)
