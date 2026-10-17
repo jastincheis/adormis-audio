@@ -257,7 +257,7 @@ bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager
     {
         if (convert)
         {
-            pushUndo();
+            pushUndo ("Save As (converted)");
 
             const auto ratio = targetRate / sampleRate;
             remapMarkers ([ratio] (juce::int64 m) { return std::optional<juce::int64> (std::llround ((double) m * ratio)); });
@@ -374,7 +374,7 @@ juce::Range<int> DataWindow::processRange() const
 
 void DataWindow::processChannels (const std::function<void (juce::AudioBuffer<float>&, juce::Range<int>)>& fn)
 {
-    pushUndo();
+    pushUndo ("Process");
 
     // A selection on one channel processes only that channel.
     if (const auto picked = view.getSelectedChannel(); picked >= 0 && picked < buffer.getNumChannels())
@@ -412,7 +412,7 @@ void DataWindow::replaceRange (juce::Range<int> range, const juce::AudioBuffer<f
     const auto newLength = audio.getNumSamples();
     const auto tail = buffer.getNumSamples() - range.getEnd();
 
-    pushUndo();
+    pushUndo ("Replace");
 
     juce::AudioBuffer<float> result (buffer.getNumChannels(), range.getStart() + newLength + tail);
 
@@ -451,7 +451,7 @@ void DataWindow::applyEffect (juce::Range<int> range, const juce::AudioBuffer<fl
     if (range.isEmpty() || processed.getNumChannels() != buffer.getNumChannels() || processed.getNumSamples() < range.getLength())
         return;
 
-    pushUndo();
+    pushUndo ("Effect");
     const auto tail = processed.getNumSamples() - range.getLength();
 
     if (range.getEnd() + tail > buffer.getNumSamples())
@@ -552,7 +552,7 @@ bool DataWindow::deleteSelection()
     const auto removed = (int) selection.getLength();
     const auto remaining = buffer.getNumSamples() - removed;
 
-    pushUndo();
+    pushUndo ("Delete");
 
     juce::AudioBuffer<float> result (buffer.getNumChannels(), remaining);
 
@@ -655,7 +655,7 @@ void DataWindow::quantize (juce::AudioBuffer<float>& audio, int start, int numSa
 
 void DataWindow::beginTake()
 {
-    pushUndo();
+    pushUndo ("Record");
     takeStart = buffer.getNumSamples();
 }
 
@@ -848,7 +848,7 @@ void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRat
     if (length == 0)
         return;
 
-    pushUndo();
+    pushUndo ("Mix");
 
     if (start + length > buffer.getNumSamples())
         buffer.setSize (channels, start + length, true, true);
@@ -886,7 +886,7 @@ void DataWindow::pasteAudio (const juce::AudioBuffer<float>& source, double sour
     const auto removed = selection.isEmpty() ? 0 : (int) selection.getLength();
     const auto after = buffer.getNumSamples() - start - removed;
 
-    pushUndo();
+    pushUndo ("Paste");
 
     juce::AudioBuffer<float> result (channels, start + length + after);
 
@@ -924,7 +924,7 @@ bool DataWindow::trimToSelection()
     const auto start = (int) selection.getStart();
     const auto length = (int) selection.getLength();
 
-    pushUndo();
+    pushUndo ("Trim/Crop");
 
     juce::AudioBuffer<float> result (buffer.getNumChannels(), length);
 
@@ -964,7 +964,7 @@ void DataWindow::resample (double newRate)
     if (newRate <= 0.0 || juce::approximatelyEqual (newRate, sampleRate))
         return;
 
-    pushUndo();
+    pushUndo ("Resample");
     const auto ratio = newRate / sampleRate;
     buffer = resampled (buffer, sampleRate, newRate);
     remapMarkers ([ratio] (juce::int64 m) { return std::optional<juce::int64> (std::llround ((double) m * ratio)); });
@@ -975,7 +975,7 @@ void DataWindow::resample (double newRate)
 
 void DataWindow::convertBitDepth (int bits, bool dither)
 {
-    pushUndo();
+    pushUndo ("Bit-Depth Converter");
 
     if (bits < 32)
     {
@@ -1040,7 +1040,7 @@ bool DataWindow::convertChannels (ChannelConversion conversion)
             break;
     }
 
-    pushUndo();
+    pushUndo ("Channel Converter");
     buffer = std::move (result);
     view.setSelection ({});
     view.setAudio (&buffer, sampleRate);
@@ -1117,7 +1117,7 @@ bool DataWindow::copyOtherChannel()
         return false;
 
     const auto range = processRange();
-    pushUndo();
+    pushUndo ("Copy Other Channel");
     buffer.copyFrom (channel, range.getStart(), buffer, 1 - channel, range.getStart(), range.getLength());
     audioChanged();
     return true;
@@ -1136,7 +1136,7 @@ bool DataWindow::deleteSelectedMarkers()
         return false;
 
     // Markers aren't saved in the audio file, so this doesn't mark it modified.
-    pushUndo();
+    pushUndo ("Delete Markers");
     markers = std::move (kept);
     pruneBarStarts();
     view.clearMarkerSelection();
@@ -1172,7 +1172,7 @@ void DataWindow::moveMarker (int index, juce::int64 position)
     if (position == from)
         return;
 
-    pushUndo();
+    pushUndo ("Move Marker");
     markers.erase (markers.begin() + index);
 
     // A bar-start marker stays one where it lands.
@@ -1369,7 +1369,7 @@ int DataWindow::addRegion (juce::Range<juce::int64> range, const juce::String& n
     if (range.isEmpty())
         return -1;
 
-    pushUndo();
+    pushUndo ("Read Markers");
     regions.push_back ({ range.getStart(), range.getEnd(), name });
     std::stable_sort (regions.begin(), regions.end(), [] (const auto& a, const auto& b) { return a.start < b.start; });
     regionsChanged();
@@ -1386,7 +1386,7 @@ void DataWindow::renameRegion (int index, const juce::String& name)
     if (! juce::isPositiveAndBelow (index, (int) regions.size()) || regions[(size_t) index].name == name)
         return;
 
-    pushUndo();
+    pushUndo ("Rename Region");
     regions[(size_t) index].name = name;
     regionsChanged();
 }
@@ -1396,14 +1396,14 @@ void DataWindow::removeRegion (int index)
     if (! juce::isPositiveAndBelow (index, (int) regions.size()))
         return;
 
-    pushUndo();
+    pushUndo ("Delete Region");
     regions.erase (regions.begin() + index);
     regionsChanged();
 }
 
 void DataWindow::setRegions (std::vector<AudioRegion> newRegions)
 {
-    pushUndo();
+    pushUndo ("Regions");
     regions = std::move (newRegions);
     std::stable_sort (regions.begin(), regions.end(), [] (const auto& a, const auto& b) { return a.start < b.start; });
     regionsChanged();
@@ -1442,10 +1442,12 @@ void DataWindow::pruneBarStarts()
     barStarts = std::move (kept);
 }
 
-void DataWindow::pushUndo()
+void DataWindow::pushUndo (const juce::String& fallbackName)
 {
     redoStack.clear();
-    undoStack.push_back ({ buffer, markers, barStarts, regions, sampleRate, bitDepth, resolutionBits, floatingPoint });
+    undoStack.push_back ({ buffer, markers, barStarts, regions, sampleRate, bitDepth, resolutionBits, floatingPoint,
+                           nextUndoName.isNotEmpty() ? nextUndoName : fallbackName });
+    nextUndoName.clear();
 
     size_t total = 0;
     for (const auto& b : undoStack)
@@ -1461,7 +1463,7 @@ void DataWindow::pushUndo()
 void DataWindow::restore (Snapshot& from, std::vector<Snapshot>& saveTo)
 {
     saveTo.push_back ({ std::move (buffer), std::move (markers), std::move (barStarts), std::move (regions), sampleRate,
-                        bitDepth, resolutionBits, floatingPoint });
+                        bitDepth, resolutionBits, floatingPoint, from.name });
     const auto channelsBefore = saveTo.back().audio.getNumChannels();
     buffer = std::move (from.audio);
     markers = std::move (from.markers);
@@ -1499,6 +1501,37 @@ void DataWindow::redo()
     auto snapshot = std::move (redoStack.back());
     redoStack.pop_back();
     restore (snapshot, undoStack);
+}
+
+juce::StringArray DataWindow::undoNames() const
+{
+    juce::StringArray names;
+
+    for (const auto& snapshot : undoStack)
+        names.add (snapshot.name);
+
+    return names;
+}
+
+juce::StringArray DataWindow::redoNames() const
+{
+    juce::StringArray names;
+
+    for (auto it = redoStack.rbegin(); it != redoStack.rend(); ++it)
+        names.add (it->name);
+
+    return names;
+}
+
+void DataWindow::goToHistory (int position)
+{
+    position = juce::jlimit (0, (int) (undoStack.size() + redoStack.size()), position);
+
+    while ((int) undoStack.size() > position && canUndo())
+        undo();
+
+    while ((int) undoStack.size() < position && canRedo())
+        redo();
 }
 
 void DataWindow::audioChanged()

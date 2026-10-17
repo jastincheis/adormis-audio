@@ -1098,6 +1098,20 @@ void MainComponent::showForm (const juce::String& title, const juce::String& inf
         };
     }
 
+    // what the form does is named after it in the undo history
+    apply = [this, inner = std::move (apply), title] (const juce::StringArray& values)
+    {
+        const juce::Component::SafePointer<DataWindow> d (activeDocument());
+
+        if (auto* w = d.getComponent())
+            w->setUndoName (title);
+
+        inner (values);
+
+        if (auto* w = d.getComponent())
+            w->setUndoName ({});
+    };
+
     formWindow = wf::createFormWindow (title, info, std::move (fields), hint, std::move (apply), std::move (onClose));
     formWindow->setVisible (true);
     formWindow->toFront (true);
@@ -1567,10 +1581,63 @@ void MainComponent::toggleSpectrum()
     commandManager.commandStatusChanged();
 }
 
+// View > Undo/Redo History: the active file's steps; a click goes there.
+void MainComponent::toggleUndoHistory()
+{
+    if (undoHistoryWindow != nullptr)
+    {
+        undoHistoryWindow.reset();
+        commandManager.commandStatusChanged();
+        return;
+    }
+
+    wf::UndoHistoryCallbacks callbacks;
+    callbacks.goTo = [this] (int position)
+    {
+        if (auto* d = activeDocument(); d != nullptr && ! isRecording() && job == nullptr)
+        {
+            releasePlaybackSource();
+            d->goToHistory (position);
+            refreshUndoHistory();
+            commandManager.commandStatusChanged();
+        }
+    };
+    callbacks.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->undoHistoryWindow.reset();
+                main->commandManager.commandStatusChanged();
+            }
+        });
+    };
+
+    undoHistoryWindow = std::make_unique<wf::UndoHistoryWindow> (std::move (callbacks));
+    refreshUndoHistory();
+    undoHistoryWindow->setVisible (true);
+    undoHistoryWindow->toFront (false);
+    commandManager.commandStatusChanged();
+}
+
+void MainComponent::refreshUndoHistory()
+{
+    if (undoHistoryWindow == nullptr)
+        return;
+
+    if (auto* doc = activeDocument())
+        undoHistoryWindow->refresh (doc->getTitle(), doc->undoNames(), doc->redoNames());
+    else
+        undoHistoryWindow->refresh ({}, {}, {});
+}
+
 void MainComponent::refreshRegionsList()
 {
     if (spectrumWindow != nullptr)
         spectrumWindow->sourceChanged();
+
+    refreshUndoHistory();
 
     if (regionsWindow == nullptr)
         return;
@@ -2206,10 +2273,18 @@ void MainComponent::runJob (const juce::String& title, std::function<bool (std::
     if (job != nullptr)
         return;
 
-    auto finish = [safeThis = juce::Component::SafePointer<MainComponent> (this), done = std::move (done)] (bool finished)
+    // what the job writes into the file is named after the command that started it
+    auto finish = [safeThis = juce::Component::SafePointer<MainComponent> (this), done = std::move (done),
+                   name = lastCommandName, target = juce::Component::SafePointer<DataWindow> (activeDocument())] (bool finished)
     {
+        if (auto* d = target.getComponent())
+            d->setUndoName (name);
+
         if (done != nullptr)
             done (finished);
+
+        if (auto* d = target.getComponent())
+            d->setUndoName ({});
 
         // The job is still on the stack here; let it go afterwards.
         juce::MessageManager::callAsync ([safeThis]
@@ -2254,6 +2329,7 @@ std::optional<wf::BassFinderSource> MainComponent::bassFinderSource()
             return false;
 
         releasePlaybackSource();
+        target->setUndoName (toolUndoName);
         target->replaceRange (range, corrected, 1.0);
         return true;
     };
@@ -2267,6 +2343,7 @@ std::optional<wf::BassFinderSource> MainComponent::bassFinderSource()
             return false;
 
         releasePlaybackSource();
+        target->setUndoName (toolUndoName);
         target->applyEffect (range, processed);
         return true;
     };
@@ -2349,6 +2426,7 @@ void MainComponent::showDeEsser()
         });
     };
 
+    toolUndoName = lastCommandName;
     deEsserWindow = wf::createDeEsserWindow (std::move (*source), std::move (host), std::move (onClose));
     deEsserWindow->setVisible (true);
     deEsserWindow->toFront (true);
@@ -2384,6 +2462,7 @@ void MainComponent::showEffect (wf::EffectKind kind)
         });
     };
 
+    toolUndoName = lastCommandName;
     effectWindow = wf::createEffectWindow (kind, std::move (*source), toolHost(), std::move (onClose));
     effectWindow->setVisible (true);
     effectWindow->toFront (true);
@@ -2466,6 +2545,7 @@ void MainComponent::showBassFinder()
         });
     };
 
+    toolUndoName = lastCommandName;
     bassFinderWindow = wf::createBassFinderWindow (std::move (*source), std::move (host), std::move (onClose));
     bassFinderWindow->setVisible (true);
     bassFinderWindow->toFront (true);
@@ -3448,6 +3528,10 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             info.setTicked (WaveformView::snapToZeroCrossings);
             break;
 
+        case wf::viewUndoHistory:
+            info.setTicked (undoHistoryWindow != nullptr);
+            break;
+
         case wf::viewPlaybackScroll:
             info.setTicked (followPlayback);
             break;
@@ -3561,10 +3645,11 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
     const auto editsOrPlays = (id >= wf::editUndo && id < wf::favPluginManager) || (id >= wf::optPlay && id <= wf::optGoEnd);
     const auto stillWorksWhileRecording = id == wf::optRecord || id == wf::helpShortcuts || id == wf::helpAbout
                                        || id == wf::viewChannelMeters || id == wf::viewLoudnessMeters || id == wf::viewRegionsList || id == wf::viewSpectrum
+                                       || id == wf::viewUndoHistory
                                        || (id >= wf::winCascade && id <= wf::winPrev) || (id >= wf::viewZoomIn && id <= wf::viewZoomNormal);
 
     if (editsOrPlays && id != wf::optRecord && id != wf::viewChannelMeters && id != wf::viewLoudnessMeters && id != wf::viewRegionsList
-        && id != wf::viewSpectrum && id != wf::editSnapZero && id != wf::viewPlaybackScroll && id != wf::viewSmoothScroll
+        && id != wf::viewSpectrum && id != wf::viewUndoHistory && id != wf::editSnapZero && id != wf::viewPlaybackScroll && id != wf::viewSmoothScroll
         && id != wf::editPaste && id != wf::editMix
         && doc != nullptr && doc->isEmpty())
         available = false;
@@ -3582,6 +3667,17 @@ bool MainComponent::perform (const InvocationInfo& info)
 {
     auto* doc = activeDocument();
     const auto total = doc != nullptr ? (juce::int64) doc->getBuffer().getNumSamples() : 0;
+
+    // An edit the command makes right away is named after it in the undo
+    // history (windows that edit later name their step themselves).
+    lastCommandName = commandManager.getNameOfCommand (info.commandID).upToLastOccurrenceOf ("...", false, false).trim();
+
+    struct NameUndo
+    {
+        juce::Component::SafePointer<DataWindow> d;
+        NameUndo (DataWindow* w, const juce::String& n) : d (w)   { if (w != nullptr) w->setUndoName (n); }
+        ~NameUndo()                                               { if (auto* w = d.getComponent()) w->setUndoName ({}); }
+    } nameUndo (doc, lastCommandName);
 
     switch (info.commandID)
     {
@@ -3755,6 +3851,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::insertRegion:      insertRegion(); return true;
         case wf::viewRegionsList:   toggleRegionsList(); return true;
         case wf::viewSpectrum:      toggleSpectrum(); return true;
+        case wf::viewUndoHistory:   toggleUndoHistory(); return true;
 
         case wf::viewPlaybackScroll: case wf::viewSmoothScroll:
             if (info.commandID == wf::viewPlaybackScroll)

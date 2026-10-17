@@ -317,7 +317,7 @@ const std::vector<CommandDef>& allCommands()
         fileNewNoDialog, fileSaveAll, editRepeat, editMix, editSetSelection, editMarkIn, editMarkOut, editGoTo, editSnapZero, editHalveSelection, editDoubleSelection, viewPlaybackScroll, viewSmoothScroll,
         viewLevelIn, viewLevelOut, insertSilence, procAutoTrim, procBitDepth, procChannelConv, procResample,
         toolsClipDetect, toolsRepairCopyChannel, optLoop, insertMarker,
-        viewChannelMeters, viewLoudnessMeters, viewSpectrum, toolsStatistics, optKeyboard,
+        viewChannelMeters, viewLoudnessMeters, viewSpectrum, viewUndoHistory, toolsStatistics, optKeyboard,
         fxLimiter, fxGate, fxChorus, fxFlange, fxVibrato, fxDistortion, fxPitchShift,
         toolsNoiseReduction, toolsCaptureNoise, toolsHumRemoval, toolsDeclick, toolsClipRestore,
         insertRegion, viewRegionsList, toolsAutoRegion, toolsExtractRegions, toolsBatch,

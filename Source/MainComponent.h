@@ -21,6 +21,7 @@
 #include "StatisticsWindow.h"
 #include "RegionsWindow.h"
 #include "SpectrumWindow.h"
+#include "UndoHistoryWindow.h"
 
 class ShortcutsWindow;
 
@@ -183,6 +184,12 @@ private:
     double smoothPosition = -1.0, smoothClock = 0.0;   // to glide between the audio device's position updates
     int playbackTimerHz() const   { return smoothScrolling && followPlayback ? 60 : 30; }
     void showWaveMenu (DataWindow* doc);
+
+    // Undo step names: the command being done, and the tool window that is open.
+    juce::String lastCommandName, toolUndoName;
+    std::unique_ptr<wf::UndoHistoryWindow> undoHistoryWindow;
+    void toggleUndoHistory();
+    void refreshUndoHistory();
     void setLooping (bool shouldLoop);
     void toggleLoop();   // Q: loop on (a selection starts looping) / off
     void followSelectionLoop (DataWindow* doc);

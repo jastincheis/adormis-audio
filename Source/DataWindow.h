@@ -211,6 +211,18 @@ public:
     void undo();
     void redo();
 
+    // Undo history (View > Undo/Redo History): the steps by name, oldest
+    // first, and the ones that can be redone (next first). Going to `position`
+    // (0 = before the first step, undoNames().size() = now) undoes or redoes
+    // as many steps as it takes.
+    juce::StringArray undoNames() const;
+    juce::StringArray redoNames() const;
+    void goToHistory (int position);
+
+    // The name of the next undo step (the command or window doing the edit);
+    // edits fall back to their own name when none is set.
+    void setUndoName (const juce::String& name)   { nextUndoName = name; }
+
     juce::String describeFormat() const;
 
     // "44,100 Hz, 16-bit, Stereo": the top-left line of the window.
@@ -227,7 +239,7 @@ private:
 
     void initialise (const juce::String& title);
 
-    void pushUndo();
+    void pushUndo (const juce::String& fallbackName);
     void audioChanged();
     void regionsChanged();
     std::unordered_map<juce::String, juce::String> cueMetadata (double ratio) const;   // markers + regions for WAV
@@ -273,12 +285,14 @@ private:
         double rate = 44100.0;
         int bitDepth = 0, resolutionBits = 0;
         bool floatingPoint = false;
+        juce::String name;   // the step it undoes (or redoes)
     };
 
 
     void restore (Snapshot& from, std::vector<Snapshot>& saveTo);
 
     std::vector<Snapshot> undoStack, redoStack;
+    juce::String nextUndoName;
     WaveformView view;
 
     // Top-left resolution; bottom-right file length and cursor position.
