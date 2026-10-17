@@ -84,7 +84,12 @@ std::optional<TempoEstimate> loopTempo (const std::vector<float>& mono, double r
             const auto penalty = i == 0 ? 0.0 : 0.02;   // half / double time is a little less likely
             const auto error = std::abs (std::log2 (bpm / (estimate * factor))) + penalty;
 
-            if (error < 0.035 + penalty && (! best.has_value() || error < bestError))
+            // Over the whole clip the two tempos may drift apart by at most a
+            // quarter of a beat (of the faster one): a clip a little longer than whole bars (a tail
+            // after the loop) is not mistaken for a slower loop.
+            const auto drift = std::abs (bpm - estimate * factor) / 60.0 * duration / std::min (1.0, factor);
+
+            if (error < 0.035 + penalty && drift < 0.25 && (! best.has_value() || error < bestError))
             {
                 best = TempoEstimate { bpm, bars, leadSeconds };
                 bestError = error;
@@ -235,9 +240,69 @@ std::optional<TempoEstimate> detectTempo (const juce::AudioBuffer<float>& audio,
     if (bestScore <= 0.0)
         return {};
 
-    const auto bpm = std::abs (best - std::round (best)) < 0.5 ? std::round (best) : std::round (best * 10.0) / 10.0;
+    // Refine: the onset peaks that fall on the beat grid (within an eighth of
+    // a beat), fitted with a straight line of beat number against time. The
+    // grid search above is only as fine as its frames; the fit is not.
+    {
+        std::vector<std::pair<double, float>> peaks;   // frame position (interpolated), strength
+        const auto strongest = *std::max_element (onset.begin(), onset.end());
 
-    if (auto loop = loopTempo (mono, rate, bpm))
+        for (int i = 1; i + 1 < frames; ++i)
+        {
+            const auto a = onset[(size_t) i - 1], b = onset[(size_t) i], c = onset[(size_t) i + 1];
+
+            if (b >= 0.3f * strongest && b > a && b >= c)
+            {
+                const auto den = a - 2.0f * b + c;
+                peaks.push_back ({ i + (std::abs (den) > 1.0e-9f ? 0.5 * (a - c) / den : 0.0), b });
+            }
+        }
+
+        if (peaks.size() >= 8)
+        {
+            auto period = 60.0 / best / hopSeconds;
+            auto anchor = std::max_element (peaks.begin(), peaks.end(), [] (auto& x, auto& y) { return x.second < y.second; })->first;
+
+            for (int pass = 0; pass < 3; ++pass)
+            {
+                double sw = 0, sn = 0, st = 0, snn = 0, snt = 0;
+                int used = 0;
+
+                for (auto& [t, strength] : peaks)
+                {
+                    const auto n = std::round ((t - anchor) / period);
+
+                    if (std::abs (t - anchor - n * period) > period / 8.0)
+                        continue;
+
+                    sw += strength; sn += strength * n; st += strength * t; snn += strength * n * n; snt += strength * n * t;
+                    ++used;
+                }
+
+                const auto den = sw * snn - sn * sn;
+
+                if (used < 8 || den <= 0.0)
+                    break;
+
+                const auto slope = (sw * snt - sn * st) / den;
+
+                if (std::abs (slope / period - 1.0) > 0.01)
+                    break;
+
+                period = slope;
+                anchor = (st - slope * sn) / sw;
+            }
+
+            best = 60.0 / period / hopSeconds;
+        }
+    }
+
+    // whole numbers and halves are the usual tempos; otherwise one decimal
+    const auto bpm = std::abs (best - std::round (best)) < 0.2              ? std::round (best)
+                   : std::abs (best * 2.0 - std::round (best * 2.0)) < 0.2 ? std::round (best * 2.0) / 2.0
+                                                                            : std::round (best * 10.0) / 10.0;
+
+    if (auto loop = loopTempo (mono, rate, best))
         return loop;
 
     // Beat phase: where the onsets line up best with the beat grid; then which
@@ -456,6 +521,43 @@ std::optional<KeyAnalysis> analyseKey (const juce::AudioBuffer<float>& audio, ju
         // only a clearly stronger third overrides the profiles
         if (best.minor ? majorThird > 1.3 * minorThird : minorThird > 1.3 * majorThird)
             std::rotate (result.keys.begin(), parallel, parallel + 1);
+    }
+
+    // A major key and its relative minor (C major / A minor) use the same notes,
+    // so the profiles barely tell them apart: then the chord the music starts
+    // on decides (its root and fifth over the first second, bass counted twice),
+    // when that chord is clearly the relative key's tonic.
+    const auto top = result.keys[0];
+    const auto relativeTonic = (top.tonic + (top.minor ? 3 : 9)) % 12;
+    const auto relative = std::find_if (result.keys.begin(), result.keys.end(),
+                                        [&] (auto& k) { return k.tonic == relativeTonic && k.minor != top.minor; });
+
+    if (relative != result.keys.end() && top.score - relative->score < 0.35)
+    {
+        std::optional<double> start;
+        std::array<double, 12> home {};
+
+        for (size_t f = 0; f < result.frames.size(); ++f)
+        {
+            if (rms[f] < maxRms * 0.1f)
+                continue;
+
+            const auto& frame = result.frames[f];
+
+            if (! start.has_value())
+                start = frame.time;
+
+            if (frame.time > *start + 1.0)
+                break;
+
+            for (size_t pc = 0; pc < 12; ++pc)
+                home[pc] += 2.0 * frame.bass[pc] + frame.chroma[pc] + frame.chroma[(pc + 7) % 12];
+        }
+
+        const auto strongest = (int) (std::max_element (home.begin(), home.end()) - home.begin());
+
+        if (strongest == relativeTonic && home[(size_t) relativeTonic] > 1.5 * home[(size_t) top.tonic])
+            std::rotate (result.keys.begin(), relative, relative + 1);
     }
 
     return result;

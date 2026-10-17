@@ -43,6 +43,11 @@ struct NoteTrack
     std::vector<PitchFrame> frames;
     double hopSeconds = 0.02;
     std::vector<DetectedNote> notes;
+
+    // Loud stretches with no single clear note (two notes at once, a chord in
+    // the band): the tracker reads one note at a time, so these are skipped.
+    std::vector<juce::Range<double>> unclear;
+    double humHz = 0.0;   // mains hum that was filtered out before tracking (0 = none)
 };
 
 // `progress` gets 0..1 and returns false to cancel (then it returns empty).

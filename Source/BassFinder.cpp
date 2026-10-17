@@ -430,10 +430,17 @@ public:
                          juce::dontSendNotification);
         keyText.setText (keyLabel (top.tonic, top.minor), juce::dontSendNotification);
 
-        // gap < 0: the profiles preferred the parallel key, the third over the tonic decided
-        const auto confidence = gap < 0.0 ? (top.minor ? "minor by its third (" : "major by its third (")
-                                                + noteName (top.tonic + (top.minor ? 3 : 4), flats) + "), check by ear"
-                              : gap > 0.12 ? juce::String ("sure") : gap > 0.04 ? juce::String ("probably") : juce::String ("ambiguous, check by ear");
+        // gap < 0: the profiles preferred the parallel key (the third over the tonic
+        // decided) or the relative key (the chord the music starts on decided)
+        const auto& second = a.keys[1];
+        const auto relative = second.minor != top.minor && second.tonic == (top.tonic + (top.minor ? 3 : 9)) % 12;
+        auto confidence = gap < 0.0 && ! relative ? (top.minor ? "minor by its third (" : "major by its third (")
+                                                        + noteName (top.tonic + (top.minor ? 3 : 4), flats) + "), check by ear"
+                        : gap < 0.0 ? juce::String ("starts on ") + noteName (top.tonic, flats) + (top.minor ? "m" : "") + ", check by ear"
+                        : gap > 0.12 ? juce::String ("sure") : gap > 0.04 ? juce::String ("probably") : juce::String ("ambiguous, check by ear");
+
+        if (relative && gap < 0.35)
+            confidence << " (same notes as " << keyName (second.tonic, second.minor) << ")";
         const auto tuning = a.tuningCents == 0 ? juce::String ("tuned to A440")
                                                : (a.tuningCents > 0 ? "+" : "") + juce::String (a.tuningCents) + " cents from A440";
         auto chipText = juce::String (confidence) + "   |   " + tuning;
@@ -654,6 +661,21 @@ public:
 
         if (! state.track.has_value())
             return;
+
+        // Stretches with no single clear note (two notes at once?).
+        for (auto& r : state.track->unclear)
+        {
+            const auto x = X (r.getStart()), ww = std::max (2.0f, X (r.getEnd()) - x);
+            g.setColour (colours::warn.withAlpha (0.12f));
+            g.fillRect (x, 0.0f, ww, h);
+
+            if (ww > 60.0f)
+            {
+                g.setColour (colours::warn);
+                g.setFont (juce::FontOptions (11.0f));
+                g.drawText ("2+ notes?", juce::Rectangle<float> (x + 4.0f, 4.0f, ww - 8.0f, 14.0f), juce::Justification::centredLeft);
+            }
+        }
 
         // Raw pitch trace.
         juce::Path trace;
@@ -1246,11 +1268,26 @@ private:
 
         const auto& notes = state.track->notes;
 
+        double unclear = 0.0;
+
+        for (auto& r : state.track->unclear)
+            unclear += r.getLength();
+
+        // two notes at once (or a chord in the band): the tracker reads one note at a time
+        const auto unclearText = unclear < 0.3 ? juce::String()
+                               : juce::String (unclear, 1) + " s with no single clear note (two notes at once?), skipped";
+        const auto humText = state.track->humHz > 0.0 ? juce::String (state.track->humHz, 1) + " Hz hum ignored" : juce::String();
+
         if (notes.empty())
         {
-            summary.setText (state.source == NoteSource::bass ? "No clear notes in the bass. Try \"Melody\"."
-                                                              : "No clear notes in this range.",
-                             juce::dontSendNotification);
+            auto text = juce::String (state.source == NoteSource::bass ? "No clear notes in the bass." : "No clear notes in this range.");
+
+            if (unclear >= 0.3)
+                text << " " << juce::String (unclear, 1) << " s sound like two or more notes at once: the detector reads one note at a time.";
+            else if (state.source == NoteSource::bass)
+                text << " Try \"Melody\".";
+
+            summary.setText (text, juce::dontSendNotification);
             return;
         }
 
@@ -1282,6 +1319,10 @@ private:
 
         if (std::abs (median) > state.tolerance && fixed == 0)
             text << "   |   the whole sample is " << (median > 0 ? "high" : "low") << ": tune the bass by " << formatCents (median);
+
+        for (auto& extra : { unclearText, humText })
+            if (extra.isNotEmpty())
+                text << "   |   " << extra;
 
         summary.setText (text, juce::dontSendNotification);
     }

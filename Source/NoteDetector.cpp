@@ -1,5 +1,6 @@
 #include "NoteDetector.h"
 #include "Analysis.h"
+#include <complex>
 #include <juce_dsp/juce_dsp.h>
 
 namespace wf
@@ -196,7 +197,241 @@ std::optional<NoteTrack> track (const std::vector<float>& x, double sr, double f
         result.frames.push_back (frame);
     }
 
+    // Loud frames (a tenth of the peak level or more) without a pitch, in runs
+    // of at least 0.15 s.
+    std::optional<juce::Range<double>> run;
+    int quiet = 0;
+
+    auto closeRun = [&]
+    {
+        if (run.has_value() && run->getLength() >= 0.15)
+            result.unclear.push_back (*run);
+
+        run.reset();
+    };
+
+    for (size_t f = 0; f < result.frames.size(); ++f)
+    {
+        const auto& frame = result.frames[f];
+        const auto from = frame.time - result.hopSeconds / 2.0, to = frame.time + result.hopSeconds / 2.0;
+
+        if (rms[f] >= maxRms * 0.1f && ! frame.midi.has_value())
+        {
+            run = run.has_value() ? run->withEnd (to) : juce::Range<double> (from, to);
+            quiet = 0;
+        }
+        else if (run.has_value() && ++quiet > 1)
+        {
+            closeRun();
+        }
+    }
+
+    closeRun();
     return result;
+}
+
+// Mains hum (50 / 60 Hz and its harmonics) pulls the tracker towards it when a
+// note is near. A hum partial is a steady sine: its phase turns at a constant
+// rate over the whole clip, and it is there at full strength even in the
+// quietest moments, between the notes. Each partial found that way is notched
+// out (0.5 Hz wide, forward and back so nothing shifts); bass notes near 50 /
+// 60 Hz come and go, so they're left alone.
+double removeHum (std::vector<float>& sig, double sr, double maxHz)
+{
+    const auto piece = (int) std::lround (0.05 * sr), perBlock = 10;   // 50 ms pieces, 0.5 s blocks
+    const auto pieces = (int) sig.size() / piece;
+    const auto blocks = pieces / perBlock;
+
+    if (blocks < 5)
+        return 0.0;
+
+    std::vector<double> loudness ((size_t) pieces);
+
+    for (int p = 0; p < pieces; ++p)
+    {
+        double e = 0.0;
+
+        for (int i = 0; i < piece; ++i)
+            e += (double) sig[(size_t) (p * piece + i)] * sig[(size_t) (p * piece + i)];
+
+        loudness[(size_t) p] = std::sqrt (e / piece);
+    }
+
+    // The partial near `hz` (within +- span): its frequency when it is steady.
+    auto steadyAt = [&] (double hz, double span) -> std::optional<double>
+    {
+        std::vector<std::complex<double>> z ((size_t) pieces);
+        const auto step = std::polar (1.0, -juce::MathConstants<double>::twoPi * hz / sr);
+        std::complex<double> phasor (1.0, 0.0);
+
+        for (int p = 0; p < pieces; ++p)
+        {
+            std::complex<double> sum;
+
+            for (int i = 0; i < piece; ++i)
+            {
+                sum += (double) sig[(size_t) (p * piece + i)] * phasor;
+                phasor *= step;
+            }
+
+            phasor /= std::abs (phasor);
+            z[(size_t) p] = sum * (2.0 / piece);
+        }
+
+        // 1 s blocks, half overlapping, with a Hann window (so the notes
+        // nearby leak in as little as possible), lined up over the whole clip
+        // at each small frequency offset
+        std::vector<std::complex<double>> block ((size_t) blocks);
+
+        for (int b = 0; b < blocks; ++b)
+        {
+            double weights = 0.0;
+
+            for (int k = 0; k < 2 * perBlock; ++k)
+            {
+                const auto p = b * perBlock + k - perBlock / 2;
+                const auto w = 0.5 - 0.5 * std::cos (juce::MathConstants<double>::twoPi * (k + 0.5) / (2 * perBlock));
+
+                if (p >= 0 && p < pieces)
+                {
+                    block[(size_t) b] += w * z[(size_t) p];
+                    weights += w;
+                }
+            }
+
+            block[(size_t) b] /= std::max (1.0e-9, weights);
+        }
+
+        double bestOffset = 0.0, bestLevel = -1.0;
+
+        for (double offset = -span; offset <= span + 1.0e-9; offset += 0.005)
+        {
+            std::complex<double> sum;
+
+            for (int b = 0; b < blocks; ++b)
+                sum += block[(size_t) b] * std::polar (1.0, -juce::MathConstants<double>::twoPi * offset * (b + 0.5) * perBlock * piece / sr);
+
+            if (std::abs (sum) > bestLevel)
+            {
+                bestLevel = std::abs (sum);
+                bestOffset = offset;
+            }
+        }
+
+        // steady: in most blocks it has (nearly) the average amplitude and phase
+        std::complex<double> mean;
+        std::vector<std::complex<double>> aligned;
+
+        for (int b = 0; b < blocks; ++b)
+        {
+            aligned.push_back (block[(size_t) b] * std::polar (1.0, -juce::MathConstants<double>::twoPi * bestOffset * (b + 0.5) * perBlock * piece / sr));
+            mean += aligned.back() / (double) blocks;
+        }
+
+        const auto level = std::abs (mean);
+        const auto agreeing = std::count_if (aligned.begin(), aligned.end(), [&] (auto v) { return std::abs (v - mean) < 0.5 * level; });
+
+        if (level <= 0.0 || agreeing < 0.6 * blocks)
+            return {};
+
+        // The quietest tenth of the pieces (a fade in or out at the very
+        // start or end left out, a hum alone is about 0.7 x its amplitude):
+        // it must be there too, at nearly full strength.
+        int first = 0, last = pieces - 1;
+
+        while (first < last && loudness[(size_t) first] < 0.35 * level)  ++first;
+        while (last > first && loudness[(size_t) last] < 0.35 * level)   --last;
+
+        std::vector<std::pair<double, double>> quiet;   // loudness, partial level
+
+        for (int p = first; p <= last; ++p)
+            quiet.push_back ({ loudness[(size_t) p], std::abs (z[(size_t) p]) });
+
+        if (quiet.size() < 10)
+            return {};
+
+        std::sort (quiet.begin(), quiet.end());
+        quiet.resize (std::max ((size_t) 5, quiet.size() / 10));
+        std::vector<double> there;
+
+        for (auto& q : quiet)
+            there.push_back (q.second);
+
+        std::sort (there.begin(), there.end());
+
+        if (there[there.size() / 2] < 0.5 * level)
+            return {};
+
+        return hz + bestOffset;
+    };
+
+    // 50 or 60 Hz: the one whose fundamental is steady, else whose harmonics
+    // are (a hum may be mostly 100 / 120 Hz, 150 / 180 Hz ...)
+    std::optional<double> found;
+    std::vector<double> partials;
+
+    for (int harmonicsOnly = 0; harmonicsOnly < 2 && partials.empty(); ++harmonicsOnly)
+    {
+        for (double mains : { 50.0, 60.0 })
+        {
+            found.reset();
+
+            if (! harmonicsOnly)
+            {
+                found = steadyAt (mains, 0.3);
+
+                if (! found.has_value())
+                    continue;
+
+                partials.push_back (*found);
+            }
+
+            for (int h = 2; h <= 5 && mains * h < maxHz; ++h)
+            {
+                const auto partial = found.has_value() ? steadyAt (*found * h, 0.05) : steadyAt (mains * h, 0.3 * h);
+
+                if (partial.has_value())
+                {
+                    partials.push_back (*partial);
+
+                    if (! found.has_value())
+                        found = *partial / h;
+                }
+            }
+
+            if (! partials.empty())
+                break;
+        }
+    }
+
+    if (partials.empty())
+        return 0.0;
+
+    for (const auto hz : partials)
+    {
+        const auto w = juce::MathConstants<double>::twoPi * hz / sr;
+        const auto alpha = std::sin (w) / (2.0 * hz / 0.5);   // Q = hz / 0.5 Hz
+        const auto cw = std::cos (w);
+        const auto a0 = 1.0 + alpha;
+        Biquad notch;
+        notch.b0 = 1.0 / a0;
+        notch.b1 = -2.0 * cw / a0;
+        notch.b2 = notch.b0;
+        notch.a1 = notch.b1;
+        notch.a2 = (1.0 - alpha) / a0;
+
+        auto forward = notch;
+
+        for (auto& v : sig)
+            v = forward.process (v);
+
+        auto backward = notch;
+
+        for (auto it = sig.rbegin(); it != sig.rend(); ++it)
+            *it = backward.process (*it);
+    }
+
+    return std::round (*found * 10.0) / 10.0;
 }
 
 // Frames with (nearly) the same pitch become notes of at least 70 ms; each
@@ -442,12 +677,15 @@ std::optional<NoteTrack> detectNotes (const juce::AudioBuffer<float>& audio, juc
         return NoteTrack {};
 
     const auto cfg = configFor (source);
-    const auto sig = prepare (audio, range, rate, cfg);
+    auto sig = prepare (audio, range, rate, cfg);
+    const auto humHz = removeHum (sig, cfg.rate, cfg.maxHz);
     const auto refHz = 440.0 * std::pow (2.0, referenceCents / 1200.0);
     auto result = track (sig, cfg.rate, cfg.minHz, cfg.maxHz, refHz, progress);
 
     if (! result.has_value())
         return {};
+
+    result->humHz = humHz;
 
     result->notes = segment (result->frames, result->hopSeconds, refHz);
     refine (result->notes, sig, cfg.rate, refHz);
@@ -492,7 +730,9 @@ bool isInKey (int midiNote, int keyTonic, bool minor)
 {
     const auto& steps = scaleSteps (minor);
     const auto degree = ((midiNote - keyTonic) % 12 + 12) % 12;
-    return std::find (steps.begin(), steps.end(), degree) != steps.end();
+
+    // minor keys also use the raised 7th (the leading tone of harmonic minor: G# in A minor)
+    return std::find (steps.begin(), steps.end(), degree) != steps.end() || (minor && degree == 11);
 }
 
 int autoCorrect (std::vector<DetectedNote>& notes, const AutoCorrect& settings, int tolerance, int keyTonic, bool minor)
