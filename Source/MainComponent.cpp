@@ -3463,7 +3463,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
                                              || ! doc->getView().getSelectedMarkers().empty()); break;
         case wf::optStop:   available = available && isPlaying(); break;
 
-        case wf::editCopy:
+        case wf::editCopy: case wf::editHalveSelection: case wf::editDoubleSelection:
             available = available && doc != nullptr && ! doc->getView().getSelection().isEmpty();
             break;
 
@@ -3831,6 +3831,27 @@ bool MainComponent::perform (const InvocationInfo& info)
                 view.setSelection (selection, view.getSelectedChannel());
 
             view.ensureVisible (to);
+            return true;
+        }
+
+        // ; halves the selection, ' doubles it (from its start; the length in
+        // beats on the toolbar halves / doubles with it).
+        case wf::editHalveSelection: case wf::editDoubleSelection:
+        {
+            const auto selection = view.getSelection();
+
+            if (selection.isEmpty())
+                return true;
+
+            const auto length = info.commandID == wf::editHalveSelection ? std::max ((juce::int64) 1, selection.getLength() / 2)
+                                                                          : selection.getLength() * 2;
+            auto end = std::min (total, selection.getStart() + length);
+
+            if (WaveformView::snapToZeroCrossings)
+                end = view.nearestZeroCrossing (end, view.getSelectedChannel());
+
+            view.setSelection ({ selection.getStart(), std::max (selection.getStart() + 1, end) }, view.getSelectedChannel());
+            view.ensureVisible (end);
             return true;
         }
 

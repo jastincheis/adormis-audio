@@ -59,6 +59,8 @@ std::vector<CommandDef> makeCommands()
         { editNormalTool,   "Normal Edit Tool",               "Edit", { key ('d', ctrl) } },
         { editPrevTool,     "Previous Edit Tool",             "Edit", { key ('d') } },
         { editNextTool,     "Next Edit Tool",                 "Edit", { key ('d', shift) } },
+        { editHalveSelection,  "Halve Selection",             "Edit", { key (';') } },
+        { editDoubleSelection, "Double Selection",            "Edit", { key ('\'') } },
 
         // View
         { viewZoomIn,         "Zoom In (Time)",               "View", { key (KeyPress::upKey) } },
@@ -217,7 +219,7 @@ const std::vector<TopMenu>& menuBar()
                     C (editCut), C (editCopy), C (editPaste),
                     sub ("Paste Special", { C (editPasteToNew), C (editMix) }),
                     C (editDelete), C (editTrim), sep(),
-                    C (editSelectAll), C (editSetSelection), C (editMarkIn), C (editMarkOut), sep(),
+                    C (editSelectAll), C (editSetSelection), C (editHalveSelection), C (editDoubleSelection), C (editMarkIn), C (editMarkOut), sep(),
                     C (editGoTo), sep(),
                     sub ("Snapping", { C (editSnapEnable), sep(), C (editSnapGrid), C (editSnapMarkers), C (editSnapZero) }),
                     sub ("Tool", { C (editNormalTool), C (editPrevTool), C (editNextTool) }) } },
@@ -312,7 +314,7 @@ const std::vector<CommandDef>& allCommands()
     // Commands that work so far; everything else stays greyed out in the menus.
     static const juce::CommandID implemented[] {
         fileNew, fileOpen, fileClose, fileSave, fileSaveAs, fileExit, editUndo, editRedo, editCut, editCopy, editPaste, editPasteToNew, editDelete, editTrim, editSelectAll,
-        fileNewNoDialog, fileSaveAll, editRepeat, editMix, editSetSelection, editMarkIn, editMarkOut, editGoTo, editSnapZero, viewPlaybackScroll, viewSmoothScroll,
+        fileNewNoDialog, fileSaveAll, editRepeat, editMix, editSetSelection, editMarkIn, editMarkOut, editGoTo, editSnapZero, editHalveSelection, editDoubleSelection, viewPlaybackScroll, viewSmoothScroll,
         viewLevelIn, viewLevelOut, insertSilence, procAutoTrim, procBitDepth, procChannelConv, procResample,
         toolsClipDetect, toolsRepairCopyChannel, optLoop, insertMarker,
         viewChannelMeters, viewLoudnessMeters, viewSpectrum, toolsStatistics, optKeyboard,
