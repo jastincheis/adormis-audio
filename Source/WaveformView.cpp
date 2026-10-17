@@ -202,6 +202,19 @@ void WaveformView::ensureVisible (juce::int64 sample)
     }
 }
 
+void WaveformView::centreOn (double sample)
+{
+    const auto before = viewStart;
+    viewStart = sample - (double) waveArea().getWidth() * samplesPerPixel / 2.0;
+    clampView();
+
+    if (! juce::approximatelyEqual (before, viewStart))
+    {
+        updateScrollBar();
+        repaint();
+    }
+}
+
 void WaveformView::updateScrollBar()
 {
     scrollBar.setRangeLimits (0.0, (double) juce::jmax ((juce::int64) 1, totalSamples()), juce::dontSendNotification);
@@ -602,6 +615,7 @@ void WaveformView::clearMarkerSelection()
 void WaveformView::mouseDown (const juce::MouseEvent& e)
 {
     pressedOnMarker = false;
+
 
     if (! hasAudio())
         return;

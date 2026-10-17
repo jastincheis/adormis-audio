@@ -319,6 +319,11 @@ MainComponent::MainComponent()
     // Remembered from last time.
     WaveformView::snapToZeroCrossings = (bool) wf::settings::get ("edit.snapZero");
 
+    if (const auto v = wf::settings::get ("view.followPlayback"); ! v.isVoid())
+        followPlayback = (bool) v;
+
+    smoothScrolling = (bool) wf::settings::get ("view.smoothScrolling");
+
     if (const auto v = wf::settings::get ("volume.db"); ! v.isVoid())
         lastVolumeDecibels = (float) (double) v;
     toolbar->onTempoClicked = [this] { showTempoMenu(); };
@@ -3281,7 +3286,8 @@ void MainComponent::startPlayback (juce::Range<juce::int64> range, int soloChann
     playStartCursor = doc->getView().getCursor();
     transport.setPosition ((double) range.getStart() / doc->getSampleRate());
     transport.start();
-    startTimerHz (30);
+    smoothPosition = -1.0;
+    startTimerHz (playbackTimerHz());
     commandManager.commandStatusChanged();
 }
 
@@ -3338,7 +3344,29 @@ void MainComponent::timerCallback()
     }
 
     doc->getView().setPlayhead (position);
-    doc->getView().ensureVisible (position);
+
+    if (followPlayback && smoothScrolling)
+    {
+        // The device reports its position once per audio block; in between,
+        // the time that passed moves it on, so the view glides.
+        const auto now = juce::Time::getMillisecondCounterHiRes() / 1000.0;
+        const auto reported = (double) position;
+
+        if (smoothPosition < 0.0 || std::abs (reported - smoothPosition) > 0.1 * doc->getSampleRate())
+            smoothPosition = reported;   // a start or a jump
+        else
+            smoothPosition = std::max (smoothPosition + (now - smoothClock) * doc->getSampleRate() * 0.98
+                                           + (reported - smoothPosition) * 0.1,
+                                       smoothPosition);
+
+        smoothClock = now;
+        doc->getView().centreOn (smoothPosition);
+    }
+    else if (followPlayback)
+    {
+        doc->getView().ensureVisible (position);
+    }
+
     statusBar.setText ("  Playing " + doc->getTitle() + "   "
                            + WaveformView::formatTime ((double) position / doc->getSampleRate()),
                        juce::dontSendNotification);
@@ -3418,6 +3446,14 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
         case wf::editSnapZero:   // an option: always there
             info.setTicked (WaveformView::snapToZeroCrossings);
+            break;
+
+        case wf::viewPlaybackScroll:
+            info.setTicked (followPlayback);
+            break;
+
+        case wf::viewSmoothScroll:
+            info.setTicked (followPlayback && smoothScrolling);
             break;
 
         case wf::editUndo:  available = available && doc != nullptr && doc->canUndo(); break;
@@ -3528,7 +3564,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
                                        || (id >= wf::winCascade && id <= wf::winPrev) || (id >= wf::viewZoomIn && id <= wf::viewZoomNormal);
 
     if (editsOrPlays && id != wf::optRecord && id != wf::viewChannelMeters && id != wf::viewLoudnessMeters && id != wf::viewRegionsList
-        && id != wf::viewSpectrum && id != wf::editSnapZero
+        && id != wf::viewSpectrum && id != wf::editSnapZero && id != wf::viewPlaybackScroll && id != wf::viewSmoothScroll
         && id != wf::editPaste && id != wf::editMix
         && doc != nullptr && doc->isEmpty())
         available = false;
@@ -3719,6 +3755,25 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::insertRegion:      insertRegion(); return true;
         case wf::viewRegionsList:   toggleRegionsList(); return true;
         case wf::viewSpectrum:      toggleSpectrum(); return true;
+
+        case wf::viewPlaybackScroll: case wf::viewSmoothScroll:
+            if (info.commandID == wf::viewPlaybackScroll)
+                followPlayback = ! followPlayback;
+            else
+            {
+                smoothScrolling = ! (followPlayback && smoothScrolling);
+                followPlayback = true;
+            }
+
+            wf::settings::set ("view.followPlayback", followPlayback);
+            wf::settings::set ("view.smoothScrolling", smoothScrolling);
+            smoothPosition = -1.0;
+
+            if (isPlaying() && mixPreview == nullptr)
+                startTimerHz (playbackTimerHz());
+
+            commandManager.commandStatusChanged();
+            return true;
 
         case wf::editSnapZero:
             WaveformView::snapToZeroCrossings = ! WaveformView::snapToZeroCrossings;

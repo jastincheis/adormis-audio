@@ -71,6 +71,7 @@ public:
     void setPlayhead (juce::int64 sample);  // -1 hides it
     juce::int64 getPlayhead() const                 { return playhead; }
     void ensureVisible (juce::int64 sample);
+    void centreOn (double sample);   // smooth playback scrolling: the view moves so `sample` is in the middle
 
     void zoomIn();
     // View > Level Zoom: magnifies the waveform vertically (x1 .. x64) to see quiet parts.

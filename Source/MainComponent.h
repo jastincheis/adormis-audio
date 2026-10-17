@@ -175,6 +175,13 @@ private:
     void releasePlaybackSource();   // before a document's buffer is changed
     void scrub (DataWindow* doc, WaveformView::Scrub phase, juce::int64 sample);
     void jumpPlayback (DataWindow* doc, juce::int64 sample);
+
+    // View > Playback Scrolling (the view follows playback, a page at a time)
+    // and Smooth Playback Scrolling (the playhead stays in the middle and the
+    // audio flows under it).
+    bool followPlayback = true, smoothScrolling = false;
+    double smoothPosition = -1.0, smoothClock = 0.0;   // to glide between the audio device's position updates
+    int playbackTimerHz() const   { return smoothScrolling && followPlayback ? 60 : 30; }
     void showWaveMenu (DataWindow* doc);
     void setLooping (bool shouldLoop);
     void toggleLoop();   // Q: loop on (a selection starts looping) / off
