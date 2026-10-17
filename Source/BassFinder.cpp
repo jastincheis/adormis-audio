@@ -1866,8 +1866,24 @@ public:
         bpmField.setJustification (juce::Justification::centred);
         bpmField.onReturnKey = [this] { bpmTyped(); };
         bpmField.onFocusLost = [this] { bpmTyped(); };
-        half.onClick = [this] { setBpm (settings.bpm / 2.0); };
-        twice.onClick = [this] { setBpm (settings.bpm * 2.0); };
+        half.onClick = [this] { manualTempo(); setBpm (settings.bpm / 2.0); };
+        twice.onClick = [this] { manualTempo(); setBpm (settings.bpm * 2.0); };
+
+        // Auto: the tempo found in the sample; any change by hand (typing,
+        // ÷2 / ×2, Tap) switches to Manual, and Auto brings the found one back.
+        autoTempoButton.setClickingTogglesState (true);
+        autoTempoButton.setToggleState (true, juce::dontSendNotification);
+        autoTempoButton.setTooltip ("On: the tempo found in the sample. Off: the one you set.");
+        autoTempoButton.onClick = [this]
+        {
+            if (autoTempoButton.getToggleState())
+                useDetectedTempo();
+            else
+                updateGridUi();
+        };
+
+        tapButton.setTooltip ("Tap in time with the sample (4 taps or more): sets the tempo by hand");
+        tapButton.onClick = [this] { tap(); };
 
         beatBack.onClick = [this] { shiftBeat (-1); };
         beatForward.onClick = [this] { shiftBeat (1); };
@@ -1952,7 +1968,7 @@ public:
         bassToNew.onClick = [this] { renderToNewFile (false); };
         mixToNew.onClick = [this] { renderToNewFile (true); };
 
-        for (auto* b : { &half, &twice, &beatBack, &msBack, &msZero, &msForward, &beatForward, &fromPlayhead, &fromStart, &reroll,
+        for (auto* b : { &autoTempoButton, &tapButton, &half, &twice, &beatBack, &msBack, &msZero, &msForward, &beatForward, &fromPlayhead, &fromStart, &reroll,
                          &previewButton, &saveOne, &saveAll, &bassToNew, &mixToNew })
             addAndMakeVisible (b);
 
@@ -1971,9 +1987,13 @@ public:
         stopPreview();
         settings.keyTonic = model.keyTonic;
         settings.minor = model.minor;
-        settings.bpm = model.tempo.has_value() ? model.tempo->bpm : 120.0;
         settings.tuningCents = model.analysis.has_value() ? model.analysis->tuningCents : 0;
-        settings.downbeat = model.tempo.has_value() ? model.tempo->downbeat : 0.0;
+
+        if (autoTempoButton.getToggleState())   // a tempo set by hand stays
+        {
+            settings.bpm = model.tempo.has_value() ? model.tempo->bpm : 120.0;
+            settings.downbeat = model.tempo.has_value() ? model.tempo->downbeat : 0.0;
+        }
         settings.startBar = 0;
 
         if (model.tempo.has_value() && model.tempo->loopBars > 0)
@@ -2032,14 +2052,18 @@ public:
         auto c = column (row, 230);
         keyTitle.setBounds (c.removeFromTop (16));
         keyBox.setBounds (c.removeFromTop (28));
-        c = column (row, 180);
+        c = column (row, 330);
         tempoTitle.setBounds (c.removeFromTop (16));
         auto t = c.removeFromTop (28);
-        bpmField.setBounds (t.removeFromLeft (80));
+        autoTempoButton.setBounds (t.removeFromLeft (56));
         t.removeFromLeft (4);
-        half.setBounds (t.removeFromLeft (44));
+        bpmField.setBounds (t.removeFromLeft (72));
         t.removeFromLeft (4);
-        twice.setBounds (t.removeFromLeft (44));
+        half.setBounds (t.removeFromLeft (42));
+        t.removeFromLeft (4);
+        twice.setBounds (t.removeFromLeft (42));
+        t.removeFromLeft (4);
+        tapButton.setBounds (t.removeFromLeft (60));
         c = row;
         downbeatTitle.setBounds (c.removeFromTop (16));
         auto d = c.removeFromTop (28);
@@ -2116,10 +2140,55 @@ private:
     {
         const auto v = bpmField.getText().replaceCharacter (',', '.').getDoubleValue();
 
-        if (v > 0.0)
+        if (v > 0.0 && std::abs (v - settings.bpm) > 0.004)
+        {
+            manualTempo();
             setBpm (v);
+        }
         else
             updateGridUi();
+    }
+
+    void manualTempo()
+    {
+        autoTempoButton.setToggleState (false, juce::dontSendNotification);
+    }
+
+    // Auto again: the tempo (and first beat) found in the sample.
+    void useDetectedTempo()
+    {
+        settings.bpm = model.tempo.has_value() ? model.tempo->bpm : 120.0;
+        settings.downbeat = model.tempo.has_value() ? model.tempo->downbeat : 0.0;
+        recomputeRoots();
+    }
+
+    // Tap: the average of the last taps (a pause of 2 s starts over).
+    void tap()
+    {
+        const auto now = juce::Time::getMillisecondCounterHiRes();
+
+        if (! taps.empty() && now - taps.back() > 2000.0)
+            taps.clear();
+
+        taps.push_back (now);
+
+        if (taps.size() > 9)
+            taps.erase (taps.begin());
+
+        if (taps.size() < 4)
+        {
+            tempoTitle.setText ("Tap: " + juce::String ((int) taps.size()) + " of 4...", juce::dontSendNotification);
+            return;
+        }
+
+        const auto beat = (taps.back() - taps.front()) / (double) (taps.size() - 1) / 1000.0;
+        auto bpm = 60.0 / beat;
+
+        if (std::abs (bpm - std::round (bpm)) < 0.5)
+            bpm = std::round (bpm);
+
+        manualTempo();
+        setBpm (bpm);
     }
 
     void setBpm (double v)
@@ -2154,6 +2223,22 @@ private:
     void updateGridUi()
     {
         bpmField.setText (formatNumber (settings.bpm, 2), false);
+
+        // how sure the found tempo is (a sample without drums may have no clear beat)
+        if (! autoTempoButton.getToggleState())
+            tempoTitle.setText ("Tempo (BPM)  -  manual (Auto: the one found)", juce::dontSendNotification);
+        else if (! model.tempo.has_value())
+            tempoTitle.setText ("Tempo (BPM)  -  none found: type it or tap", juce::dontSendNotification);
+        else
+        {
+            const auto c = model.tempo->confidence;
+            tempoTitle.setText (juce::String ("Tempo (BPM)  -  ") + (c >= 0.55 ? "found, sure" : c >= 0.4 ? "found, probably right"
+                                                                                 : "a guess: check it (type it or tap)"),
+                                juce::dontSendNotification);
+        }
+
+        tempoTitle.setColour (juce::Label::textColourId, autoTempoButton.getToggleState() && model.tempo.has_value()
+                                                             && model.tempo->confidence < 0.4 ? colours::warn : colours::muted);
         downbeatValue.setText (juce::String (juce::roundToInt (settings.downbeat * 1000.0)) + " ms", juce::dontSendNotification);
 
         const auto x = (model.duration() - settings.downbeat) / (240.0 / settings.bpm);
@@ -2393,6 +2478,8 @@ private:
     juce::OwnedArray<juce::TextButton> styleButtons;
     juce::ComboBox keyBox, toneBox;
     juce::TextEditor bpmField;
+    juce::TextButton autoTempoButton { "Auto" }, tapButton { "Tap" };
+    std::vector<double> taps;
     juce::TextButton half { juce::CharPointer_UTF8 ("\xc3\xb7" "2") }, twice { juce::CharPointer_UTF8 ("\xc3\x97" "2") };
     juce::TextButton beatBack { juce::CharPointer_UTF8 ("\xe2\x88\x92" "1 beat") }, msBack { juce::CharPointer_UTF8 ("\xe2\x88\x92" "10 ms") },
                      msZero { "0 ms" }, msForward { "+10 ms" }, beatForward { "+1 beat" };
@@ -2540,7 +2627,7 @@ class BassFinderWindow final : public juce::DocumentWindow
 {
 public:
     BassFinderWindow (BassFinderSource source, BassFinderHost host, std::function<void()> onClose)
-        : juce::DocumentWindow ("Bass Finder", colours::bg, juce::DocumentWindow::closeButton)
+        : juce::DocumentWindow ("Bass Creator", colours::bg, juce::DocumentWindow::closeButton)
     {
         // Own title bar so it can be moved on window managers without decorations.
         setUsingNativeTitleBar (false);

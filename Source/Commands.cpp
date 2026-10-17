@@ -137,7 +137,7 @@ std::vector<CommandDef> makeCommands()
         { toolsRepairCopyChannel, "Copy Other Channel",       "Tools", {} },
         { toolsSynthSimple,       "Simple Synthesis...",      "Tools", {} },
         { toolsSynthFm,           "FM Synthesis...",          "Tools", {} },
-        { toolsBassFinder,        "Bass Finder...",           "Tools", {} },
+        { toolsBassFinder,        "Bass Creator...",          "Tools", {} },
         { toolsDeEsser,           "De-esser...",              "Tools", {} },
         { toolsMp3Restore,        "MP3 Restore...",           "Tools", {} },
         { toolsStatistics,        "Statistics...",            "Tools", {} },

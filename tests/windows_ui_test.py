@@ -152,7 +152,7 @@ def _():
 
 for path in [("Process", "EQ", "Parametric EQ..."), ("Effects", "Dynamics", "Compressor..."),
              ("Effects", "Delay/Echo..."), ("Effects", "Reverb..."), ("Process", "Volume..."),
-             ("Process", "Time Stretch..."), ("Tools", "De-esser..."), ("Tools", "Bass Finder..."),
+             ("Process", "Time Stretch..."), ("Tools", "De-esser..."), ("Tools", "Bass Creator..."),
              ("Tools", "MP3 Restore..."), ("Insert", "Silence..."), ("Process", "Resample..."),
              ("Process", "Bit-Depth Converter..."), ("Process", "Channel Converter..."), ("Process", "Auto Trim/Crop..."),
              ("Tools", "Detect Clipping..."), ("Edit", "Set Selection..."), ("Edit", "Go To..."),

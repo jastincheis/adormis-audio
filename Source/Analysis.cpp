@@ -48,8 +48,12 @@ void magnitudes (juce::dsp::FFT& fft, const std::vector<float>& window, const st
 
 // Whole bars of 4/4 that fit the clip (after any short silence at the start),
 // when that agrees with the beat tracker: the tempo of a cut loop is exact.
-std::optional<TempoEstimate> loopTempo (const std::vector<float>& mono, double rate, double estimate)
+std::optional<TempoEstimate> loopTempo (const std::vector<float>& mono, double rate, double estimate, double confidence)
 {
+    // Without a clear beat (pads, long chords) the estimate is only a rough
+    // guide, so the loop's length is trusted from further away.
+    const auto weakBeat = confidence < 0.4;
+
     float peak = 0.0f;
 
     for (size_t i = 0; i < mono.size(); i += 2)
@@ -89,7 +93,9 @@ std::optional<TempoEstimate> loopTempo (const std::vector<float>& mono, double r
             // after the loop) is not mistaken for a slower loop.
             const auto drift = std::abs (bpm - estimate * factor) / 60.0 * duration / std::min (1.0, factor);
 
-            if (error < 0.035 + penalty && drift < 0.25 && (! best.has_value() || error < bestError))
+            const auto close = weakBeat ? error < 0.12 + penalty : error < 0.035 + penalty && drift < 0.25;
+
+            if (close && (! best.has_value() || error < bestError))
             {
                 best = TempoEstimate { bpm, bars, leadSeconds };
                 bestError = error;
@@ -198,44 +204,82 @@ std::optional<TempoEstimate> detectTempo (const juce::AudioBuffer<float>& audio,
         onset[(size_t) i] = std::max (0.0f, flux[(size_t) i] - (float) ((prefix[(size_t) b] - prefix[(size_t) a]) / (b - a)));
     }
 
-    // Autocorrelation scored at the beat, 2 and 4 beats, with a gentle preference around 120 BPM.
-    const auto maxLag = std::min (frames - 2, (int) std::ceil (4.0 * 60.0 / 70.0 / hopSeconds) + 2);
-    std::vector<double> ac ((size_t) maxLag + 2, 0.0);
+    // The same for the low end alone (kick, bass): the beat is where the low
+    // hits fall, while hi-hats can run in triplets or double time.
+    std::vector<double> lowPrefix ((size_t) frames + 1, 0.0);
 
-    for (int lag = 1; lag <= maxLag; ++lag)
+    for (int i = 0; i < frames; ++i)
+        lowPrefix[(size_t) i + 1] = lowPrefix[(size_t) i] + low[(size_t) i];
+
+    std::vector<float> lowOnset ((size_t) frames);
+
+    for (int i = 0; i < frames; ++i)
     {
-        double s = 0.0;
-
-        for (int i = 0; i + lag < frames; ++i)
-            s += (double) onset[(size_t) i] * onset[(size_t) (i + lag)];
-
-        ac[(size_t) lag] = s / (frames - lag);
+        const auto a = std::max (0, i - w), b = std::min (frames, i + w + 1);
+        lowOnset[(size_t) i] = std::max (0.0f, low[(size_t) i] - (float) ((lowPrefix[(size_t) b] - lowPrefix[(size_t) a]) / (b - a)));
     }
 
-    auto acAt = [&] (double x)
+    // Autocorrelation scored at the beat, 2 and 4 beats (all onsets, and the
+    // low end counted half as much again), with a gentle preference around 110 BPM.
+    const auto maxLag = std::min (frames - 2, (int) std::ceil (4.0 * 60.0 / 70.0 / hopSeconds) + 2);
+
+    auto autocorrelation = [&] (const std::vector<float>& x)
+    {
+        std::vector<double> ac ((size_t) maxLag + 2, 0.0);
+        double energy = 0.0;
+
+        for (int i = 0; i < frames; ++i)
+            energy += (double) x[(size_t) i] * x[(size_t) i];
+
+        for (int lag = 1; lag <= maxLag; ++lag)
+        {
+            double s = 0.0;
+
+            for (int i = 0; i + lag < frames; ++i)
+                s += (double) x[(size_t) i] * x[(size_t) (i + lag)];
+
+            ac[(size_t) lag] = energy > 0.0 ? s / (frames - lag) / (energy / frames) : 0.0;
+        }
+
+        return ac;
+    };
+
+    const auto ac = autocorrelation (onset), acLow = autocorrelation (lowOnset);
+
+    auto at = [&] (const std::vector<double>& c, double x)
     {
         if (x >= maxLag)
             return 0.0;
 
         const auto i = (int) x;
         const auto frac = x - i;
-        return ac[(size_t) i] * (1.0 - frac) + ac[(size_t) i + 1] * frac;
+        return c[(size_t) i] * (1.0 - frac) + c[(size_t) i + 1] * frac;
     };
 
-    double best = 120.0, bestScore = -1.0;
+    // (tuned on drum patterns from 75 to 140 BPM: boom bap, swung, trap with
+    // triplet hats, half-time; 150 and up may read as half, ÷2 / ×2 fix it)
+    const auto lowWeight = 0.5;
+    const auto centre = 110.0;
+    double best = 120.0, bestScore = -1.0, bestRaw = 0.0;
 
     for (double bpm = 70.0; bpm <= 180.0; bpm += 0.05)
     {
         const auto lag = 60.0 / bpm / hopSeconds;
-        const auto prior = std::exp (-0.5 * std::pow (std::log2 (bpm / 120.0) / 0.9, 2.0));
-        const auto score = (acAt (lag) + 0.5 * acAt (2.0 * lag) + 0.25 * acAt (4.0 * lag)) * prior;
+        const auto prior = std::exp (-0.5 * std::pow (std::log2 (bpm / centre) / 0.9, 2.0));
+        auto comb = [&] (const std::vector<double>& c) { return at (c, lag) + 0.5 * at (c, 2.0 * lag) + 0.25 * at (c, 4.0 * lag); };
+        const auto raw = comb (ac) + lowWeight * comb (acLow);
+        const auto score = raw * prior;
 
         if (score > bestScore)
         {
             bestScore = score;
+            bestRaw = raw;
             best = bpm;
         }
     }
+
+    // How strongly the onsets repeat at that beat (1 = every onset on the grid).
+    const auto confidence = juce::jlimit (0.0, 1.0, bestRaw / (1.75 * (1.0 + lowWeight)));
 
     if (bestScore <= 0.0)
         return {};
@@ -298,12 +342,19 @@ std::optional<TempoEstimate> detectTempo (const juce::AudioBuffer<float>& audio,
     }
 
     // whole numbers and halves are the usual tempos; otherwise one decimal
-    const auto bpm = std::abs (best - std::round (best)) < 0.2              ? std::round (best)
-                   : std::abs (best * 2.0 - std::round (best * 2.0)) < 0.2 ? std::round (best * 2.0) / 2.0
+    // (real music is played or programmed at whole tempos far more often than
+    // the measurement is that exact: 143.7 is 144)
+    const auto bpm = std::abs (best - std::round (best)) < 0.35             ? std::round (best)
+                   : std::abs (best * 2.0 - std::round (best * 2.0)) < 0.3 ? std::round (best * 2.0) / 2.0
                                                                             : std::round (best * 10.0) / 10.0;
 
-    if (auto loop = loopTempo (mono, rate, best))
+    if (auto loop = loopTempo (mono, rate, best, confidence))
+    {
+        // The length of a cut loop backs the beat up; with a weak beat it is
+        // still only a likely reading.
+        loop->confidence = confidence >= 0.4 ? std::max (confidence, 0.6) : 0.45;
         return loop;
+    }
 
     // Beat phase: where the onsets line up best with the beat grid; then which
     // of the 4 beats is the bar's first (strongest low end + onsets).
@@ -350,7 +401,7 @@ std::optional<TempoEstimate> detectTempo (const juce::AudioBuffer<float>& audio,
     if (downbeat > bar - 0.03)
         downbeat -= bar;
 
-    return TempoEstimate { bpm, 0, std::max (0.0, downbeat) };
+    return TempoEstimate { bpm, 0, std::max (0.0, downbeat), confidence };
 }
 
 std::optional<KeyAnalysis> analyseKey (const juce::AudioBuffer<float>& audio, juce::Range<int> range, double rate)

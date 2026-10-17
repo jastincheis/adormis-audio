@@ -13,6 +13,7 @@ struct TempoEstimate
     double bpm = 120.0;
     int loopBars = 0;        // > 0 when the audio is exactly that many 4/4 bars long
     double downbeat = 0.0;   // seconds from the start to the first beat of a bar
+    double confidence = 1.0; // 0..1: how clear the beat is (drums: high; pads, sustained chords: low)
 };
 
 struct KeyEstimate

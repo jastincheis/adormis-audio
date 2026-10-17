@@ -50,7 +50,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 - Noise Reduction (from a captured noise print, or learned from the quietest parts), Hum Removal (finds 50 / 60 Hz by itself), Click and Crackle Removal, Clipped Peak Restoration
 - MP3 Restore: grows back the top end an MP3 cut off (by saturation or spectral copy), smooths the "swirl", adds warmth and punch
 - De-esser, Detect Clipping, Copy Other Channel, Statistics (peak, true peak, RMS, DC offset, LUFS, LRA)
-- Bass Finder: key, tempo, notes and a bass line (in the song's own tuning; mains hum ignored; MIDI export)
+- Bass Creator: suggests a bass line for a sample that has none (also with no drums): key, tempo (auto or by hand, Tap), the chords, bass lines in 10 styles to listen to with the sample and save as MIDI or audio; a note detector to check and correct an existing bass (in the song's own tuning; mains hum ignored)
 - Batch Converter: many files at once through the same steps (channels, sample rate, trim silence, normalize to a peak or a LUFS target with the limiter if needed, fades) into WAV / FLAC / AIFF / MP3 / OGG; the originals are not changed
 
 **Remembered settings:** the effect windows, Mix, Volume and the small settings windows start where you left them (also after a restart); each effect window has a **Defaults** button. Values measured from each file (hum frequency, clip level, MP3 cut-off, tempo) are measured again.
