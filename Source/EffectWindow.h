@@ -9,7 +9,7 @@ namespace wf
 // through the effect, and every change is heard at once; Apply writes it
 // into the file (undoable), with the tail of a delay or reverb ringing on
 // after the selection.
-enum class EffectKind { eq, compressor, delay, reverb, mp3Restore, limiter, gate, chorus, flanger, vibrato, distortion,
+enum class EffectKind { eq, graphicEq, compressor, delay, reverb, mp3Restore, limiter, gate, chorus, flanger, vibrato, distortion,
                         noiseReduction, humRemoval, declick, clipRestore };
 
 std::unique_ptr<juce::DocumentWindow> createEffectWindow (EffectKind kind, BassFinderSource source, BassFinderHost host,

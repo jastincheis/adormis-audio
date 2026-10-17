@@ -21,7 +21,8 @@ struct EqBand
 const char* bandTypeName (EqBand::Type);
 bool bandHasGain (EqBand::Type);   // bell and shelves
 
-constexpr int maxEqBands = 32;
+constexpr int maxEqPoints = 32;   // points of the parametric EQ
+constexpr int maxEqBands = 34;    // filters in one EQ (a graphic EQ's 31 bands and two shelves at its ends)
 
 struct EqParams
 {
@@ -33,6 +34,15 @@ struct EqParams
 // The whole curve at `hz` (dB), and one band's.
 double eqResponseDb (const EqParams&, double hz, double sampleRate);
 double bandResponseDb (const EqBand&, double hz, double sampleRate);
+
+// Graphic EQ: a row of sliders at fixed frequencies (5, 10, 15, 20 or 31 of
+// them; 31 = the third-octave ISO set), each a bell a little wider than the
+// space between the sliders, and a shelf at each end. Neighbouring bells add
+// up, so their own gains are solved for the curve to pass through every
+// slider's setting at its frequency; a slider only reaches its neighbours.
+// Bands above what the sample rate holds are left out.
+std::vector<double> graphicEqFrequencies (int bands);
+EqParams graphicEqParams (const std::vector<double>& hz, const std::vector<double>& sliderDb, double outputDb, double sampleRate);
 
 struct CompressorParams
 {

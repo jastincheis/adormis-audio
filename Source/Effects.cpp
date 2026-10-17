@@ -535,6 +535,109 @@ double eqResponseDb (const EqParams& p, double hz, double rate)
     return total;
 }
 
+std::vector<double> graphicEqFrequencies (int bands)
+{
+    switch (bands)
+    {
+        case 10: return { 31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000 };
+        case 15: return { 25, 40, 63, 100, 160, 250, 400, 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000 };
+        case 31: return { 20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000,
+                          1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000, 20000 };
+        default: break;
+    }
+
+    // Any other count: evenly spaced (in octaves) from 25 Hz to 16 kHz.
+    bands = juce::jlimit (2, maxEqBands, bands);
+    std::vector<double> hz;
+
+    for (int i = 0; i < bands; ++i)
+        hz.push_back (25.0 * std::pow (16000.0 / 25.0, (double) i / (bands - 1)));
+
+    return hz;
+}
+
+EqParams graphicEqParams (const std::vector<double>& hz, const std::vector<double>& sliderDb, double outputDb, double rate)
+{
+    EqParams p;
+    p.outputDb = outputDb;
+
+    std::vector<int> used;   // the sliders below what the sample rate holds
+
+    for (size_t i = 0; i < hz.size() && (int) used.size() < maxEqBands - 2; ++i)
+        if (hz[i] < rate * 0.45)
+            used.push_back ((int) i);
+
+    if (used.size() < 2)
+        return p;
+
+    const auto value = [&] (int i) { return (size_t) i < sliderDb.size() ? sliderDb[(size_t) i] : 0.0; };
+
+    // A bell per slider, wider than the spacing (so a run of equal sliders
+    // dips little between them) ...
+    const auto octaves = std::log2 (hz.back() / hz.front()) / (double) (hz.size() - 1) * 1.6;
+    const auto q = std::sqrt (std::pow (2.0, octaves)) / (std::pow (2.0, octaves) - 1.0);
+    const auto bells = used.size();
+
+    for (size_t k = 0; k < bells; ++k)
+    {
+        auto& b = p.bands[k];
+        b.type = EqBand::bell;
+        b.frequency = hz[(size_t) used[k]];
+        b.q = q;
+        b.gainDb = value (used[k]);
+    }
+
+    // ... and a shelf at each end, so below the first slider and above the
+    // last the curve stays at that slider's setting (moving the bass slider
+    // leaves the top end alone, and the other way round).
+    const auto first = hz[(size_t) used.front()], last = hz[(size_t) used.back()];
+    auto& low = p.bands[bells];
+    low.type = EqBand::lowShelf;
+    low.frequency = first;
+    low.q = 0.7;
+    auto& high = p.bands[bells + 1];
+    high.type = EqBand::highShelf;
+    high.frequency = last;
+    high.q = 0.7;
+    p.count = (int) bells + 2;
+
+    // Where each filter is checked: the bells at their sliders, the shelves
+    // an octave beyond the ends (the top one below Nyquist).
+    std::vector<double> at, target;
+
+    for (size_t k = 0; k < bells; ++k)
+    {
+        at.push_back (p.bands[k].frequency);
+        target.push_back (value (used[k]));
+    }
+
+    at.push_back (first / 2.0);
+    target.push_back (value (used.front()));
+    at.push_back (std::min (last * 2.0, rate * 0.47));
+    target.push_back (value (used.back()));
+
+    // The filters overlap, so each one is nudged towards its target a few times.
+    for (int pass = 0; pass < 30; ++pass)
+    {
+        double worst = 0.0;
+        std::vector<double> step (at.size());
+
+        for (size_t k = 0; k < at.size(); ++k)
+        {
+            step[k] = target[k] - (eqResponseDb (p, at[k], rate) - outputDb);
+            worst = std::max (worst, std::abs (step[k]));
+        }
+
+        if (worst < 0.03)
+            break;
+
+        for (size_t k = 0; k < at.size(); ++k)
+            p.bands[k].gainDb = juce::jlimit (-48.0, 48.0, p.bands[k].gainDb + 0.6 * step[k]);
+    }
+
+    return p;
+}
+
 double compressorCurveDb (const CompressorParams& p, double in)
 {
     const auto t = p.thresholdDb, r = std::max (1.0, p.ratio), k = std::max (0.0, p.kneeDb);

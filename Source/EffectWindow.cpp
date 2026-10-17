@@ -39,6 +39,7 @@ juce::String effectName (EffectKind kind)
     switch (kind)
     {
         case EffectKind::eq:         return "Parametric EQ";
+        case EffectKind::graphicEq:  return "Graphic EQ";
         case EffectKind::compressor: return "Compressor";
         case EffectKind::delay:      return "Delay / Echo";
         case EffectKind::reverb:     return "Reverb";
@@ -574,7 +575,7 @@ public:
 
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
-        if (bandAt (e.position) >= 0 || params.count >= fx::maxEqBands)
+        if (bandAt (e.position) >= 0 || params.count >= fx::maxEqPoints)
             return;
 
         auto& band = params.bands[(size_t) params.count];
@@ -939,7 +940,7 @@ public:
 private:
     void addBandAt (double hz)
     {
-        if (params.count >= fx::maxEqBands)
+        if (params.count >= fx::maxEqPoints)
             return;
 
         auto& b = params.bands[(size_t) params.count];
@@ -974,7 +975,7 @@ private:
 
         selectAll.setEnabled (params.count > 1 || selection.size() > 1);
         selectAll.setButtonText (selection.size() > 1 ? "Just one point" : "Select all points");
-        addButton.setEnabled (params.count < fx::maxEqBands);
+        addButton.setEnabled (params.count < fx::maxEqPoints);
 
         if (! has)
         {
@@ -1057,7 +1058,7 @@ public:
 
         for (const auto& v : *bands)
         {
-            if (params.count >= fx::maxEqBands)
+            if (params.count >= fx::maxEqPoints)
                 break;
 
             auto& b = params.bands[(size_t) params.count++];
@@ -1100,6 +1101,597 @@ private:
     LabelledSlider gain { "Gain", -36.0, 36.0, 0.1, " dB", 0.0, [this] { sliderMoved (1); } };
     LabelledSlider q { "Width (Q)", 0.1, 18.0, 0.01, {}, 1.0, [this] { sliderMoved (2); }, 1.5 };
     LabelledSlider output { "Output", -24.0, 24.0, 0.1, " dB", 0.0, [this] { params.outputDb = output.value(); push(); graph.repaint(); } };
+};
+
+//==============================================================================
+// Graphic EQ: a row of faders like a hardware graphic equaliser (5 to 31
+// bands), with the curve they make and the spectrum above them.
+juce::String shortHz (double hz)
+{
+    if (hz < 1000.0)
+        return std::abs (hz - std::round (hz)) < 0.01 ? juce::String (juce::roundToInt (hz)) : juce::String (hz, 1);
+
+    const auto k = hz / 1000.0;
+
+    if (std::abs (k - std::round (k)) < 0.01)
+        return juce::String (juce::roundToInt (k)) + "k";
+
+    return juce::String (k, std::abs (k * 10.0 - std::round (k * 10.0)) < 0.01 ? 1 : 2) + "k";
+}
+
+class GraphicEqEditor final : public Editor
+{
+public:
+    explicit GraphicEqEditor (Shared& s) : Editor (s)
+    {
+        staticPre = averageSpectrum (*shared.audio);
+
+        for (int count : { 5, 10, 15, 20, 31 })
+        {
+            auto* b = countButtons.add (new juce::TextButton (juce::String (count)));
+            styleToggle (*b);
+            b->setRadioGroupId (501);
+            b->onClick = [this, count] { setBandCount (count); };
+            addAndMakeVisible (b);
+        }
+
+        for (int r : { 12, 15, 24 })
+        {
+            auto* b = rangeButtons.add (new juce::TextButton (juce::String (juce::CharPointer_UTF8 ("\xc2\xb1")) + juce::String (r) + " dB"));
+            styleToggle (*b);
+            b->setRadioGroupId (502);
+            b->onClick = [this, r] { setRange (r); };
+            addAndMakeVisible (b);
+        }
+
+        flatButton.onClick = [this] { std::fill (db.begin(), db.end(), 0.0); changed(); };
+        presetsButton.onClick = [this] { showPresets(); };
+
+        for (auto* b : { &flatButton, &presetsButton })
+            addAndMakeVisible (b);
+
+        for (auto* l : { &countLabel, &rangeLabel, &hint })
+            addAndMakeVisible (l);
+
+        styleLabel (countLabel, 12.0f, true, colours::muted);
+        styleLabel (rangeLabel, 12.0f, true, colours::muted);
+        countLabel.setText ("Sliders", juce::dontSendNotification);
+        rangeLabel.setText ("Range", juce::dontSendNotification);
+        styleLabel (hint, 11.5f, false, colours::muted);
+        hint.setJustificationType (juce::Justification::topLeft);
+        hint.setText ("Drag a slider up or down, or drag across several to draw a curve.  Double-click: back to 0.  "
+                      "Wheel: half a dB.  Presets: ready-made curves, and your own.",
+                      juce::dontSendNotification);
+
+        addAndMakeVisible (output);
+        setBandCount (10);
+        setRange (12);
+    }
+
+    void push() override
+    {
+        fx::setParams (*shared.processor, params());
+    }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeEq();
+        fx::setParams (*p, params());
+        return p;
+    }
+
+    void tick() override   { repaint (curveArea); }
+
+    juce::var getState() override
+    {
+        juce::Array<juce::var> values;
+
+        for (auto v : db)
+            values.add (v);
+
+        juce::DynamicObject::Ptr state = new juce::DynamicObject();
+        state->setProperty ("bands", (int) hz.size());
+        state->setProperty ("range", range);
+        state->setProperty ("db", values);
+        state->setProperty ("output", output.value());
+        return juce::var (state.get());
+    }
+
+    void setState (const juce::var& state) override
+    {
+        const auto count = (int) state["bands"];
+        setBandCount (count == 5 || count == 10 || count == 15 || count == 20 || count == 31 ? count : 10);
+
+        if (const auto* values = state["db"].getArray(); values != nullptr && values->size() == (int) db.size())
+            for (size_t i = 0; i < db.size(); ++i)
+                db[i] = juce::jlimit (-24.0, 24.0, (double) (*values)[(int) i]);
+
+        const auto r = (int) state["range"];
+        setRange (r == 15 || r == 24 ? r : 12);
+        output.slider.setValue ((double) state["output"], juce::dontSendNotification);
+        changed();
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        auto top = r.removeFromTop (30);
+        countLabel.setBounds (top.removeFromLeft (52));
+
+        for (auto* b : countButtons)
+            b->setBounds (top.removeFromLeft (44).reduced (2));
+
+        top.removeFromLeft (16);
+        rangeLabel.setBounds (top.removeFromLeft (46));
+
+        for (auto* b : rangeButtons)
+            b->setBounds (top.removeFromLeft (70).reduced (2));
+
+        presetsButton.setBounds (top.removeFromRight (120).reduced (2));
+        flatButton.setBounds (top.removeFromRight (80).reduced (2));
+
+        auto bottom = r.removeFromBottom (78);
+        output.setBounds (bottom.removeFromTop (46).removeFromLeft (360).reduced (6, 0));
+        hint.setBounds (bottom.reduced (6, 4));
+
+        r.removeFromTop (8);
+        curveArea = r.removeFromTop (juce::jmax (110, r.getHeight() / 3));
+        r.removeFromTop (8);
+        faderArea = r;
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        paintCurve (g, curveArea);
+        paintFaders (g, faderArea);
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        const auto band = bandAt (e.x);
+
+        if (band < 0 || ! faderArea.contains (e.getPosition()))
+            return;
+
+        lastBand = band;
+        lastValue = valueAt (e.y);
+        db[(size_t) band] = lastValue;
+        changed();
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (lastBand < 0)
+            return;
+
+        // Across several sliders: a straight line from the last one to here.
+        const auto band = juce::jlimit (0, (int) db.size() - 1, bandAt (juce::jlimit (faderArea.getX(), faderArea.getRight() - 1, e.x)));
+        const auto value = valueAt (e.y);
+        const auto from = std::min (band, lastBand), to = std::max (band, lastBand);
+
+        for (int b = from; b <= to; ++b)
+        {
+            const auto t = to == from ? 1.0 : (double) (b - lastBand) / (double) (band - lastBand);
+            db[(size_t) b] = lastValue + (value - lastValue) * juce::jlimit (0.0, 1.0, t);
+        }
+
+        lastBand = band;
+        lastValue = value;
+        changed();
+    }
+
+    void mouseUp (const juce::MouseEvent&) override   { lastBand = -1; }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (const auto band = bandAt (e.x); band >= 0 && faderArea.contains (e.getPosition()))
+        {
+            db[(size_t) band] = 0.0;
+            changed();
+        }
+    }
+
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w) override
+    {
+        if (const auto band = bandAt (e.x); band >= 0 && faderArea.contains (e.getPosition()))
+        {
+            db[(size_t) band] = juce::jlimit (-range, range, std::round ((db[(size_t) band] + (w.deltaY > 0 ? 0.5 : -0.5)) * 2.0) / 2.0);
+            changed();
+        }
+    }
+
+private:
+    fx::EqParams params() const   { return fx::graphicEqParams (hz, db, output.value(), shared.rate()); }
+
+    void changed()
+    {
+        push();
+        repaint();
+    }
+
+    // A new number of sliders keeps the curve's shape.
+    void setBandCount (int count)
+    {
+        const auto oldHz = hz;
+        const auto oldDb = db;
+        hz = fx::graphicEqFrequencies (count);
+        db.assign (hz.size(), 0.0);
+
+        if (oldHz.size() >= 2)
+            for (size_t i = 0; i < hz.size(); ++i)
+                db[i] = curveAt (oldHz, oldDb, hz[i]);
+
+        for (int i = 0; i < countButtons.size(); ++i)
+            countButtons[i]->setToggleState (countButtons[i]->getButtonText().getIntValue() == count, juce::dontSendNotification);
+
+        changed();
+    }
+
+    void setRange (int dbRange)
+    {
+        range = dbRange;
+
+        for (auto& v : db)
+            v = juce::jlimit (-range, range, v);
+
+        for (int i = 0; i < rangeButtons.size(); ++i)
+            rangeButtons[i]->setToggleState (std::array<int, 3> { 12, 15, 24 }[(size_t) i] == dbRange, juce::dontSendNotification);
+
+        changed();
+    }
+
+    // Straight lines between the sliders on a log-frequency axis (flat beyond the ends).
+    static double curveAt (const std::vector<double>& fs, const std::vector<double>& values, double f)
+    {
+        if (f <= fs.front())  return values.front();
+        if (f >= fs.back())   return values.back();
+
+        for (size_t i = 0; i + 1 < fs.size(); ++i)
+            if (f <= fs[i + 1])
+            {
+                const auto t = std::log (f / fs[i]) / std::log (fs[i + 1] / fs[i]);
+                return values[i] + (values[i + 1] - values[i]) * t;
+            }
+
+        return values.back();
+    }
+
+    bool bandAvailable (size_t i) const   { return hz[i] < shared.rate() * 0.45; }
+
+    int bandAt (int x) const
+    {
+        if (hz.empty() || x < faderArea.getX() || x >= faderArea.getRight())
+            return -1;
+
+        return juce::jlimit (0, (int) hz.size() - 1, (int) ((x - faderArea.getX()) * (int) hz.size() / std::max (1, faderArea.getWidth())));
+    }
+
+    juce::Rectangle<float> track() const
+    {
+        return faderArea.toFloat().withTrimmedTop (22.0f).withTrimmedBottom (24.0f);
+    }
+
+    float yFor (double value) const
+    {
+        const auto t = track();
+        return t.getY() + t.getHeight() * (float) ((range - value) / (2.0 * range));
+    }
+
+    double valueAt (int y) const
+    {
+        const auto t = track();
+        const auto v = range - (y - t.getY()) / t.getHeight() * 2.0 * range;
+        return juce::jlimit (-range, range, std::round (v * 10.0) / 10.0);
+    }
+
+    void paintFaders (juce::Graphics& g, juce::Rectangle<int> area) const
+    {
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (area.toFloat(), 8.0f);
+
+        const auto t = track();
+        const auto n = (int) hz.size();
+        const auto w = (float) area.getWidth() / (float) n;
+        const auto small = n > 20;
+
+        // dB lines across the whole bank.
+        const auto step = range <= 12.0 ? 3.0 : range <= 15.0 ? 5.0 : 6.0;
+        g.setFont (juce::FontOptions (10.0f));
+
+        for (auto v = -range; v <= range + 0.01; v += step)
+        {
+            g.setColour (std::abs (v) < 0.01 ? colours::muted.withAlpha (0.6f) : colours::line);
+            g.fillRect (t.getX(), yFor (v), t.getWidth(), 1.0f);
+        }
+
+        for (int i = 0; i < n; ++i)
+        {
+            const auto available = bandAvailable ((size_t) i);
+            const auto cx = area.getX() + w * ((float) i + 0.5f);
+            const auto value = db[(size_t) i];
+
+            // the slot
+            g.setColour (juce::Colours::black.withAlpha (0.55f));
+            g.fillRoundedRectangle (cx - 2.5f, t.getY(), 5.0f, t.getHeight(), 2.5f);
+
+            // the bar from 0 to the value: orange up, blue down
+            const auto y0 = yFor (0.0), y1 = yFor (value);
+            g.setColour ((value >= 0.0 ? colours::bass : colours::accent).withAlpha (available ? 0.75f : 0.2f));
+            g.fillRect (cx - 2.5f, std::min (y0, y1), 5.0f, std::abs (y1 - y0));
+
+            // the knob
+            const auto capW = juce::jlimit (10.0f, 30.0f, w * 0.7f);
+            const juce::Rectangle<float> cap (cx - capW / 2.0f, y1 - 7.0f, capW, 14.0f);
+            g.setColour (available ? juce::Colour (0xffc9ccd6) : juce::Colour (0xff4a4e5a));
+            g.fillRoundedRectangle (cap, 3.0f);
+            g.setColour (juce::Colours::black.withAlpha (0.6f));
+            g.fillRect (cap.getX() + 2.0f, cap.getCentreY() - 0.5f, cap.getWidth() - 4.0f, 1.5f);
+
+            // value above, frequency below
+            g.setColour (available ? colours::ink : colours::muted.withAlpha (0.5f));
+            g.setFont (juce::FontOptions (small ? 9.5f : 11.5f, juce::Font::bold));
+            g.drawText (shortHz (hz[(size_t) i]), juce::Rectangle<float> (cx - w / 2.0f, t.getBottom() + 4.0f, w, 16.0f),
+                        juce::Justification::centred, false);
+            g.setFont (juce::FontOptions (small ? 9.0f : 11.0f));
+            g.setColour (std::abs (value) < 0.05 ? colours::muted : value > 0 ? colours::bass : colours::accent);
+            g.drawText (std::abs (value) < 0.05 ? juce::String ("0") : (value > 0 ? "+" : "") + juce::String (value, 1),
+                        juce::Rectangle<float> (cx - w / 2.0f, (float) area.getY() + 3.0f, w, 16.0f), juce::Justification::centred, false);
+        }
+    }
+
+    void paintCurve (juce::Graphics& g, juce::Rectangle<int> area) const
+    {
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (area.toFloat(), 8.0f);
+        const auto a = area.toFloat().reduced (10.0f, 8.0f).withTrimmedRight (26.0f);
+        const auto lo = 20.0, hi = std::min (20000.0, shared.rate() * 0.48);
+        auto xFor = [&] (double f) { return a.getX() + a.getWidth() * (float) (std::log (f / lo) / std::log (hi / lo)); };
+        auto yFor = [&] (double v) { return a.getCentreY() - a.getHeight() * 0.5f * (float) juce::jlimit (-1.2, 1.2, v / range); };
+
+        g.setColour (colours::line);
+        g.fillRect (a.getX(), yFor (0.0), a.getWidth(), 1.0f);
+        g.setFont (juce::FontOptions (10.0f));
+
+        for (auto v : { -range, range })
+        {
+            g.setColour (colours::muted);
+            g.drawText ((v > 0 ? "+" : "") + juce::String ((int) v), juce::Rectangle<float> (a.getRight() + 3.0f, yFor (v) - 7.0f, 26.0f, 14.0f),
+                        juce::Justification::centredLeft);
+        }
+
+        // spectrum: live while previewing (after the EQ), otherwise the selection's average
+        auto spectrum = [&] (const std::vector<float>& level, double binHz, bool withEq)
+        {
+            juce::Path p;
+            p.startNewSubPath (a.getX(), a.getBottom());
+            const auto eq = params();
+
+            for (size_t k = 1; k < level.size(); ++k)
+            {
+                const auto f = (double) k * binHz;
+
+                if (f < lo || f > hi)
+                    continue;
+
+                const auto l = level[k] + (withEq ? fx::eqResponseDb (eq, f, shared.rate()) : 0.0);
+                p.lineTo (xFor (f), a.getY() + a.getHeight() * (float) juce::jlimit (0.0, 1.0, -(l + 6.0) / 90.0));
+            }
+
+            p.lineTo (a.getRight(), a.getBottom());
+            p.closeSubPath();
+            return p;
+        };
+
+        if (shared.previewing)
+        {
+            g.setColour (colours::bass.withAlpha (0.18f));
+            g.fillPath (spectrum (shared.post.db, shared.rate() / SpectrumMeter::size, false));
+        }
+        else if (! staticPre.empty())
+        {
+            g.setColour (colours::muted.withAlpha (0.18f));
+            g.fillPath (spectrum (staticPre, shared.rate() / ((staticPre.size() - 1) * 2.0), true));
+        }
+
+        // the curve the sliders make (what is really applied), and the sliders as dots
+        const auto eq = params();
+        juce::Path curve;
+
+        for (int x = 0; x <= (int) a.getWidth(); x += 2)
+        {
+            const auto f = lo * std::pow (hi / lo, x / (double) a.getWidth());
+            const auto y = yFor (fx::eqResponseDb (eq, f, shared.rate()) - output.value());
+
+            if (x == 0) curve.startNewSubPath (a.getX(), y);
+            else        curve.lineTo (a.getX() + (float) x, y);
+        }
+
+        g.setColour (colours::bass);
+        g.strokePath (curve, juce::PathStrokeType (2.0f));
+
+        for (size_t i = 0; i < hz.size(); ++i)
+            if (bandAvailable (i) && hz[i] >= lo && hz[i] <= hi)
+            {
+                g.setColour (colours::ink);
+                g.fillEllipse (xFor (hz[i]) - 3.0f, yFor (db[i]) - 3.0f, 6.0f, 6.0f);
+            }
+    }
+
+    // Ready-made curves (any number of sliders), and the user's own.
+    void showPresets()
+    {
+        const auto bell = [] (double f, double centre, double octaves) { return std::exp (-0.5 * std::pow (std::log2 (f / centre) / octaves, 2.0)); };
+        struct Preset { const char* name; std::function<double (double)> curve; };
+        const std::vector<Preset> builtIn {
+            { "Flat", [] (double) { return 0.0; } },
+            { "Bass boost", [] (double f) { return 6.0 / (1.0 + std::pow (f / 120.0, 2.0)); } },
+            { "Remove rumble (low cut)", [] (double f) { return -12.0 / (1.0 + std::pow (f / 60.0, 4.0)); } },
+            { "Voice: clearer", [bell] (double f) { return -3.0 * bell (f, 250.0, 0.6) + 4.0 * bell (f, 3000.0, 0.8) - 6.0 / (1.0 + std::pow (f / 70.0, 4.0)); } },
+            { "Telephone", [] (double f) { return f < 300.0 ? -24.0 * std::min (1.0, std::log2 (300.0 / f)) : f > 3400.0 ? -24.0 * std::min (1.0, std::log2 (f / 3400.0)) : 0.0; } },
+            { "Smile (loudness)", [bell] (double f) { return 6.0 * bell (f, 50.0, 1.2) + 5.0 * bell (f, 12000.0, 1.2) - 2.0 * bell (f, 1000.0, 1.0); } },
+            { "Treble: more air", [] (double f) { return 5.0 / (1.0 + std::pow (9000.0 / f, 2.0)); } },
+            { "Warm", [bell] (double f) { return 3.0 * bell (f, 150.0, 1.0) - 2.5 * bell (f, 4000.0, 1.0); } },
+            { "Less harsh (2-5 kHz down)", [bell] (double f) { return -5.0 * bell (f, 3200.0, 0.7); } },
+        };
+
+        juce::PopupMenu menu;
+        menu.addSectionHeader ("Ready-made");
+
+        for (const auto& p : builtIn)
+            menu.addItem (p.name, [this, curve = p.curve]
+            {
+                for (size_t i = 0; i < hz.size(); ++i)
+                    db[i] = juce::jlimit (-range, range, std::round (curve (hz[i]) * 10.0) / 10.0);
+
+                changed();
+            });
+
+        const auto mine = settings::get ("graphicEq.presets");
+        juce::PopupMenu load, remove;
+
+        if (const auto* list = mine.getArray())
+            for (int i = 0; i < list->size(); ++i)
+            {
+                const auto preset = (*list)[i];
+                load.addItem (preset["name"].toString(), [this, preset] { loadUserPreset (preset); });
+                remove.addItem (preset["name"].toString(), [i] { removeUserPreset (i); });
+            }
+
+        menu.addSeparator();
+        menu.addSectionHeader ("Mine");
+
+        if (load.getNumItems() > 0)
+        {
+            menu.addSubMenu ("Load", load);
+            menu.addSubMenu ("Delete", remove);
+        }
+
+        menu.addItem ("Save these sliders as...", [this] { saveUserPreset(); });
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetsButton).withParentComponent (getTopLevelComponent()));
+    }
+
+    void loadUserPreset (const juce::var& preset)
+    {
+        const auto* fs = preset["hz"].getArray();
+        const auto* vs = preset["db"].getArray();
+
+        if (fs == nullptr || vs == nullptr || fs->size() != vs->size() || fs->size() < 2)
+            return;
+
+        std::vector<double> f, v;
+
+        for (int i = 0; i < fs->size(); ++i)
+        {
+            f.push_back ((*fs)[i]);
+            v.push_back ((*vs)[i]);
+        }
+
+        // same sliders: exactly; otherwise its shape
+        for (size_t i = 0; i < hz.size(); ++i)
+            db[i] = juce::jlimit (-range, range, curveAt (f, v, hz[i]));
+
+        changed();
+    }
+
+    static void removeUserPreset (int index)
+    {
+        const auto mine = settings::get ("graphicEq.presets");
+        juce::Array<juce::var> list;
+
+        if (const auto* old = mine.getArray())
+            list = *old;
+
+        list.remove (index);
+        settings::set ("graphicEq.presets", list);
+    }
+
+    void saveUserPreset()
+    {
+        auto* box = new juce::AlertWindow ("Save the sliders", "A name for this curve:", juce::MessageBoxIconType::NoIcon);
+        box->addTextEditor ("name", "My curve");
+        box->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        box->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        const juce::Component::SafePointer<GraphicEqEditor> safeThis (this);
+
+        box->enterModalState (true, juce::ModalCallbackFunction::create ([safeThis, box] (int result)
+        {
+            auto* self = safeThis.getComponent();
+            const auto name = box->getTextEditorContents ("name").trim();
+
+            if (result != 1 || self == nullptr || name.isEmpty())
+                return;
+
+            juce::Array<juce::var> fs, vs;
+
+            for (size_t i = 0; i < self->hz.size(); ++i)
+            {
+                fs.add (self->hz[i]);
+                vs.add (self->db[i]);
+            }
+
+            juce::DynamicObject::Ptr preset = new juce::DynamicObject();
+            preset->setProperty ("name", name);
+            preset->setProperty ("hz", fs);
+            preset->setProperty ("db", vs);
+
+            const auto mine = settings::get ("graphicEq.presets");
+            juce::Array<juce::var> list;
+
+            if (const auto* old = mine.getArray())
+                list = *old;
+
+            list.add (juce::var (preset.get()));
+            settings::set ("graphicEq.presets", list);
+        }), true);
+    }
+
+    // The selection's average spectrum (dB per bin), for the curve view.
+    static std::vector<float> averageSpectrum (const juce::AudioBuffer<float>& audio)
+    {
+        constexpr int order = 12, size = 1 << order;
+
+        if (audio.getNumSamples() < size)
+            return {};
+
+        juce::dsp::FFT fft (order);
+        std::vector<float> work (2 * size);
+        std::vector<double> sum (size / 2 + 1, 0.0);
+        const auto frames = std::min (500, (audio.getNumSamples() - size) / (size / 2) + 1);
+        const auto hop = std::max (1, (audio.getNumSamples() - size) / std::max (1, frames - 1));
+
+        for (int f = 0; f < frames; ++f)
+        {
+            std::fill (work.begin(), work.end(), 0.0f);
+
+            for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+                for (int i = 0; i < size; ++i)
+                    work[(size_t) i] += audio.getSample (ch, f * hop + i) / (float) audio.getNumChannels()
+                                      * (0.5f - 0.5f * std::cos (juce::MathConstants<float>::twoPi * (float) i / (float) (size - 1)));
+
+            fft.performFrequencyOnlyForwardTransform (work.data(), true);
+
+            for (size_t k = 0; k < sum.size(); ++k)
+                sum[k] += (double) work[k] * work[k];
+        }
+
+        std::vector<float> level (sum.size());
+
+        for (size_t k = 0; k < sum.size(); ++k)
+            level[k] = (float) juce::Decibels::gainToDecibels (std::sqrt (sum[k] / frames) * 4.0 / size, -120.0);
+
+        return level;
+    }
+
+    std::vector<double> hz, db;
+    double range = 12.0;
+    int lastBand = -1;
+    double lastValue = 0.0;
+    std::vector<float> staticPre;
+    juce::Rectangle<int> curveArea, faderArea;
+    juce::OwnedArray<juce::TextButton> countButtons, rangeButtons;
+    juce::TextButton flatButton { "Flat" }, presetsButton { "Presets" };
+    juce::Label countLabel, rangeLabel, hint;
+    LabelledSlider output { "Output", -24.0, 24.0, 0.1, " dB", 0.0, [this] { changed(); } };
 };
 
 //==============================================================================
@@ -2896,6 +3488,7 @@ public:
         switch (kind)
         {
             case EffectKind::eq:          shared.processor = fx::makeEq();         editor = std::make_unique<EqEditor> (shared); name = "Parametric EQ"; break;
+            case EffectKind::graphicEq:   shared.processor = fx::makeEq();         editor = std::make_unique<GraphicEqEditor> (shared); break;
             case EffectKind::compressor:  shared.processor = fx::makeCompressor(); editor = std::make_unique<CompressorEditor> (shared); name = "Compressor"; break;
             case EffectKind::delay:       shared.processor = fx::makeDelay();      editor = std::make_unique<DelayEditor> (shared); name = "Delay / Echo"; break;
             case EffectKind::reverb:      shared.processor = fx::makeReverb();     editor = std::make_unique<ReverbEditor> (shared); name = "Reverb"; break;
@@ -2968,7 +3561,7 @@ public:
                 addAndMakeVisible (c);
         }
 
-        const auto big = kind == EffectKind::eq;
+        const auto big = kind == EffectKind::eq || kind == EffectKind::graphicEq;
         const auto height = big ? 700
                           : kind == EffectKind::compressor || kind == EffectKind::gate ? 480
                           : kind == EffectKind::limiter ? 520
