@@ -59,7 +59,7 @@ The apps are not signed yet, so each system asks you to confirm the first time.
 
 ### macOS (11 Big Sur or newer, Apple Silicon and Intel)
 
-1. Download `AdormisAudio-macOS.zip` and double-click it to unzip (Safari may do this for you).
+1. Download `AdormisAudio-<version>-macOS.zip` (for example `AdormisAudio-0.1.9-macOS.zip`) and double-click it to unzip (Safari may do this for you).
 2. Drag `Adormis Audio.app` into **Applications**.
 3. Open it. macOS says it cannot check the app for malware:
    - **macOS 15 Sequoia and newer:** click **Done**, open **System Settings → Privacy & Security**,
@@ -72,7 +72,7 @@ You only do this once. Alternatively, in Terminal:
 
 ### Windows (10 / 11, 64-bit)
 
-1. Download `AdormisAudio-Windows.zip`, right-click it → **Extract All…** → **Extract**.
+1. Download `AdormisAudio-<version>-Windows.zip`, right-click it → **Extract All…** → **Extract**.
 2. Double-click `Adormis Audio.exe`.
 3. If **Windows protected your PC** appears, click **More info** → **Run anyway**.
 4. Optional: right-click `Adormis Audio.exe` → **Show more options** → **Send to → Desktop (create shortcut)**.
@@ -83,14 +83,14 @@ Adormis Audio plays through Windows Audio. To use an audio interface's ASIO driv
 ### Linux (x86_64 or ARM64)
 
 1. Check your processor: `uname -m` prints `x86_64` or `aarch64`, then download
-   `AdormisAudio-Linux-x86_64.tar.gz` or `AdormisAudio-Linux-arm64.tar.gz`.
+   `AdormisAudio-<version>-Linux-x86_64.tar.gz` or `AdormisAudio-<version>-Linux-arm64.tar.gz`.
 2. Install libsamplerate (the only extra library it needs):
    - Debian / Ubuntu / Mint: `sudo apt install libsamplerate0`
    - Fedora: `sudo dnf install libsamplerate`
    - Arch: `sudo pacman -S libsamplerate`
 3. Unpack and run:
    ```bash
-   tar -xzf AdormisAudio-Linux-*.tar.gz
+   tar -xzf AdormisAudio-*-Linux-*.tar.gz
    ./"Adormis Audio"
    ```
 4. Optional, to start it by name from anywhere: `mkdir -p ~/.local/bin && mv "Adormis Audio" ~/.local/bin/adormis-audio`

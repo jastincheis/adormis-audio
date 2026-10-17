@@ -15,6 +15,10 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Version
+        id: v
+        shell: bash
+        run: echo "version=$(sed -n 's/^project(AdormisAudio VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" >> "$GITHUB_OUTPUT"
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
       - name: Build
@@ -22,11 +26,11 @@ jobs:
       - name: Package
         run: |
           cd build/AdormisAudio_artefacts/Release
-          ditto -c -k --keepParent "Adormis Audio.app" "$GITHUB_WORKSPACE/AdormisAudio-macOS.zip"
+          ditto -c -k --keepParent "Adormis Audio.app" "$GITHUB_WORKSPACE/AdormisAudio-${{ steps.v.outputs.version }}-macOS.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: AdormisAudio-macOS
-          path: AdormisAudio-macOS.zip
+          path: AdormisAudio-${{ steps.v.outputs.version }}-macOS.zip
 
   linux:
     name: Linux (${{ matrix.arch }})
@@ -38,6 +42,10 @@ jobs:
           - { arch: arm64,   runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
+      - name: Version
+        id: v
+        shell: bash
+        run: echo "version=$(sed -n 's/^project(AdormisAudio VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" >> "$GITHUB_OUTPUT"
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -49,23 +57,27 @@ jobs:
       - name: Build
         run: cmake --build build -j 4
       - name: Package
-        run: tar -C build/AdormisAudio_artefacts/Release -czf AdormisAudio-Linux-${{ matrix.arch }}.tar.gz "Adormis Audio"
+        run: tar -C build/AdormisAudio_artefacts/Release -czf AdormisAudio-${{ steps.v.outputs.version }}-Linux-${{ matrix.arch }}.tar.gz "Adormis Audio"
       - uses: actions/upload-artifact@v4
         with:
           name: AdormisAudio-Linux-${{ matrix.arch }}
-          path: AdormisAudio-Linux-${{ matrix.arch }}.tar.gz
+          path: AdormisAudio-${{ steps.v.outputs.version }}-Linux-${{ matrix.arch }}.tar.gz
 
   windows:
     name: Windows (x64)
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
+      - name: Version
+        id: v
+        shell: bash
+        run: echo "version=$(sed -n 's/^project(AdormisAudio VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" >> "$GITHUB_OUTPUT"
       - name: Configure
         run: cmake -S . -B build
       - name: Build
         run: cmake --build build --config Release -j 4
       - name: Package
-        run: Compress-Archive -Path 'build/AdormisAudio_artefacts/Release/Adormis Audio.exe' -DestinationPath AdormisAudio-Windows.zip
+        run: Compress-Archive -Path 'build/AdormisAudio_artefacts/Release/Adormis Audio.exe' -DestinationPath AdormisAudio-${{ steps.v.outputs.version }}-Windows.zip
       - name: Self-test (which menu commands are usable)
         continue-on-error: true
         run: |
@@ -81,4 +93,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: AdormisAudio-Windows
-          path: AdormisAudio-Windows.zip
+          path: AdormisAudio-${{ steps.v.outputs.version }}-Windows.zip

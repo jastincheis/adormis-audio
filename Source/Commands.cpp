@@ -153,6 +153,7 @@ std::vector<CommandDef> makeCommands()
 
         // Options / transport
         { optPlay,           "Play/Stop",                     "Transport", { key (KeyPress::spaceKey), key (KeyPress::F12Key) } },
+        { optPlayFromCursor, "Play from Cursor",              "Transport", {} },
         { optPlayAll,        "Play All",                      "Transport", { key (KeyPress::spaceKey, shift), key (KeyPress::F12Key, shift) } },
         { optPlayPause,      "Play/Pause",                    "Transport", { key (KeyPress::returnKey), key (KeyPress::F12Key, ctrl) } },
         { optStop,           "Stop",                          "Transport", { key (KeyPress::escapeKey) } },
@@ -165,6 +166,10 @@ std::vector<CommandDef> makeCommands()
         { optGoEnd,          "Go to End",                     "Transport", { key (KeyPress::endKey, ctrl) } },
         { optGoLeftEdge,     "Go to Left Edge",               "Transport", { key ('w') } },
         { optGoRightEdge,    "Go to Right Edge",              "Transport", { key ('e') } },
+        { optCursorLeft,     "Move Cursor Left",              "Transport", { key (KeyPress::leftKey) } },
+        { optCursorRight,    "Move Cursor Right",             "Transport", { key (KeyPress::rightKey) } },
+        { optExtendLeft,     "Extend Selection Left",         "Transport", { key (KeyPress::leftKey, shift) } },
+        { optExtendRight,    "Extend Selection Right",        "Transport", { key (KeyPress::rightKey, shift) } },
         { optPreferences,    "Preferences...",                "Options", {} },
         { optAudioDevice,    "Audio Device...",               "Options", {} },
         { optKeyboard,       "Customize Keyboard...",         "Options", {} },
@@ -249,10 +254,11 @@ const std::vector<TopMenu>& menuBar()
 
         { "FX Favorites", { C (favPluginManager), C (favPluginChain), sep(), C (favRescan) } },
 
-        { "Options", { sub ("Transport", { C (optPlay), C (optPlayAll), C (optPlayPause), C (optStop), sep(),
+        { "Options", { sub ("Transport", { C (optPlay), C (optPlayFromCursor), C (optPlayAll), C (optPlayPause), C (optStop), sep(),
                                            C (optRecord), C (optRecordComputer), C (optArm), sep(),
                                            C (optLoop), C (optSwitchPlayMode), sep(),
-                                           C (optGoStart), C (optGoEnd), C (optGoLeftEdge), C (optGoRightEdge) }),
+                                           C (optGoStart), C (optGoEnd), C (optGoLeftEdge), C (optGoRightEdge), sep(),
+                                           C (optCursorLeft), C (optCursorRight), C (optExtendLeft), C (optExtendRight) }),
                        sep(), C (optAudioDevice), C (optKeyboard), C (optPreferences) } },
 
         { "Window", { C (winCascade), C (winTile), C (winMaximizeAll), sep(), C (winNext), C (winPrev) } },
@@ -318,6 +324,7 @@ const std::vector<CommandDef>& allCommands()
         winCascade, winTile, winNext, winPrev,
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,
         optPlay, optPlayAll, optPlayPause, optStop, optGoStart, optGoEnd, optGoLeftEdge, optGoRightEdge, optAudioDevice,
+        optCursorLeft, optCursorRight, optExtendLeft, optExtendRight, optPlayFromCursor,
         helpShortcuts, helpAbout
     };
 

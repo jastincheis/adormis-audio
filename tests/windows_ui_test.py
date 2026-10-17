@@ -4,7 +4,7 @@ after every step to shots/. Every step is logged; a failing step does not stop
 the others. Usage: python windows_ui_test.py "path\\to\\Adormis Audio.exe"
 """
 
-import math, struct, subprocess, sys, time, traceback, wave
+import math, re, struct, subprocess, sys, time, traceback, wave
 from pathlib import Path
 
 import pyautogui
@@ -57,15 +57,15 @@ def make_wav(path, seconds=6, rate=44100):
 
 def main_window():
     """The main window: of Adormis Audio's top-level windows whose title ends in
-    "Adormis Audio", the largest (popups such as an open list can match too)."""
+    "Adormis Audio" (and the version), the largest (popups such as an open list can match too)."""
     best = None
     for w in Desktop(backend="uia").windows(process=app.pid):
-        if w.window_text().endswith("Adormis Audio"):
+        if re.search(r"Adormis Audio( [0-9.]+)?$", w.window_text()):
             r = w.rectangle()
             if best is None or r.width() * r.height() > best[0]:
                 best = (r.width() * r.height(), w.handle)
     if best is None:
-        return Desktop(backend="uia").window(title_re=r".*Adormis Audio$")
+        return Desktop(backend="uia").window(title_re=r".*Adormis Audio( [0-9.]+)?$")
     return Desktop(backend="uia").window(handle=best[1])
 
 def menu(*path):
@@ -177,7 +177,8 @@ def _():
 close_top_window()
 
 # Adormis Audio's own start-up log (audio device, timings, any crash).
-import os, shutil
+import os
+import shutil
 startup_log = Path(os.environ.get("APPDATA", "")) / "Adormis Audio" / "adormis-audio.log"
 if startup_log.exists():
     shutil.copy(startup_log, "adormis-audio.log")

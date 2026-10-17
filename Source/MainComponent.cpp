@@ -512,6 +512,7 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
 
     auto* raw = doc.get();
     raw->getView().onScrub = [this, raw] (WaveformView::Scrub phase, juce::int64 sample) { scrub (raw, phase, sample); };
+    raw->getView().onCursorClicked = [this, raw] (juce::int64 sample) { jumpPlayback (raw, sample); };
     raw->onRegionAction = [this, raw] (int index, bool menu)
     {
         if (menu) regionMenu (raw, index);
@@ -1032,7 +1033,9 @@ void MainComponent::showForm (const juce::String& title, const juce::String& inf
 
     if (remembered.contains (title))
     {
-        if (const auto* saved = wf::settings::get (key).getArray(); saved != nullptr && saved->size() == (int) fields.size())
+        const auto stored = wf::settings::get (key);   // alive while `saved` points into it
+
+        if (const auto* saved = stored.getArray(); saved != nullptr && saved->size() == (int) fields.size())
         {
             for (size_t i = 0; i < fields.size(); ++i)
             {
@@ -1697,7 +1700,10 @@ void MainComponent::addRecentFile (const juce::File& file)
 {
     juce::StringArray paths;
 
-    if (const auto* list = wf::settings::get ("recentFiles").getArray())
+    // keep the parsed list alive while it is read (get() returns a fresh copy)
+    const auto recent = wf::settings::get ("recentFiles");
+
+    if (const auto* list = recent.getArray())
         for (const auto& v : *list)
             paths.add (v.toString());
 
@@ -1720,7 +1726,10 @@ juce::PopupMenu MainComponent::recentFilesMenu()
     juce::PopupMenu menu;
     const juce::Component::SafePointer<MainComponent> safeThis (this);
 
-    if (const auto* list = wf::settings::get ("recentFiles").getArray())
+    // keep the parsed list alive while it is read (get() returns a fresh copy)
+    const auto recent = wf::settings::get ("recentFiles");
+
+    if (const auto* list = recent.getArray())
     {
         for (const auto& v : *list)
         {
@@ -3099,6 +3108,34 @@ void MainComponent::scrub (DataWindow* doc, WaveformView::Scrub phase, juce::int
     commandManager.commandStatusChanged();
 }
 
+// A click while the file plays: playback goes on from there (to the end).
+void MainComponent::jumpPlayback (DataWindow* doc, juce::int64 sample)
+{
+    if (! isPlaying() || scrubTo != nullptr || mixPreview != nullptr || playingDocument.getComponent() != doc)
+        return;
+
+    auto* solo = dynamic_cast<SoloPlaybackSource*> (memorySource.get());
+
+    if (solo == nullptr)
+        return;
+
+    // A one-channel selection was playing: start over with both channels.
+    if (playSoloChannel >= 0)
+    {
+        startPlayback ({ sample, (juce::int64) doc->getBuffer().getNumSamples() });
+        doc->getView().setCursor (sample);
+        playStartCursor = sample;
+        return;
+    }
+
+    playRange = { sample, (juce::int64) doc->getBuffer().getNumSamples() };
+    playSoloChannel = -1;
+    playStartCursor = sample;
+    solo->setLoopRange (loopPlayback ? playRange : juce::Range<juce::int64>());
+    transport.setPosition ((double) sample / doc->getSampleRate());
+    doc->getView().setPlayhead (sample);
+}
+
 void MainComponent::startPlayback (juce::Range<juce::int64> range, int soloChannel)
 {
     auto* doc = activeDocument();
@@ -3198,7 +3235,9 @@ void MainComponent::updateTitle()
     if (auto* window = findParentComponentOfClass<juce::DocumentWindow>())
     {
         auto* doc = activeDocument();
-        window->setName (doc != nullptr ? doc->getName() + " - Adormis Audio" : juce::String ("Adormis Audio"));
+        // the version in the title, so it's clear which build is running
+        const auto app = juce::String ("Adormis Audio ") + JUCE_APPLICATION_VERSION_STRING;
+        window->setName (doc != nullptr ? doc->getName() + " - " + app : app);
     }
 }
 
@@ -3566,6 +3605,12 @@ bool MainComponent::perform (const InvocationInfo& info)
                                view.getSelectedChannel());
             return true;
 
+        // The toolbar's Play: while playing it starts again from the cursor.
+        case wf::optPlayFromCursor:
+            startPlayback (view.getSelection().isEmpty() ? juce::Range<juce::int64> (view.getCursor(), total) : view.getSelection(),
+                           view.getSelectedChannel());
+            return true;
+
         case wf::optPlayAll:
             if (isPlaying())
                 stopPlayback (true);
@@ -3599,6 +3644,31 @@ bool MainComponent::perform (const InvocationInfo& info)
             view.ensureVisible (to);
             return true;
         }
+
+        // Arrows: a step of a few screen pixels, so it follows the zoom.
+        case wf::optCursorLeft: case wf::optCursorRight:
+        {
+            const auto direction = info.commandID == wf::optCursorLeft ? -1 : 1;
+
+            // While it plays: playback jumps back / ahead (held down, it winds
+            // through the audio like a CD player), then plays on at normal speed.
+            // A jump is the arrow step, but at least a fifth of a second.
+            if (isPlaying() && playingDocument.getComponent() == doc && scrubTo == nullptr && mixPreview == nullptr)
+            {
+                const auto step = std::max (view.arrowStep(), (juce::int64) (0.2 * doc->getSampleRate()));
+                const auto to = juce::jlimit ((juce::int64) 0, total - 1, playPosition() + direction * step);
+                view.setCursor (to);
+                jumpPlayback (doc, to);
+                view.ensureVisible (to);
+                return true;
+            }
+
+            view.nudgeCursor (direction, false);
+            return true;
+        }
+
+        case wf::optExtendLeft:     view.nudgeCursor (-1, true);  return true;
+        case wf::optExtendRight:    view.nudgeCursor (1, true);   return true;
         default: break;
     }
 

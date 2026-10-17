@@ -170,6 +170,7 @@ private:
     void stopPlayback (bool returnToStart);
     void releasePlaybackSource();   // before a document's buffer is changed
     void scrub (DataWindow* doc, WaveformView::Scrub phase, juce::int64 sample);
+    void jumpPlayback (DataWindow* doc, juce::int64 sample);
     void setLooping (bool shouldLoop);
     void toggleLoop();   // Q: loop on (a selection starts looping) / off
     void followSelectionLoop (DataWindow* doc);

@@ -14,7 +14,7 @@ public:
         wf::startup::beginLog();
         wf::startup::log ("start: " + commandLine);
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);
-        mainWindow = std::make_unique<MainWindow> (getApplicationName());
+        mainWindow = std::make_unique<MainWindow> (getApplicationName() + " " + getApplicationVersion());
         wf::startup::log ("window shown");
 
         auto args = getCommandLineParameterArray();

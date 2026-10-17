@@ -422,7 +422,7 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
 
     addButton (wf::fileNew,        fileTint,      iconNew);
     addGap();
-    addButton (wf::optPlay,        transportTint, iconPlay);
+    addButton (wf::optPlayFromCursor, transportTint, iconPlay);   // while playing: again from the cursor
     addButton (wf::optStop,        transportTint, iconStop);
     addButton (wf::optRecord,      transportTint, iconRecord);
     addButton (wf::optRecordComputer, transportTint, iconRecordComputer);

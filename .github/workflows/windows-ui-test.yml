@@ -29,12 +29,12 @@ jobs:
           if ("${{ inputs.run_id }}") {
             gh run download ${{ inputs.run_id }} -R ${{ github.repository }} -n AdormisAudio-Windows -D dl
           } elseif ("${{ inputs.release }}") {
-            gh release download "${{ inputs.release }}" -R ${{ github.repository }} -p AdormisAudio-Windows.zip -D dl
+            gh release download "${{ inputs.release }}" -R ${{ github.repository }} -p 'AdormisAudio-*Windows.zip' -D dl
           } else {
             $tag = gh release list -R ${{ github.repository }} -L 1 --json tagName -q '.[0].tagName'
-            gh release download $tag -R ${{ github.repository }} -p AdormisAudio-Windows.zip -D dl
+            gh release download $tag -R ${{ github.repository }} -p 'AdormisAudio-*Windows.zip' -D dl
           }
-          Expand-Archive dl/AdormisAudio-Windows.zip -DestinationPath app
+          Expand-Archive (Get-ChildItem dl/AdormisAudio-*Windows.zip | Select-Object -First 1).FullName -DestinationPath app
           Get-ChildItem app
       - name: Install test tools
         run: python -m pip install --quiet pywinauto pyautogui pillow
