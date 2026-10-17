@@ -21,6 +21,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 - Set Selection, Go To, Mark In / Out, W / E to the selection's left / right edge, Repeat Last Process (Ctrl+Y), Level Zoom, Save All
 - Auto Snap to Zero Crossings (Ctrl+B): selection edges land where the wave crosses zero, so edits don't click
 - ; halves the selection, ' doubles it
+- Undo/Redo History (Alt+8): every edit by name; click one to go back (or forward) to it
 - Record (Ctrl+R) with input meter, mono / stereo and bit depth, or **record what the computer plays** (Ctrl+Shift+R: YouTube, music, any program); File > New from a tempo template with beat markers
 - Right-click the workspace for Create New (an empty window to paste or drag audio into) and Open Recent (also in the File menu); right-click a file's waveform for play, the edits, New, Open and Open Recent
 
