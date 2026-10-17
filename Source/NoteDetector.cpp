@@ -91,8 +91,12 @@ std::vector<float> prepare (const juce::AudioBuffer<float>& audio, juce::Range<i
     return out;
 }
 
+// Fractional MIDI note against a reference A (440 Hz, or the recording's own tuning).
+double midiOf (double hz, double refHz)   { return 69.0 + 12.0 * std::log2 (hz / refHz); }
+double hzOf (double midi, double refHz)   { return refHz * std::pow (2.0, (midi - 69.0) / 12.0); }
+
 // YIN, a frame every 20 ms (or longer for long files: at most ~6000 frames).
-std::optional<NoteTrack> track (const std::vector<float>& x, double sr, double fmin, double fmax,
+std::optional<NoteTrack> track (const std::vector<float>& x, double sr, double fmin, double fmax, double refHz,
                                 const std::function<bool (float)>& progress)
 {
     const auto window = (int) std::lround (0.04 * sr);
@@ -185,7 +189,7 @@ std::optional<NoteTrack> track (const std::vector<float>& x, double sr, double f
                 frame.clarity = (float) (1.0 - b);
 
                 if (1.0 - b > 0.75 && hz >= fmin && hz <= fmax)
-                    frame.midi = 69.0 + 12.0 * std::log2 (hz / 440.0);
+                    frame.midi = midiOf (hz, refHz);
             }
         }
 
@@ -197,7 +201,7 @@ std::optional<NoteTrack> track (const std::vector<float>& x, double sr, double f
 
 // Frames with (nearly) the same pitch become notes of at least 70 ms; each
 // note's pitch is the median of its clearest frames.
-std::vector<DetectedNote> segment (const std::vector<PitchFrame>& frames, double hop)
+std::vector<DetectedNote> segment (const std::vector<PitchFrame>& frames, double hop, double refHz)
 {
     struct Current { int note; std::vector<double> midis; std::vector<float> clarity; size_t first, last; };
     std::vector<DetectedNote> notes;
@@ -233,7 +237,7 @@ std::vector<DetectedNote> segment (const std::vector<PitchFrame>& frames, double
             d.end = frames[current->last].time + hop / 2.0;
             d.note = note;
             d.cents = (int) std::lround ((median - note) * 100.0);
-            d.hz = 440.0 * std::pow (2.0, (median - 69.0) / 12.0);
+            d.hz = hzOf (median, refHz);
             notes.push_back (d);
         }
 
@@ -273,7 +277,7 @@ std::vector<DetectedNote> segment (const std::vector<PitchFrame>& frames, double
 // Refines each note from a long, zero-padded spectrum of its steady part: the
 // fundamental's peak is measured on its own, so a kick or chord at the same
 // time no longer drags the cents value.
-void refine (std::vector<DetectedNote>& notes, const std::vector<float>& sig, double sr)
+void refine (std::vector<DetectedNote>& notes, const std::vector<float>& sig, double sr, double refHz)
 {
     const auto order = sr >= 16000.0 ? 14 : 13;
     const auto size = 1 << order;
@@ -315,7 +319,7 @@ void refine (std::vector<DetectedNote>& notes, const std::vector<float>& sig, do
             return std::pair<int, float> { k, best };
         };
 
-        auto f0 = 440.0 * std::pow (2.0, (note.note + note.cents / 100.0 - 69.0) / 12.0);
+        auto f0 = hzOf (note.note + note.cents / 100.0, refHz);
         auto [k, value] = peakNear (f0);
 
         // The tracker sometimes reports the octave below; if the octave above clearly dominates, use it.
@@ -342,7 +346,7 @@ void refine (std::vector<DetectedNote>& notes, const std::vector<float>& sig, do
         const auto den = A - 2.0 * B + C;
         const auto d = std::abs (den) > 1.0e-12 ? 0.5 * (A - C) / den : 0.0;
         const auto hz = (k + d) * sr / size;
-        const auto m = 69.0 + 12.0 * std::log2 (hz / 440.0);
+        const auto m = midiOf (hz, refHz);
         const auto rounded = (int) std::lround (m);
 
         if (std::abs ((m - (note.note + note.cents / 100.0)) * 100.0) <= 60.0)
@@ -430,7 +434,7 @@ std::pair<int, int> DetectedNote::corrected() const
 }
 
 std::optional<NoteTrack> detectNotes (const juce::AudioBuffer<float>& audio, juce::Range<int> range, double rate,
-                                      NoteSource source, const std::function<bool (float)>& progress)
+                                      NoteSource source, const std::function<bool (float)>& progress, int referenceCents)
 {
     range = range.getIntersectionWith ({ 0, audio.getNumSamples() });
 
@@ -439,13 +443,14 @@ std::optional<NoteTrack> detectNotes (const juce::AudioBuffer<float>& audio, juc
 
     const auto cfg = configFor (source);
     const auto sig = prepare (audio, range, rate, cfg);
-    auto result = track (sig, cfg.rate, cfg.minHz, cfg.maxHz, progress);
+    const auto refHz = 440.0 * std::pow (2.0, referenceCents / 1200.0);
+    auto result = track (sig, cfg.rate, cfg.minHz, cfg.maxHz, refHz, progress);
 
     if (! result.has_value())
         return {};
 
-    result->notes = segment (result->frames, result->hopSeconds);
-    refine (result->notes, sig, cfg.rate);
+    result->notes = segment (result->frames, result->hopSeconds, refHz);
+    refine (result->notes, sig, cfg.rate, refHz);
     return result;
 }
 

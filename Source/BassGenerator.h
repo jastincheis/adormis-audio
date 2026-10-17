@@ -35,6 +35,7 @@ struct Settings
     int keyTonic = 5;
     bool minor = true;
     double bpm = 120.0;
+    int tuningCents = 0;        // the sample's tuning against A = 440 Hz; the bass follows it
     double downbeat = 0.0;      // seconds into the audio where bar 1 starts
     int startBar = 0;           // the bar of the audio the line starts on
     std::array<juce::uint32, 3> seeds { 11, 22, 33 };
@@ -58,13 +59,28 @@ int totalBars (double durationSeconds, double downbeat, double bpm);
 // chroma when following the chords.
 std::vector<int> computeRoots (const Settings&, const KeyAnalysis* analysis, double durationSeconds);
 
-std::array<std::vector<Note>, 3> generate (const Settings&, const std::vector<int>& roots);
+// Major (4) or minor (3) third of each bar's chord, from the audio's chroma
+// (the scale's own third when the audio doesn't tell).
+std::vector<int> computeThirds (const Settings&, const KeyAnalysis* analysis, double durationSeconds, const std::vector<int>& roots);
 
-// Standard MIDI file (type 0, 480 ticks per quarter) with tempo and 4/4.
-juce::MemoryBlock midiFile (const std::vector<Note>& notes, double bpm, const juce::String& trackName, bool glide);
+// The third the key's scale puts over `root` (4 when the root is outside the scale).
+int scaleThird (int root, int keyTonic, bool minor);
 
-// The line played by the chosen sound, exactly `bars` long, stereo, not normalised.
-juce::AudioBuffer<float> renderBass (const std::vector<Note>& notes, Tone tone, double bpm, int bars, double sampleRate);
+// `thirds` (optional, per bar) make the line use the chord's real third, e.g.
+// the major V of a minor key.
+std::array<std::vector<Note>, 3> generate (const Settings&, const std::vector<int>& roots, const std::vector<int>& thirds = {});
+
+// Standard MIDI file (type 0, 480 ticks per quarter) with tempo and 4/4. A
+// tuning other than A = 440 Hz is written as a pitch bend at the start (bend
+// range set to +-2 semitones), so the synth plays in tune with the sample.
+juce::MemoryBlock midiFile (const std::vector<Note>& notes, double bpm, const juce::String& trackName, bool glide,
+                            int tuningCents = 0);
+
+// The line played by the chosen sound, exactly `bars` long, stereo, not
+// normalised, tuned `tuningCents` away from A = 440 Hz. It is a loop: the tail
+// of the last notes continues at the start, so it repeats without a click.
+juce::AudioBuffer<float> renderBass (const std::vector<Note>& notes, Tone tone, double bpm, int bars, double sampleRate,
+                                     int tuningCents = 0);
 
 // The audio from the chosen start bar, `bars` long (wrapping round the loop),
 // with the same channel count as `audio`.

@@ -171,8 +171,26 @@ double contourAt (Contour kind, double u)
     return 0.25;
 }
 
-// Scale degree -> MIDI pitch, counted from the chord root `rootMidi`.
-std::function<int (int)> diatonic (int keyTonic, bool minor, int rootMidi)
+// Scale degree -> MIDI pitch, counted from the chord root `rootMidi`; with a
+// `third` (3 or 4) the chord's third is that one, whatever the scale says.
+std::function<int (int)> diatonicInScale (int keyTonic, bool minor, int rootMidi);
+
+std::function<int (int)> diatonic (int keyTonic, bool minor, int rootMidi, int third = 0)
+{
+    auto base = diatonicInScale (keyTonic, minor, rootMidi);
+
+    if (third != 3 && third != 4)
+        return base;
+
+    return [base, rootMidi, third] (int n)
+    {
+        const auto p = base (n);
+        const auto interval = ((p - rootMidi) % 12 + 12) % 12;
+        return interval == 3 || interval == 4 ? p + third - interval : p;
+    };
+}
+
+std::function<int (int)> diatonicInScale (int keyTonic, bool minor, int rootMidi)
 {
     const auto& sc = scaleSteps (minor);
     const auto pc = ((rootMidi % 12) + 12) % 12;
@@ -338,7 +356,8 @@ struct OutNote
     bool ghost = false, accent = false, glide = false;
 };
 
-std::vector<Note> buildVariant (const Settings& g, const std::vector<int>& rootPcs, int vi, const std::vector<int>& perm)
+std::vector<Note> buildVariant (const Settings& g, const std::vector<int>& rootPcs, const std::vector<int>& thirds, int vi,
+                                const std::vector<int>& perm)
 {
     const auto& st = styleTable()[(size_t) g.style];
     const auto& ch = characters()[(size_t) vi];
@@ -504,7 +523,8 @@ std::vector<Note> buildVariant (const Settings& g, const std::vector<int>& rootP
 
         const auto label = form[(size_t) pos];
         const auto R = roots[(size_t) b], nextR = roots[(size_t) ((b + 1) % bars)];
-        const auto sd = diatonic (g.keyTonic, g.minor, R), sdN = diatonic (g.keyTonic, g.minor, nextR);
+        const auto thirdOf = [&] (int bar) { return thirds.empty() ? 0 : thirds[(size_t) (bar % (int) thirds.size())]; };
+        const auto sd = diatonic (g.keyTonic, g.minor, R, thirdOf (b)), sdN = diatonic (g.keyTonic, g.minor, nextR, thirdOf (b + 1));
         Cell cell;
         Degrees ds;
 
@@ -885,9 +905,9 @@ double midiToHz (int m)  { return 440.0 * std::pow (2.0, (m - 69) / 12.0); }
 
 // One note of the chosen bass sound, added into `dest` (both channels).
 void bassVoice (juce::AudioBuffer<float>& dest, double rate, const Note& n, double t, double duration,
-                std::optional<int> prevPitch, Tone tone)
+                std::optional<int> prevPitch, Tone tone, double tune)
 {
-    const auto f = midiToHz (n.pitch);
+    const auto f = midiToHz (n.pitch) * tune;
     const auto end = t + std::max (0.04, duration);
     const auto glide = n.glide && prevPitch.has_value();
     const auto velocity = n.velocity / 127.0;
@@ -898,7 +918,7 @@ void bassVoice (juce::AudioBuffer<float>& dest, double rate, const Note& n, doub
 
         if (glide)
         {
-            p.set (midiToHz (*prevPitch) * multiplier, t);
+            p.set (midiToHz (*prevPitch) * tune * multiplier, t);
             p.exponentialTo (f * multiplier, t + 0.08);
         }
         else
@@ -927,7 +947,7 @@ void bassVoice (juce::AudioBuffer<float>& dest, double rate, const Note& n, doub
 
             if (glide)
             {
-                freq.set (midiToHz (*prevPitch), t);
+                freq.set (midiToHz (*prevPitch) * tune, t);
                 freq.exponentialTo (f, t + 0.08);
             }
             else
@@ -1111,10 +1131,72 @@ int totalBars (double duration, double downbeat, double bpm)
     return std::max (1, (int) std::floor (x + 0.25));
 }
 
-std::vector<int> computeRoots (const Settings& g, const KeyAnalysis* analysis, double duration)
+namespace
+{
+// The energy per note of generated bar `b` (the matching bar of the audio).
+void barChroma (const Settings& g, const KeyAnalysis& analysis, double duration, int b,
+                std::array<double, 12>& c, std::array<double, 12>& bs)
 {
     const auto total = totalBars (duration, g.downbeat, g.bpm);
     const auto bar = 240.0 / g.bpm;
+    const auto sourceBar = (g.startBar + b) % total;
+    const auto t0 = g.downbeat + sourceBar * bar, t1 = t0 + bar;
+    c.fill (0.0);
+    bs.fill (0.0);
+
+    for (auto& f : analysis.frames)
+        if (f.time >= t0 && f.time < t1)
+            for (size_t i = 0; i < 12; ++i)
+            {
+                c[i] += f.chroma[i];
+                bs[i] += f.bass[i];
+            }
+}
+} // namespace
+
+int scaleThird (int root, int keyTonic, bool minor)
+{
+    const auto& sc = scaleSteps (minor);
+
+    for (int i = 0; i < 7; ++i)
+        if ((keyTonic + sc[(size_t) i]) % 12 == root)
+            return ((sc[(size_t) ((i + 2) % 7)] - sc[(size_t) i]) % 12 + 12) % 12;
+
+    return 4;
+}
+
+std::vector<int> computeThirds (const Settings& g, const KeyAnalysis* analysis, double duration, const std::vector<int>& roots)
+{
+    std::vector<int> thirds;
+
+    for (int b = 0; b < (int) roots.size(); ++b)
+    {
+        const auto root = roots[(size_t) b];
+        auto third = scaleThird (root, g.keyTonic, g.minor);
+
+        if (g.followChords && analysis != nullptr)
+        {
+            std::array<double, 12> c {}, bs {};
+            barChroma (g, *analysis, duration, b, c, bs);
+            const auto minor3 = c[(size_t) ((root + 3) % 12)], major3 = c[(size_t) ((root + 4) % 12)];
+            double sum = 0.0;
+
+            for (auto v : c)
+                sum += v;
+
+            // Only a clear difference overrides the scale.
+            if (sum > 0.0 && std::max (minor3, major3) > 0.04 * sum && std::abs (minor3 - major3) > 0.25 * std::max (minor3, major3))
+                third = minor3 > major3 ? 3 : 4;
+        }
+
+        thirds.push_back (third);
+    }
+
+    return thirds;
+}
+
+std::vector<int> computeRoots (const Settings& g, const KeyAnalysis* analysis, double duration)
+{
     const auto& sc = scaleSteps (g.minor);
     std::vector<int> roots;
 
@@ -1126,18 +1208,8 @@ std::vector<int> computeRoots (const Settings& g, const KeyAnalysis* analysis, d
             continue;
         }
 
-        const auto sourceBar = (g.startBar + b) % total;
-        const auto t0 = g.downbeat + sourceBar * bar, t1 = t0 + bar;
         std::array<double, 12> c {}, bs {};
-
-        for (auto& f : analysis->frames)
-            if (f.time >= t0 && f.time < t1)
-                for (size_t i = 0; i < 12; ++i)
-                {
-                    c[i] += f.chroma[i];
-                    bs[i] += f.bass[i];
-                }
-
+        barChroma (g, *analysis, duration, b, c, bs);
         double cs = 0.0, bss = 0.0;
 
         for (size_t i = 0; i < 12; ++i)
@@ -1160,8 +1232,9 @@ std::vector<int> computeRoots (const Settings& g, const KeyAnalysis* analysis, d
         for (int i = 0; i < 7; ++i)
         {
             const auto root = (g.keyTonic + sc[(size_t) i]) % 12;
-            const auto third = (g.keyTonic + sc[(size_t) ((i + 2) % 7)]) % 12;
             const auto fifth = (g.keyTonic + sc[(size_t) ((i + 4) % 7)]) % 12;
+            // the chord may be major or minor whatever the scale says (e.g. the major V in minor)
+            const auto third = cn ((root + 3) % 12) >= cn ((root + 4) % 12) ? (root + 3) % 12 : (root + 4) % 12;
             const auto v = cn (root) + 0.7 * cn (third) + 0.7 * cn (fifth) + 1.6 * bn (root) - 0.4 * bn (third) + (i == 0 ? 0.03 : 0.0);
 
             if (v > bestValue)
@@ -1177,7 +1250,7 @@ std::vector<int> computeRoots (const Settings& g, const KeyAnalysis* analysis, d
     return roots;
 }
 
-std::array<std::vector<Note>, 3> generate (const Settings& g, const std::vector<int>& roots)
+std::array<std::vector<Note>, 3> generate (const Settings& g, const std::vector<int>& roots, const std::vector<int>& thirds)
 {
     const auto& st = styleTable()[(size_t) g.style];
     Random pr (toUint32 ((double) g.seeds[0] * 31.0 + 7.0));
@@ -1192,10 +1265,17 @@ std::array<std::vector<Note>, 3> generate (const Settings& g, const std::vector<
     std::vector<int> barRoots (roots);
     barRoots.resize ((size_t) g.bars, g.keyTonic);
 
-    return { buildVariant (g, barRoots, 0, perm), buildVariant (g, barRoots, 1, perm), buildVariant (g, barRoots, 2, perm) };
+    std::vector<int> barThirds (thirds);
+
+    if (! barThirds.empty())
+        barThirds.resize ((size_t) g.bars, 0);
+
+    return { buildVariant (g, barRoots, barThirds, 0, perm), buildVariant (g, barRoots, barThirds, 1, perm),
+             buildVariant (g, barRoots, barThirds, 2, perm) };
 }
 
-juce::MemoryBlock midiFile (const std::vector<Note>& notes, double bpm, const juce::String& trackName, bool glide)
+juce::MemoryBlock midiFile (const std::vector<Note>& notes, double bpm, const juce::String& trackName, bool glide,
+                            int tuningCents)
 {
     constexpr int ticksPer16th = 120;
     struct Event { int tick; int order; juce::uint8 data[3]; };
@@ -1232,6 +1312,16 @@ juce::MemoryBlock midiFile (const std::vector<Note>& notes, double bpm, const ju
                                 0, 0xFF, 0x58, 4, 4, 2, 24, 8 };
     track.write (tempo, sizeof (tempo));
 
+    if (tuningCents != 0)
+    {
+        // Bend range +-2 semitones (RPN 0), then the bend itself: 8192 = none, 4096 per semitone.
+        const auto bend = juce::jlimit (0, 16383, 8192 + juce::roundToInt (tuningCents / 200.0 * 8192.0));
+        const juce::uint8 tuning[] { 0, 0xB0, 101, 0,   0, 0xB0, 100, 0,   0, 0xB0, 6, 2,   0, 0xB0, 38, 0,
+                                     0, 0xB0, 101, 127, 0, 0xB0, 100, 127,
+                                     0, 0xE0, (juce::uint8) (bend & 0x7f), (juce::uint8) (bend >> 7) };
+        track.write (tuning, sizeof (tuning));
+    }
+
     int last = 0;
 
     for (auto& e : events)
@@ -1253,15 +1343,31 @@ juce::MemoryBlock midiFile (const std::vector<Note>& notes, double bpm, const ju
     return file.getMemoryBlock();
 }
 
-juce::AudioBuffer<float> renderBass (const std::vector<Note>& notes, Tone tone, double bpm, int bars, double rate)
+juce::AudioBuffer<float> renderBass (const std::vector<Note>& notes, Tone tone, double bpm, int bars, double rate,
+                                     int tuningCents)
 {
     const auto sixteenth = 60.0 / bpm / 4.0;
-    juce::AudioBuffer<float> out (2, (int) std::ceil (bars * 16 * sixteenth * rate));
-    out.clear();
+    const auto length = (int) std::ceil (bars * 16 * sixteenth * rate);
+    const auto tune = std::pow (2.0, tuningCents / 1200.0);
+
+    // Rendered with room for the release of the last notes, which is then
+    // wrapped round onto the start: the loop repeats seamlessly.
+    juce::AudioBuffer<float> work (2, length + (int) std::ceil (0.5 * rate));
+    work.clear();
 
     for (size_t i = 0; i < notes.size(); ++i)
-        bassVoice (out, rate, notes[i], notes[i].start * sixteenth, notes[i].length * sixteenth,
-                   i > 0 ? std::optional<int> (notes[i - 1].pitch) : std::nullopt, tone);
+        bassVoice (work, rate, notes[i], notes[i].start * sixteenth, notes[i].length * sixteenth,
+                   i > 0 ? std::optional<int> (notes[i - 1].pitch) : std::nullopt, tone, tune);
+
+    juce::AudioBuffer<float> out (2, length);
+
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        out.copyFrom (ch, 0, work, ch, 0, length);
+
+        for (int from = length; from < work.getNumSamples(); from += length)
+            out.addFrom (ch, 0, work, ch, from, std::min (length, work.getNumSamples() - from));
+    }
 
     return out;
 }

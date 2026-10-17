@@ -100,6 +100,7 @@ public:
 
     void setSelected (int index)   { selected = index; repaint(); }
     int getSelected() const        { return selected; }
+    void setLabels (juce::StringArray l)   { if (l != labels) { labels = std::move (l); repaint(); } }
 
     void paint (juce::Graphics& g) override
     {
@@ -332,7 +333,7 @@ public:
         {
             auto row = area.removeFromTop (rowHeight).reduced (0, 2);
             const auto& k = keys[i];
-            const auto p = (float) ((k.score - worst) / std::max (1.0e-9, best - worst));
+            const auto p = juce::jlimit (0.0f, 1.0f, (float) ((k.score - worst) / std::max (1.0e-9, best - worst)));
             auto text = row.removeFromTop (row.getHeight() - 7);
 
             g.setColour (colours::ink);
@@ -429,7 +430,10 @@ public:
                          juce::dontSendNotification);
         keyText.setText (keyLabel (top.tonic, top.minor), juce::dontSendNotification);
 
-        const auto confidence = gap > 0.12 ? "sure" : gap > 0.04 ? "probably" : "ambiguous, check by ear";
+        // gap < 0: the profiles preferred the parallel key, the third over the tonic decided
+        const auto confidence = gap < 0.0 ? (top.minor ? "minor by its third (" : "major by its third (")
+                                                + noteName (top.tonic + (top.minor ? 3 : 4), flats) + "), check by ear"
+                              : gap > 0.12 ? juce::String ("sure") : gap > 0.04 ? juce::String ("probably") : juce::String ("ambiguous, check by ear");
         const auto tuning = a.tuningCents == 0 ? juce::String ("tuned to A440")
                                                : (a.tuningCents > 0 ? "+" : "") + juce::String (a.tuningCents) + " cents from A440";
         auto chipText = juce::String (confidence) + "   |   " + tuning;
@@ -541,6 +545,7 @@ private:
 struct DetectorState
 {
     NoteSource source = NoteSource::bass;
+    bool songReference = true;   // cents against the recording's own tuning, not A = 440 Hz
     int tolerance = 10;
     bool onlyProblems = false;
     std::optional<NoteTrack> track;
@@ -845,6 +850,9 @@ public:
         sourceLabel.setText ("Listen to:", juce::dontSendNotification);
         styleLabel (tolLabel, 13.0f, false, colours::muted);
         tolLabel.setText ("Tolerance:", juce::dontSendNotification);
+        styleLabel (referenceLabel, 13.0f, false, colours::muted);
+        referenceLabel.setText ("In tune with:", juce::dontSendNotification);
+        addAndMakeVisible (referenceLabel);
         styleLabel (summary, 13.0f);
         summary.setJustificationType (juce::Justification::topLeft);
         styleLabel (status, 13.0f, false, colours::muted);
@@ -860,7 +868,8 @@ public:
         listenLabel.setText ("Play:", juce::dontSendNotification);
         styleLabel (help, 12.0f, false, colours::muted);
         help.setJustificationType (juce::Justification::topLeft);
-        help.setText (juce::CharPointer_UTF8 ("Cents against standard A = 440 Hz (100 cents = one semitone). Green is within the tolerance, "
+        help.setText (juce::CharPointer_UTF8 ("Cents against the song's own tuning (a recording tuned to A = 432 Hz is in tune with itself), "
+                                              "or against standard A = 440 Hz (100 cents = one semitone). Green is within the tolerance, "
                                               "yellow up to \xc2\xb1" "25\xc2\xa2, red beyond. Click a note to hear and correct it. With "
                                               "\"Bass\" only the low band (below ~450 Hz) is moved and the rest of the mix stays untouched; "
                                               "with \"Melody\" the whole signal moves for the length of the note. Timing and length never change. "
@@ -868,6 +877,7 @@ public:
                       juce::dontSendNotification);
 
         source.onChange = [this] (int i) { state.source = i == 0 ? NoteSource::bass : NoteSource::melody; run(); };
+        reference.onChange = [this] (int i) { state.songReference = i == 0; run(); };
         tolerance.setSelected (1);
         tolerance.onChange = [this] (int i) { state.tolerance = i == 0 ? 5 : i == 1 ? 10 : 20; refresh(); };
         strength.setSelected (2);
@@ -875,7 +885,7 @@ public:
         scope.onChange = [this] (int i) { state.autoSettings.allNotes = i == 1; };
         listen.onChange = [this] (int i) { setListenCorrected (i == 1); };
 
-        for (auto* c : { (juce::Component*) &source, (juce::Component*) &tolerance, (juce::Component*) &strength,
+        for (auto* c : { (juce::Component*) &source, (juce::Component*) &reference, (juce::Component*) &tolerance, (juce::Component*) &strength,
                          (juce::Component*) &scope, (juce::Component*) &listen })
             addAndMakeVisible (c);
 
@@ -985,7 +995,11 @@ public:
         tolerance.setBounds (row.removeFromLeft (170));
         row.removeFromLeft (12);
         onlyProblems.setBounds (row.removeFromLeft (150));
-        top.removeFromTop (22);
+        top.removeFromTop (4);
+        row = top.removeFromTop (26);
+        referenceLabel.setBounds (row.removeFromLeft (92));
+        reference.setBounds (row.removeFromLeft (330));
+        top.removeFromTop (8);
 
         summary.setBounds (top.removeFromTop (22));
         top.removeFromTop (4);
@@ -1165,14 +1179,16 @@ private:
 
         auto result = std::make_shared<std::optional<NoteTrack>>();
         const auto noteSource = state.source;
+        const auto referenceCents = this->referenceCents();
+        updateReferenceLabels();
         auto audio = std::make_shared<juce::AudioBuffer<float>> (model.source.audio);
         const auto rate = model.source.sampleRate;
         juce::Component::SafePointer<DetectorPanel> safeThis (this);
 
         model.host.runJob ("Detecting the notes...",
-                           [result, audio, rate, noteSource] (std::function<bool (float)> progress)
+                           [result, audio, rate, noteSource, referenceCents] (std::function<bool (float)> progress)
                            {
-                               *result = detectNotes (*audio, { 0, audio->getNumSamples() }, rate, noteSource, progress);
+                               *result = detectNotes (*audio, { 0, audio->getNumSamples() }, rate, noteSource, progress, referenceCents);
                                return result->has_value();
                            },
                            [safeThis, result] (bool finished)
@@ -1189,8 +1205,25 @@ private:
                            });
     }
 
+    // The song's tuning from the key analysis (0 when there is none or A = 440 Hz is chosen).
+    int referenceCents() const
+    {
+        return state.songReference && model.analysis.has_value() ? model.analysis->tuningCents : 0;
+    }
+
+    void updateReferenceLabels()
+    {
+        const auto cents = model.analysis.has_value() ? model.analysis->tuningCents : 0;
+        reference.setLabels ({ cents == 0 ? juce::String ("The song (A = 440 Hz)")
+                                          : "The song (A = " + juce::String (440.0 * std::pow (2.0, cents / 1200.0), 1) + " Hz, "
+                                                + formatCents (cents) + ")",
+                               "Standard A = 440 Hz" });
+        reference.setSelected (state.songReference ? 0 : 1);
+    }
+
     void refresh()
     {
+        updateReferenceLabels();
         rows = visibleRows();
         list.updateContent();
         list.repaint();
@@ -1495,8 +1528,9 @@ private:
     bool running = false, lastTunerHadValue = false;
     std::vector<int> rows;
 
-    juce::Label title, sourceLabel, tolLabel, summary, status, editInfo, editResult, autoTitle, strengthLabel, scopeLabel, help, listenLabel;
+    juce::Label title, sourceLabel, tolLabel, referenceLabel, summary, status, editInfo, editResult, autoTitle, strengthLabel, scopeLabel, help, listenLabel;
     Segmented source { { "Bass (28-300 Hz)", "Melody (55-1100 Hz)" } };
+    Segmented reference { { "The song", "Standard A = 440 Hz" } };
     Segmented tolerance { { juce::String (juce::CharPointer_UTF8 ("\xc2\xb1" "5\xc2\xa2")),
                             juce::String (juce::CharPointer_UTF8 ("\xc2\xb1" "10\xc2\xa2")),
                             juce::String (juce::CharPointer_UTF8 ("\xc2\xb1" "20\xc2\xa2")) } };
@@ -1666,7 +1700,7 @@ class BarChips final : public juce::Component
 public:
     explicit BarChips (Model& m) : model (m) {}
 
-    std::vector<int> roots;
+    std::vector<int> roots, thirds;   // thirds: 3 = minor chord, 4 = major
     std::function<void (int)> onBarClicked;
 
     void paint (juce::Graphics& g) override
@@ -1692,7 +1726,8 @@ public:
             g.drawText (juce::String (b + 1), r.withHeight (14.0f), juce::Justification::centred);
             g.setColour (tonic ? colours::bass : colours::ink);
             g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-            g.drawText (noteName (roots[(size_t) b], flats), r.withTrimmedTop (12.0f), juce::Justification::centred);
+            const auto minorChord = (size_t) b < thirds.size() && thirds[(size_t) b] == 3;
+            g.drawText (noteName (roots[(size_t) b], flats) + (minorChord ? "m" : ""), r.withTrimmedTop (12.0f), juce::Justification::centred);
         }
     }
 
@@ -1825,6 +1860,10 @@ public:
         chips.onBarClicked = [this] (int b)
         {
             roots[(size_t) b] = bass::nextScaleRoot (roots[(size_t) b], model.keyTonic, model.minor);
+
+            if ((size_t) b < thirds.size())
+                thirds[(size_t) b] = bass::scaleThird (roots[(size_t) b], model.keyTonic, model.minor);
+
             regenerate (false);
         };
 
@@ -1892,6 +1931,7 @@ public:
         settings.keyTonic = model.keyTonic;
         settings.minor = model.minor;
         settings.bpm = model.tempo.has_value() ? model.tempo->bpm : 120.0;
+        settings.tuningCents = model.analysis.has_value() ? model.analysis->tuningCents : 0;
         settings.downbeat = model.tempo.has_value() ? model.tempo->downbeat : 0.0;
         settings.startBar = 0;
 
@@ -2088,18 +2128,23 @@ private:
         settings.keyTonic = model.keyTonic;
         settings.minor = model.minor;
         roots = bass::computeRoots (settings, model.analysis.has_value() ? &*model.analysis : nullptr, model.duration());
+        thirds = bass::computeThirds (settings, model.analysis.has_value() ? &*model.analysis : nullptr, model.duration(), roots);
         regenerate (false);
     }
 
     void regenerate (bool recompute = true)
     {
         if (recompute && roots.size() != (size_t) settings.bars)
+        {
             roots = bass::computeRoots (settings, model.analysis.has_value() ? &*model.analysis : nullptr, model.duration());
+            thirds = bass::computeThirds (settings, model.analysis.has_value() ? &*model.analysis : nullptr, model.duration(), roots);
+        }
 
         settings.keyTonic = model.keyTonic;
         settings.minor = model.minor;
-        variants = bass::generate (settings, roots);
+        variants = bass::generate (settings, roots, thirds);
         chips.roots = roots;
+        chips.thirds = thirds;
         chips.repaint();
         updateGridUi();
         refreshVariants();
@@ -2130,7 +2175,7 @@ private:
     juce::AudioBuffer<float> bassAudio() const
     {
         return bass::renderBass (variants[(size_t) selected], bass::resolvedTone (settings), settings.bpm, settings.bars,
-                                 model.source.sampleRate);
+                                 model.source.sampleRate, settings.tuningCents);
     }
 
     void togglePreview()
@@ -2233,13 +2278,16 @@ private:
 
                 auto target = all ? file.getSiblingFile (file.getFileNameWithoutExtension() + "_" + letters[i] + ".mid")
                                   : file.withFileExtension ("mid");
-                const auto data = bass::midiFile (snapshot[(size_t) i], s.bpm, "Bass " + styleName + " " + letters[i], glide);
+                const auto data = bass::midiFile (snapshot[(size_t) i], s.bpm, "Bass " + styleName + " " + letters[i], glide, s.tuningCents);
                 ok = target.replaceWithData (data.getData(), data.getSize()) && ok;
                 written.add (target.getFileName());
             }
 
             if (auto* p = safeThis.getComponent())
-                p->exportStatus.setText (ok ? "Saved: " + written.joinIntoString (", ") : juce::String ("Couldn't save the file."),
+                p->exportStatus.setText (ok ? "Saved: " + written.joinIntoString (", ")
+                                                  + (s.tuningCents != 0 ? " (pitch bend " + formatCents (s.tuningCents) + ", in tune with the sample)"
+                                                                        : juce::String())
+                                            : juce::String ("Couldn't save the file."),
                                          juce::dontSendNotification);
         });
     }
@@ -2294,7 +2342,7 @@ private:
 
     Model& model;
     bass::Settings settings;
-    std::vector<int> roots;
+    std::vector<int> roots, thirds;
     std::array<std::vector<bass::Note>, 3> variants;
     int selected = 0;
     LayeredPlayer* previewPlayer = nullptr;   // owned by the transport while it plays

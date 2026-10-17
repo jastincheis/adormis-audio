@@ -440,6 +440,24 @@ std::optional<KeyAnalysis> analyseKey (const juce::AudioBuffer<float>& audio, ju
     }
 
     std::stable_sort (result.keys.begin(), result.keys.end(), [] (auto& a, auto& b) { return a.score > b.score; });
+
+    // Major and minor on the same tonic score alike when a minor key borrows
+    // the major V (the raised 7th of harmonic minor): then the third over the
+    // tonic that is actually heard decides.
+    const auto best = result.keys[0];
+    const auto parallel = std::find_if (result.keys.begin(), result.keys.end(),
+                                        [&] (auto& k) { return k.tonic == best.tonic && k.minor != best.minor; });
+
+    if (parallel != result.keys.end() && best.score - parallel->score < 0.3)
+    {
+        const auto at = [&] (int pc) { return result.chroma[(size_t) (pc % 12)] + result.bass[(size_t) (pc % 12)]; };
+        const auto minorThird = at (best.tonic + 3), majorThird = at (best.tonic + 4);
+
+        // only a clearly stronger third overrides the profiles
+        if (best.minor ? majorThird > 1.3 * minorThird : minorThird > 1.3 * majorThird)
+            std::rotate (result.keys.begin(), parallel, parallel + 1);
+    }
+
     return result;
 }
 

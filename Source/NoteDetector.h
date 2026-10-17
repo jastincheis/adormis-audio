@@ -16,10 +16,13 @@ enum class NoteSource
     melody    // 55 ... 1100 Hz; correcting moves the whole signal during the note
 };
 
+// Notes and cents are measured against a reference A: 440 Hz, or the
+// recording's own tuning (referenceCents away from 440 Hz), so a song tuned to
+// A = 432 Hz isn't "out of tune" everywhere.
 struct PitchFrame
 {
     double time = 0.0;          // seconds from the start of the analysed range
-    std::optional<double> midi; // fractional MIDI note, empty when unclear
+    std::optional<double> midi; // fractional MIDI note against the reference, empty when unclear
     float clarity = 0.0f;       // 0..1, how periodic the frame is
 };
 
@@ -27,8 +30,8 @@ struct DetectedNote
 {
     double start = 0.0, end = 0.0;   // seconds from the start of the range
     int note = 0;                    // MIDI note number
-    int cents = 0;                   // measured, against A = 440 Hz
-    double hz = 0.0;
+    int cents = 0;                   // measured, against the reference A
+    double hz = 0.0;                 // measured frequency (absolute)
     int shift = 0;                   // correction in cents (0 = none)
 
     // The note and cents it will have after the correction.
@@ -44,7 +47,7 @@ struct NoteTrack
 
 // `progress` gets 0..1 and returns false to cancel (then it returns empty).
 std::optional<NoteTrack> detectNotes (const juce::AudioBuffer<float>& audio, juce::Range<int> range, double sampleRate,
-                                      NoteSource source, const std::function<bool (float)>& progress);
+                                      NoteSource source, const std::function<bool (float)>& progress, int referenceCents = 0);
 
 // The audio of `range` with every note that has a shift moved by it.
 juce::AudioBuffer<float> renderCorrection (const juce::AudioBuffer<float>& audio, juce::Range<int> range, double sampleRate,
