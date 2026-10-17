@@ -131,6 +131,29 @@ void iconFadeIn (juce::Graphics& g, juce::Rectangle<float> a)   { iconColumns (g
 void iconFadeOut (juce::Graphics& g, juce::Rectangle<float> a)  { iconColumns (g, a, false); }
 
 // Mute: a sleepy "z Z" above a flat line.
+// Volume envelope: a line with points rising and falling over a baseline.
+void iconEnvelope (juce::Graphics& g, juce::Rectangle<float> a)
+{
+    juce::Path line;
+    line.startNewSubPath (3.5f, 17.0f);
+    line.lineTo (8.0f, 7.0f);
+    line.quadraticTo (12.0f, 5.0f, 14.0f, 12.0f);
+    line.lineTo (20.5f, 15.0f);
+    strokeIcon (g, line, a, 1.8f);
+
+    juce::Path base;
+    base.startNewSubPath (3.5f, 20.0f);
+    base.lineTo (20.5f, 20.0f);
+    strokeIcon (g, base, a, 1.4f);
+
+    juce::Path dots;
+
+    for (auto [x, y] : { std::pair<float, float> { 3.5f, 17.0f }, { 8.0f, 7.0f }, { 14.0f, 12.0f }, { 20.5f, 15.0f } })
+        dots.addEllipse (x - 2.0f, y - 2.0f, 4.0f, 4.0f);
+
+    fillIcon (g, dots, a);
+}
+
 void iconMute (juce::Graphics& g, juce::Rectangle<float> a)
 {
     auto zig = [] (float x, float y, float s)
@@ -434,6 +457,7 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     addButton (wf::procFadeIn,     fadeTint,      iconFadeIn);
     addButton (wf::procFadeOut,    fadeTint,      iconFadeOut);
     addButton (wf::procMute,       fadeTint,      iconMute);
+    addButton (wf::insertVolumeEnv, fadeTint,     iconEnvelope);
     addGap();
     addButton (wf::procNormalize,  levelTint,     iconNormalize);
     addButton (wf::procVolume,     levelTint,     iconVolume);

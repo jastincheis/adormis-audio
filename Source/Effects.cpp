@@ -213,6 +213,46 @@ private:
 };
 
 //==============================================================================
+// Multiplies the audio by the envelope; it counts the samples it has seen, so
+// it knows where in the selection it is (the preview loops the selection).
+class EnvelopeProcessor final : public Processor
+{
+public:
+    void set (const EnvelopeParams& p)   { handoff.set (p); }
+
+    void prepare (double, int, int) override
+    {
+        handoff.fetch (params);
+        reset();
+    }
+
+    void reset() override   { position = 0; }
+
+    void process (juce::AudioBuffer<float>& audio, int start, int numSamples) override
+    {
+        handoff.fetch (params);
+        const auto length = std::max ((juce::int64) 1, params.length);
+        auto pos = position.load();
+
+        for (int i = 0; i < numSamples; ++i, ++pos)
+        {
+            const auto g = (float) envelopeGainAt (params, (double) (pos % length) / (double) length);
+
+            for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+                audio.getWritePointer (ch, start)[i] *= g;
+        }
+
+        position = pos % length;
+    }
+
+    std::atomic<juce::int64> position { 0 };
+
+private:
+    ParamHandoff<EnvelopeParams> handoff;
+    EnvelopeParams params;
+};
+
+//==============================================================================
 class CompressorProcessor final : public Processor
 {
 public:
@@ -535,6 +575,85 @@ double eqResponseDb (const EqParams& p, double hz, double rate)
     return total;
 }
 
+const char* envelopeShapeName (EnvelopePoint::Shape shape)
+{
+    switch (shape)
+    {
+        case EnvelopePoint::linear: return "Straight";
+        case EnvelopePoint::curve:
+        case EnvelopePoint::fast:
+        case EnvelopePoint::slow:   return "Curve (bend it with the handle)";
+        case EnvelopePoint::smooth: return "S-curve (steeper or flatter with the handle)";
+        case EnvelopePoint::bell:   return "Bell (a bump or a dip, with the handle)";
+        case EnvelopePoint::hold:   return "Hold (a step at the next point)";
+    }
+
+    return "";
+}
+
+namespace
+{
+// 0..1 -> 0..1 for a segment's shape and bend.
+double shapeCurve (EnvelopePoint::Shape shape, double bend, double x)
+{
+    bend = juce::jlimit (-1.0, 1.0, bend);
+
+    switch (shape)
+    {
+        case EnvelopePoint::fast:   return shapeCurve (EnvelopePoint::curve, 0.6, x);
+        case EnvelopePoint::slow:   return shapeCurve (EnvelopePoint::curve, -0.6, x);
+        case EnvelopePoint::curve:
+        {
+            const auto e = 1.0 + 4.0 * std::abs (bend);
+            return bend >= 0.0 ? 1.0 - std::pow (1.0 - x, e) : std::pow (x, e);
+        }
+
+        case EnvelopePoint::smooth:
+        {
+            const auto k = std::pow (2.0, 1.0 + 2.0 * bend);   // 2 = gentle S, 8 = almost a step, 0.5 = the other way
+            const auto u = std::pow (x, k), v = std::pow (1.0 - x, k);
+            return u + v > 0.0 ? u / (u + v) : x;
+        }
+
+        case EnvelopePoint::hold:   return 0.0;
+        case EnvelopePoint::linear:
+        case EnvelopePoint::bell:   break;
+    }
+
+    return x;
+}
+} // namespace
+
+double envelopeGainAt (const EnvelopeParams& p, double t)
+{
+    if (p.count <= 0)
+        return 1.0;
+
+    if (t <= p.points[0].time)
+        return p.points[0].gain;
+
+    for (int i = 0; i + 1 < p.count; ++i)
+    {
+        const auto& a = p.points[(size_t) i];
+        const auto& b = p.points[(size_t) i + 1];
+
+        if (t > b.time)
+            continue;
+
+        const auto span = b.time - a.time;
+        const auto x = span > 1.0e-12 ? (t - a.time) / span : 1.0;
+        auto g = a.gain + (b.gain - a.gain) * shapeCurve (a.shape, a.bend, x);
+
+        // a bell: a bump (or dip) as high as `bend` says (1 = 200 %), round at both ends
+        if (a.shape == EnvelopePoint::bell)
+            g += 2.0 * juce::jlimit (-1.0, 1.0, a.bend) * std::pow (std::sin (juce::MathConstants<double>::pi * x), 2.0);
+
+        return juce::jlimit (0.0, 4.0, g);
+    }
+
+    return p.points[(size_t) p.count - 1].gain;
+}
+
 std::vector<double> graphicEqFrequencies (int bands)
 {
     switch (bands)
@@ -691,11 +810,21 @@ double suggestedTailSeconds (const ReverbParams& p)
 }
 
 std::shared_ptr<Processor> makeEq()          { return std::make_shared<EqProcessor>(); }
+std::shared_ptr<Processor> makeEnvelope()    { return std::make_shared<EnvelopeProcessor>(); }
+
+juce::int64 envelopePosition (const Processor& p)
+{
+    if (const auto* e = dynamic_cast<const EnvelopeProcessor*> (&p))
+        return e->position.load();
+
+    return 0;
+}
 std::shared_ptr<Processor> makeCompressor()  { return std::make_shared<CompressorProcessor>(); }
 std::shared_ptr<Processor> makeDelay()       { return std::make_shared<DelayProcessor>(); }
 std::shared_ptr<Processor> makeReverb()      { return std::make_shared<ReverbProcessor>(); }
 
 void setParams (Processor& p, const EqParams& v)          { if (auto* x = dynamic_cast<EqProcessor*> (&p)) x->set (v); }
+void setParams (Processor& p, const EnvelopeParams& v)    { if (auto* x = dynamic_cast<EnvelopeProcessor*> (&p)) x->set (v); }
 void setParams (Processor& p, const CompressorParams& v)  { if (auto* x = dynamic_cast<CompressorProcessor*> (&p)) x->set (v); }
 void setParams (Processor& p, const DelayParams& v)       { if (auto* x = dynamic_cast<DelayProcessor*> (&p)) x->set (v); }
 void setParams (Processor& p, const ReverbParams& v)      { if (auto* x = dynamic_cast<ReverbProcessor*> (&p)) x->set (v); }

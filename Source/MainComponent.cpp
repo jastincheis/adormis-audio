@@ -3424,7 +3424,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case wf::toolsBassFinder: available = available && doc != nullptr && (bassFinderWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
         case wf::toolsDeEsser:    available = available && doc != nullptr && (deEsserWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
 
-        case wf::procEqParametric: case wf::procEqGraphic: case wf::fxCompressor: case wf::fxDelay: case wf::fxReverb: case wf::toolsMp3Restore:
+        case wf::procEqParametric: case wf::procEqGraphic: case wf::procFadeGraphic: case wf::insertVolumeEnv: case wf::fxCompressor: case wf::fxDelay: case wf::fxReverb: case wf::toolsMp3Restore:
         case wf::fxLimiter: case wf::fxGate: case wf::fxChorus: case wf::fxFlange: case wf::fxVibrato: case wf::fxDistortion:
         case wf::toolsNoiseReduction: case wf::toolsHumRemoval: case wf::toolsDeclick: case wf::toolsClipRestore:
             available = available && doc != nullptr && (effectWindow != nullptr || ! toolWindowOpen()) && job == nullptr;
@@ -3622,6 +3622,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::toolsDeEsser:      showDeEsser(); return true;
         case wf::procEqParametric:  showEffect (wf::EffectKind::eq); return true;
         case wf::procEqGraphic:     showEffect (wf::EffectKind::graphicEq); return true;
+        case wf::procFadeGraphic: case wf::insertVolumeEnv: showEffect (wf::EffectKind::envelope); return true;
         case wf::fxCompressor:      showEffect (wf::EffectKind::compressor); return true;
         case wf::fxDelay:           showEffect (wf::EffectKind::delay); return true;
         case wf::fxReverb:          showEffect (wf::EffectKind::reverb); return true;

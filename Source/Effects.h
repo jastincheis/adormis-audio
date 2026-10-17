@@ -44,6 +44,31 @@ double bandResponseDb (const EqBand&, double hz, double sampleRate);
 std::vector<double> graphicEqFrequencies (int bands);
 EqParams graphicEqParams (const std::vector<double>& hz, const std::vector<double>& sliderDb, double outputDb, double sampleRate);
 
+// Volume envelope (Graphic Fade): a line of points over the selection, time
+// 0..1 from its start to its end, gain as a factor (1 = unchanged, 0 =
+// silence, up to 4 = +12 dB). `shape` is the curve from a point to the next
+// and `bend` (-1..1) how much it bends: a curve changes early (+) or late (-),
+// an S-curve is steeper (+) or flatter (-), a bell bulges up (+) or dips (-).
+struct EnvelopePoint
+{
+    enum Shape { linear, smooth, fast, slow, hold, curve, bell };   // fast / slow: older curves, kept for saved settings
+    double time = 0.0, gain = 1.0;
+    Shape shape = linear;
+    double bend = 0.0;
+};
+
+constexpr int maxEnvelopePoints = 256;
+
+struct EnvelopeParams
+{
+    std::array<EnvelopePoint, maxEnvelopePoints> points {};
+    int count = 0;
+    juce::int64 length = 1;   // samples the envelope spans (the selection)
+};
+
+const char* envelopeShapeName (EnvelopePoint::Shape);
+double envelopeGainAt (const EnvelopeParams&, double time);   // time 0..1
+
 struct CompressorParams
 {
     double thresholdDb = -18.0, ratio = 4.0, kneeDb = 6.0;
@@ -103,12 +128,15 @@ public:
 };
 
 std::shared_ptr<Processor> makeEq();
+std::shared_ptr<Processor> makeEnvelope();
+juce::int64 envelopePosition (const Processor&);   // where the preview is (samples into the selection)
 std::shared_ptr<Processor> makeCompressor();
 std::shared_ptr<Processor> makeDelay();
 std::shared_ptr<Processor> makeReverb();
 
 // Parameters for a processor made above (the type must match).
 void setParams (Processor&, const EqParams&);
+void setParams (Processor&, const EnvelopeParams&);
 void setParams (Processor&, const CompressorParams&);
 void setParams (Processor&, const DelayParams&);
 void setParams (Processor&, const ReverbParams&);

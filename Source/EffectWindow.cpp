@@ -40,6 +40,7 @@ juce::String effectName (EffectKind kind)
     {
         case EffectKind::eq:         return "Parametric EQ";
         case EffectKind::graphicEq:  return "Graphic EQ";
+        case EffectKind::envelope:   return "Volume Envelope";
         case EffectKind::compressor: return "Compressor";
         case EffectKind::delay:      return "Delay / Echo";
         case EffectKind::reverb:     return "Reverb";
@@ -1692,6 +1693,614 @@ private:
     juce::TextButton flatButton { "Flat" }, presetsButton { "Presets" };
     juce::Label countLabel, rangeLabel, hint;
     LabelledSlider output { "Output", -24.0, 24.0, 0.1, " dB", 0.0, [this] { changed(); } };
+};
+
+//==============================================================================
+// Volume Envelope / Graphic Fade: the selection's waveform with a volume line
+// over it. Click to add a point, drag to move it, right-click for the curve
+// to the next point; the waveform underneath shows the result.
+class EnvelopeEditor final : public Editor
+{
+public:
+    explicit EnvelopeEditor (Shared& s) : Editor (s)
+    {
+        params.length = std::max (1, shared.audio->getNumSamples());
+        setPreset (0);
+
+        presetsButton.onClick = [this] { showPresets(); };
+        addAndMakeVisible (presetsButton);
+
+        for (int i = 0; i < 2; ++i)
+        {
+            auto* b = rangeButtons.add (new juce::TextButton (i == 0 ? "Up to +6 dB" : "Up to +12 dB"));
+            styleToggle (*b);
+            b->setRadioGroupId (601);
+            b->onClick = [this, i] { setTop (i == 0 ? 2.0 : 4.0); };
+            addAndMakeVisible (b);
+        }
+
+        rangeButtons[0]->setToggleState (true, juce::dontSendNotification);
+        styleLabel (readout, 13.0f, true);
+        readout.setJustificationType (juce::Justification::centredRight);
+        styleLabel (hint, 11.5f, false, colours::muted);
+        hint.setJustificationType (juce::Justification::topLeft);
+        hint.setText ("Double-click: new point; double-click a point: remove it.  Drag a point to move it (Shift: only up / down).  "
+                      "Drag the small diamond between two points to bend the line (double-click it: straight again).  "
+                      "Right-click a point: the kind of line to the next one (straight, curve, S-curve, bell, hold), 100 %, 0 %.",
+                      juce::dontSendNotification);
+
+        for (auto* l : { &readout, &hint })
+            addAndMakeVisible (l);
+
+        push();
+    }
+
+    void push() override   { fx::setParams (*shared.processor, params); }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeEnvelope();
+        fx::setParams (*p, params);
+        return p;
+    }
+
+    void tick() override
+    {
+        if (shared.previewing)
+            repaint (graph);
+    }
+
+    juce::var getState() override
+    {
+        juce::Array<juce::var> list;
+
+        for (int i = 0; i < params.count; ++i)
+        {
+            const auto& p = params.points[(size_t) i];
+            list.add (juce::Array<juce::var> { p.time, p.gain, (int) p.shape, p.bend });
+        }
+
+        juce::DynamicObject::Ptr state = new juce::DynamicObject();
+        state->setProperty ("points", list);
+        state->setProperty ("top", top);
+        return juce::var (state.get());
+    }
+
+    void setState (const juce::var& state) override
+    {
+        if (const auto* list = state["points"].getArray(); list != nullptr && list->size() >= 2)
+        {
+            params.count = 0;
+
+            for (const auto& v : *list)
+                if (params.count < fx::maxEnvelopePoints)
+                {
+                    auto& p = params.points[(size_t) params.count++];
+                    p.time = juce::jlimit (0.0, 1.0, (double) v[0]);
+                    p.gain = juce::jlimit (0.0, 4.0, (double) v[1]);
+                    p.shape = (fx::EnvelopePoint::Shape) juce::jlimit (0, (int) fx::EnvelopePoint::bell, (int) v[2]);
+                    p.bend = v.size() > 3 ? juce::jlimit (-1.0, 1.0, (double) v[3]) : 0.0;
+                }
+
+            params.points[0].time = 0.0;
+            params.points[(size_t) params.count - 1].time = 1.0;
+        }
+
+        setTop ((double) state.getProperty ("top", 2.0) > 3.0 ? 4.0 : 2.0);
+        changed();
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        auto topRow = r.removeFromTop (30);
+        presetsButton.setBounds (topRow.removeFromLeft (120).reduced (2));
+        topRow.removeFromLeft (12);
+
+        for (auto* b : rangeButtons)
+            b->setBounds (topRow.removeFromLeft (120).reduced (2));
+
+        readout.setBounds (topRow);
+        hint.setBounds (r.removeFromBottom (36).reduced (4, 2));
+        r.removeFromTop (8);
+        graph = r;
+        overview.clear();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (graph.toFloat(), 8.0f);
+        const auto a = plot();
+
+        // gain lines: 0 %, 50 %, 100 % (0 dB), and above
+        g.setFont (juce::FontOptions (10.5f));
+
+        for (double gain : { 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0 })
+        {
+            if (gain > top + 1.0e-9)
+                continue;
+
+            const auto y = yFor (gain);
+            g.setColour (std::abs (gain - 1.0) < 1.0e-9 ? colours::muted.withAlpha (0.8f) : colours::line);
+            g.fillRect (a.getX(), y, a.getWidth(), 1.0f);
+            g.setColour (colours::muted);
+            g.drawText (juce::String (juce::roundToInt (gain * 100.0)) + " %", juce::Rectangle<float> (graph.getX() + 2.0f, y - 7.0f, 46.0f, 14.0f),
+                        juce::Justification::centredRight);
+            g.drawText (gain <= 0.0 ? juce::String (juce::CharPointer_UTF8 ("\xe2\x88\x92\xe2\x88\x9e dB")) : formatDb (gain),
+                        juce::Rectangle<float> (a.getRight() + 4.0f, y - 7.0f, 52.0f, 14.0f), juce::Justification::centredLeft);
+        }
+
+        // time along the bottom (from the start of the selection)
+        const auto seconds = (double) params.length / shared.rate();
+        const auto step = niceStep (seconds / 8.0);
+
+        for (double t = 0.0; t <= seconds + 1.0e-9; t += step)
+        {
+            const auto x = a.getX() + a.getWidth() * (float) (t / seconds);
+            g.setColour (colours::line.withAlpha (0.5f));
+            g.fillRect (x, a.getY(), 1.0f, a.getHeight());
+            g.setColour (colours::muted);
+            g.drawText (juce::String (t, step < 0.1 ? 2 : step < 1.0 ? 1 : 0) + " s", juce::Rectangle<float> (x - 30.0f, a.getBottom() + 3.0f, 60.0f, 14.0f),
+                        juce::Justification::centred);
+        }
+
+        // the waveform: before (faint) and after the envelope
+        if (overview.size() != (size_t) a.getWidth())
+            buildOverview ((int) a.getWidth());
+
+        const auto mid = yFor (0.0) - (yFor (0.0) - yFor (1.0)) * 0.5f;   // waveform centred in the 0..100 % band
+        const auto scale = (yFor (0.0) - yFor (1.0)) * 0.5f;
+
+        for (int x = 0; x < (int) overview.size(); ++x)
+        {
+            const auto peak = overview[(size_t) x];
+            const auto gain = (float) fx::envelopeGainAt (params, (x + 0.5) / overview.size());
+            g.setColour (colours::muted.withAlpha (0.25f));
+            g.fillRect (a.getX() + (float) x, mid - peak * scale, 1.0f, std::max (1.0f, 2.0f * peak * scale));
+            g.setColour (colours::accent.withAlpha (0.75f));
+            const auto shaped = std::min (peak * gain, 2.0f);   // as loud as it gets on the scale
+            g.fillRect (a.getX() + (float) x, mid - shaped * scale, 1.0f, std::max (1.0f, 2.0f * shaped * scale));
+        }
+
+        // the envelope line and its points
+        juce::Path line;
+
+        for (int x = 0; x <= (int) a.getWidth(); ++x)
+        {
+            const auto y = yFor (fx::envelopeGainAt (params, (double) x / a.getWidth()));
+
+            if (x == 0) line.startNewSubPath (a.getX(), y);
+            else        line.lineTo (a.getX() + (float) x, y);
+        }
+
+        g.setColour (colours::bass);
+        g.strokePath (line, juce::PathStrokeType (2.0f));
+
+        for (int i = 0; i < params.count; ++i)
+        {
+            const auto c = pointXY (i);
+            const auto picked = i == dragging || i == hovered;
+            g.setColour (picked ? colours::ink : colours::bass);
+            g.fillEllipse (c.x - 5.0f, c.y - 5.0f, 10.0f, 10.0f);
+            g.setColour (colours::bg);
+            g.drawEllipse (c.x - 5.0f, c.y - 5.0f, 10.0f, 10.0f, 1.5f);
+        }
+
+        // the bend handles, half way along each line
+        for (int i = 0; i + 1 < params.count; ++i)
+        {
+            if (params.points[(size_t) i].shape == fx::EnvelopePoint::hold)
+                continue;
+
+            const auto c = handleXY (i);
+            const auto picked = i == bending || i == hoveredHandle;
+            juce::Path diamond;
+            diamond.addQuadrilateral (c.x, c.y - 6.0f, c.x + 6.0f, c.y, c.x, c.y + 6.0f, c.x - 6.0f, c.y);
+            g.setColour (picked ? colours::bass : colours::bg);
+            g.fillPath (diamond);
+            g.setColour (colours::bass);
+            g.strokePath (diamond, juce::PathStrokeType (1.5f));
+        }
+
+        // where the preview is
+        if (shared.previewing)
+        {
+            const auto pos = (double) fx::envelopePosition (*shared.processor) / (double) params.length;
+            g.setColour (colours::warn);
+            g.fillRect (a.getX() + a.getWidth() * (float) pos, a.getY(), 1.5f, a.getHeight());
+        }
+    }
+
+    void mouseMove (const juce::MouseEvent& e) override
+    {
+        hovered = pointAt (e.position);
+        hoveredHandle = hovered < 0 ? handleAt (e.position) : -1;
+        showReadout (e.position);
+        repaint (graph);
+    }
+
+    void mouseExit (const juce::MouseEvent&) override
+    {
+        hovered = hoveredHandle = -1;
+        readout.setText ({}, juce::dontSendNotification);
+        repaint (graph);
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (! plot().expanded (6.0f).contains (e.position))
+            return;
+
+        const auto index = pointAt (e.position);
+
+        if (e.mods.isPopupMenu())
+        {
+            if (index >= 0)
+                showPointMenu (index);
+
+            return;
+        }
+
+        if (index >= 0)
+        {
+            dragging = index;
+            return;
+        }
+
+        if (const auto handle = handleAt (e.position); handle >= 0)
+            startBend (handle, e.position.y);
+    }
+
+    // A new point where double-clicked, taking over the curve of the line it splits.
+    void addPointAt (juce::Point<float> pos)
+    {
+        if (params.count >= fx::maxEnvelopePoints || ! plot().contains (pos))
+            return;
+
+        const auto t = timeAt (pos.x);
+        int at = 1;
+
+        while (at < params.count - 1 && params.points[(size_t) at].time < t)
+            ++at;
+
+        for (int i = params.count; i > at; --i)
+            params.points[(size_t) i] = params.points[(size_t) i - 1];
+
+        ++params.count;
+        auto& p = params.points[(size_t) at];
+        p.time = t;
+        p.gain = gainAt (pos.y);
+        p.shape = params.points[(size_t) at - 1].shape;
+        p.bend = params.points[(size_t) at - 1].bend;
+        changed();
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (bending >= 0)
+        {
+            bendTo (e.position.y);
+            return;
+        }
+
+        if (dragging < 0)
+            return;
+
+        auto& p = params.points[(size_t) dragging];
+        const auto ends = dragging == 0 || dragging == params.count - 1;
+
+        if (! ends && ! e.mods.isShiftDown())
+            p.time = juce::jlimit (params.points[(size_t) dragging - 1].time, params.points[(size_t) dragging + 1].time, timeAt (e.position.x));
+
+        p.gain = gainAt (e.position.y);
+        showReadout (pointXY (dragging));
+        changed();
+    }
+
+    void mouseUp (const juce::MouseEvent&) override   { dragging = bending = -1; repaint (graph); }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (const auto index = pointAt (e.position); index >= 0)
+        {
+            if (index > 0 && index < params.count - 1)
+                removePoint (index);
+
+            return;
+        }
+
+        if (const auto handle = handleAt (e.position); handle >= 0)
+        {
+            params.points[(size_t) handle].bend = 0.0;   // straight again (a bell: no bump)
+            changed();
+            return;
+        }
+
+        addPointAt (e.position);
+    }
+
+private:
+    juce::Rectangle<float> plot() const   { return graph.toFloat().reduced (8.0f).withTrimmedLeft (44.0f).withTrimmedRight (52.0f).withTrimmedBottom (16.0f); }
+
+    float yFor (double gain) const
+    {
+        const auto a = plot();
+        return a.getBottom() - a.getHeight() * (float) (juce::jlimit (0.0, top, gain) / top);
+    }
+
+    double gainAt (float y) const
+    {
+        const auto a = plot();
+        auto gain = juce::jlimit (0.0, top, (double) ((a.getBottom() - y) / a.getHeight()) * top);
+
+        if (std::abs (gain - 1.0) < 0.025)   // 100 % catches the point
+            gain = 1.0;
+
+        return std::round (gain * 1000.0) / 1000.0;
+    }
+
+    double timeAt (float x) const
+    {
+        const auto a = plot();
+        return juce::jlimit (0.0, 1.0, (double) ((x - a.getX()) / a.getWidth()));
+    }
+
+    juce::Point<float> pointXY (int i) const
+    {
+        const auto a = plot();
+        const auto& p = params.points[(size_t) i];
+        return { a.getX() + a.getWidth() * (float) p.time, yFor (p.gain) };
+    }
+
+    // The bend handle of the line from point i: half way along it.
+    juce::Point<float> handleXY (int i) const
+    {
+        const auto a = plot();
+        const auto t = (params.points[(size_t) i].time + params.points[(size_t) i + 1].time) / 2.0;
+        return { a.getX() + a.getWidth() * (float) t, yFor (fx::envelopeGainAt (params, t)) };
+    }
+
+    int handleAt (juce::Point<float> pos) const
+    {
+        for (int i = 0; i + 1 < params.count; ++i)
+            if (params.points[(size_t) i].shape != fx::EnvelopePoint::hold && handleXY (i).getDistanceFrom (pos) <= 8.0f)
+                return i;
+
+        return -1;
+    }
+
+    // Taking a handle: a straight line becomes a curve, or a bell when both
+    // ends are at the same level (a curve could not bend there).
+    void startBend (int i, float y)
+    {
+        auto& p = params.points[(size_t) i];
+        const auto& next = params.points[(size_t) i + 1];
+
+        if (p.shape == fx::EnvelopePoint::fast)   { p.shape = fx::EnvelopePoint::curve; p.bend = 0.6; }
+        if (p.shape == fx::EnvelopePoint::slow)   { p.shape = fx::EnvelopePoint::curve; p.bend = -0.6; }
+
+        if (p.shape == fx::EnvelopePoint::linear)
+        {
+            p.shape = std::abs (next.gain - p.gain) < 0.02 ? fx::EnvelopePoint::bell : fx::EnvelopePoint::curve;
+            p.bend = 0.0;
+        }
+
+        bending = i;
+        bendStartY = y;
+        bendStart = p.bend;
+    }
+
+    // Dragging a handle: the line goes through the mouse, half way along.
+    void bendTo (float y)
+    {
+        auto& p = params.points[(size_t) bending];
+        const auto& next = params.points[(size_t) bending + 1];
+        const auto target = gainAt (y);
+
+        switch (p.shape)
+        {
+            case fx::EnvelopePoint::curve:
+            {
+                if (std::abs (next.gain - p.gain) < 1.0e-6)
+                    break;
+
+                const auto frac = juce::jlimit (0.001, 0.999, (target - p.gain) / (next.gain - p.gain));
+                const auto e = std::log (frac >= 0.5 ? 1.0 - frac : frac) / std::log (0.5);
+                p.bend = juce::jlimit (-1.0, 1.0, (frac >= 0.5 ? 1.0 : -1.0) * (e - 1.0) / 4.0);
+                break;
+            }
+
+            case fx::EnvelopePoint::bell:
+                p.bend = juce::jlimit (-1.0, 1.0, (target - (p.gain + next.gain) / 2.0) / 2.0);
+                break;
+
+            case fx::EnvelopePoint::smooth:   // up: steeper, down: flatter
+                p.bend = juce::jlimit (-1.0, 1.0, bendStart + (double) (bendStartY - y) / 150.0);
+                break;
+
+            case fx::EnvelopePoint::linear: case fx::EnvelopePoint::fast: case fx::EnvelopePoint::slow: case fx::EnvelopePoint::hold:
+                break;
+        }
+
+        showReadout (handleXY (bending));
+        changed();
+    }
+
+    int pointAt (juce::Point<float> pos) const
+    {
+        for (int i = params.count; --i >= 0;)
+            if (pointXY (i).getDistanceFrom (pos) <= 8.0f)
+                return i;
+
+        return -1;
+    }
+
+    static juce::String formatDb (double gain)
+    {
+        const auto db = juce::Decibels::gainToDecibels (gain);
+        return (db > 0.05 ? "+" : "") + juce::String (db, 1) + " dB";
+    }
+
+    static double niceStep (double raw)
+    {
+        for (double s : { 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0 })
+            if (s >= raw)
+                return s;
+
+        return 600.0;
+    }
+
+    void showReadout (juce::Point<float> pos)
+    {
+        if (! plot().contains (pos))
+        {
+            readout.setText ({}, juce::dontSendNotification);
+            return;
+        }
+
+        const auto t = timeAt (pos.x);
+        const auto gain = dragging >= 0 ? params.points[(size_t) dragging].gain : fx::envelopeGainAt (params, t);
+        readout.setText (juce::String (t * (double) params.length / shared.rate(), 3) + " s    " + juce::String (juce::roundToInt (gain * 100.0)) + " %   "
+                             + (gain <= 0.0 ? juce::String (juce::CharPointer_UTF8 ("\xe2\x88\x92\xe2\x88\x9e dB")) : formatDb (gain)),
+                         juce::dontSendNotification);
+    }
+
+    void buildOverview (int width)
+    {
+        overview.assign ((size_t) std::max (1, width), 0.0f);
+        const auto& audio = *shared.audio;
+        const auto n = audio.getNumSamples();
+
+        for (int x = 0; x < (int) overview.size(); ++x)
+        {
+            const auto from = (int) ((juce::int64) n * x / (juce::int64) overview.size());
+            const auto to = std::max (from + 1, (int) ((juce::int64) n * (x + 1) / (juce::int64) overview.size()));
+            float peak = 0.0f;
+
+            for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+                peak = std::max (peak, audio.getMagnitude (ch, from, std::min (to, n) - from));
+
+            overview[(size_t) x] = peak;
+        }
+    }
+
+    void changed()
+    {
+        push();
+        repaint();
+    }
+
+    void setTop (double newTop)
+    {
+        top = newTop;
+
+        for (int i = 0; i < params.count; ++i)
+            params.points[(size_t) i].gain = std::min (params.points[(size_t) i].gain, top);
+
+        rangeButtons[0]->setToggleState (top < 3.0, juce::dontSendNotification);
+        rangeButtons[1]->setToggleState (top >= 3.0, juce::dontSendNotification);
+        changed();
+    }
+
+    void removePoint (int index)
+    {
+        for (int i = index; i + 1 < params.count; ++i)
+            params.points[(size_t) i] = params.points[(size_t) i + 1];
+
+        --params.count;
+        hovered = dragging = -1;
+        changed();
+    }
+
+    void showPointMenu (int index)
+    {
+        juce::PopupMenu menu;
+        auto& p = params.points[(size_t) index];
+
+        if (index < params.count - 1)
+        {
+            menu.addSectionHeader ("Curve to the next point");
+
+            using S = fx::EnvelopePoint::Shape;
+            const auto current = p.shape == S::fast || p.shape == S::slow ? S::curve : p.shape;
+
+            for (auto shape : { S::linear, S::curve, S::smooth, S::bell, S::hold })
+                menu.addItem (fx::envelopeShapeName (shape), true, current == shape, [this, index, shape]
+                {
+                    auto& q = params.points[(size_t) index];
+
+                    if (q.shape != shape)
+                        q.bend = shape == S::curve && q.shape == S::fast ? 0.6 : shape == S::curve && q.shape == S::slow ? -0.6 : 0.0;
+
+                    q.shape = shape;
+                    changed();
+                });
+
+            menu.addSeparator();
+        }
+
+        menu.addItem ("100 % (unchanged)", [this, index] { params.points[(size_t) index].gain = 1.0; changed(); });
+        menu.addItem ("0 % (silence)", [this, index] { params.points[(size_t) index].gain = 0.0; changed(); });
+
+        if (index > 0 && index < params.count - 1)
+        {
+            menu.addSeparator();
+            menu.addItem ("Remove this point", [this, index] { removePoint (index); });
+        }
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withParentComponent (getTopLevelComponent()).withMousePosition());
+    }
+
+    // Ready-made envelopes.
+    void setPreset (int which)
+    {
+        using P = fx::EnvelopePoint;
+        struct Def { const char* name; std::vector<P> points; };
+        static const std::vector<Def> presets {
+            { "Flat (100 %)",                 { { 0.0, 1.0, P::linear }, { 1.0, 1.0, P::linear } } },
+            { "Fade in",                      { { 0.0, 0.0, P::smooth }, { 1.0, 1.0, P::linear } } },
+            { "Fade out",                     { { 0.0, 1.0, P::smooth }, { 1.0, 0.0, P::linear } } },
+            { "Fade in and out",              { { 0.0, 0.0, P::smooth }, { 0.15, 1.0, P::linear }, { 0.85, 1.0, P::smooth }, { 1.0, 0.0, P::linear } } },
+            { "Fade in fast",                 { { 0.0, 0.0, P::curve, 0.6 }, { 1.0, 1.0, P::linear } } },
+            { "Fade out slow (long tail)",    { { 0.0, 1.0, P::curve, -0.6 }, { 1.0, 0.0, P::linear } } },
+            { "Bump in the middle (bell)",    { { 0.0, 1.0, P::bell, 0.3 }, { 1.0, 1.0, P::linear } } },
+            { "Duck the middle (50 %)",       { { 0.0, 1.0, P::smooth }, { 0.2, 0.5, P::linear }, { 0.8, 0.5, P::smooth }, { 1.0, 1.0, P::linear } } },
+            { "Swell (up and down again)",    { { 0.0, 0.0, P::smooth }, { 0.5, 1.0, P::smooth }, { 1.0, 0.0, P::linear } } },
+        };
+
+        if (which < 0)
+        {
+            juce::PopupMenu menu;
+
+            for (size_t i = 0; i < presets.size(); ++i)
+                menu.addItem (presets[i].name, [this, i] { setPreset ((int) i); });
+
+            menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetsButton).withParentComponent (getTopLevelComponent()));
+            return;
+        }
+
+        const auto& def = presets[(size_t) juce::jlimit (0, (int) presets.size() - 1, which)];
+        params.count = 0;
+
+        for (const auto& p : def.points)
+            params.points[(size_t) params.count++] = p;
+
+        changed();
+    }
+
+    void showPresets()   { setPreset (-1); }
+
+    fx::EnvelopeParams params;
+    double top = 2.0;   // the top of the scale: 200 % (+6 dB) or 400 % (+12 dB)
+    int dragging = -1, hovered = -1, bending = -1, hoveredHandle = -1;
+    float bendStartY = 0.0f;
+    double bendStart = 0.0;
+    std::vector<float> overview;
+    juce::Rectangle<int> graph;
+    juce::TextButton presetsButton { "Presets" };
+    juce::OwnedArray<juce::TextButton> rangeButtons;
+    juce::Label readout, hint;
 };
 
 //==============================================================================
@@ -3474,6 +4083,21 @@ private:
     juce::Rectangle<int> infoArea;
 };
 
+// The panel keeps the keyboard (for Space): controls under it don't take it,
+// except text boxes (typing a value).
+void keepKeysForPanel (juce::Component& root)
+{
+    for (auto* c : root.getChildren())
+    {
+        if (dynamic_cast<juce::Button*> (c) != nullptr || dynamic_cast<juce::ComboBox*> (c) != nullptr
+            || dynamic_cast<juce::Slider*> (c) != nullptr)
+            c->setWantsKeyboardFocus (false);
+
+        if (dynamic_cast<juce::TextEditor*> (c) == nullptr)
+            keepKeysForPanel (*c);
+    }
+}
+
 class EffectPanel final : public juce::Component,
                           private juce::Timer
 {
@@ -3489,6 +4113,7 @@ public:
         {
             case EffectKind::eq:          shared.processor = fx::makeEq();         editor = std::make_unique<EqEditor> (shared); name = "Parametric EQ"; break;
             case EffectKind::graphicEq:   shared.processor = fx::makeEq();         editor = std::make_unique<GraphicEqEditor> (shared); break;
+            case EffectKind::envelope:    shared.processor = fx::makeEnvelope();   editor = std::make_unique<EnvelopeEditor> (shared); break;
             case EffectKind::compressor:  shared.processor = fx::makeCompressor(); editor = std::make_unique<CompressorEditor> (shared); name = "Compressor"; break;
             case EffectKind::delay:       shared.processor = fx::makeDelay();      editor = std::make_unique<DelayEditor> (shared); name = "Delay / Echo"; break;
             case EffectKind::reverb:      shared.processor = fx::makeReverb();     editor = std::make_unique<ReverbEditor> (shared); name = "Reverb"; break;
@@ -3561,7 +4186,7 @@ public:
                 addAndMakeVisible (c);
         }
 
-        const auto big = kind == EffectKind::eq || kind == EffectKind::graphicEq;
+        const auto big = kind == EffectKind::eq || kind == EffectKind::graphicEq || kind == EffectKind::envelope;
         const auto height = big ? 700
                           : kind == EffectKind::compressor || kind == EffectKind::gate ? 480
                           : kind == EffectKind::limiter ? 520
@@ -3575,6 +4200,34 @@ public:
                           : kind == EffectKind::mp3Restore ? 640 : 560;
         setSize (big ? 1080 : 820, height);
         startTimerHz (30);
+
+        // Space plays / stops the preview from anywhere in the window: the
+        // buttons, lists and sliders don't take the keyboard (a focused button
+        // would take Space for itself), the panel does.
+        setWantsKeyboardFocus (true);
+        preview.setTooltip ("Preview (Space)");
+        keepKeysForPanel (*this);
+    }
+
+    bool keyPressed (const juce::KeyPress& key) override
+    {
+        if (key == juce::KeyPress::spaceKey)
+        {
+            togglePreview();
+            return true;
+        }
+
+        return false;
+    }
+
+    void visibilityChanged() override
+    {
+        if (isShowing())
+            juce::MessageManager::callAsync ([safeThis = juce::Component::SafePointer<EffectPanel> (this)]
+            {
+                if (auto* panel = safeThis.getComponent(); panel != nullptr && panel->isShowing())
+                    panel->grabKeyboardFocus();
+            });
     }
 
     ~EffectPanel() override
@@ -3643,7 +4296,7 @@ private:
         auto source = std::make_unique<PreviewSource> (shared.audio, shared.processor, shared.taps, shared.bypass);
         shared.host.play (std::move (source), shared.rate(), std::max (1, shared.audio->getNumChannels()));
         shared.previewing = true;
-        preview.setButtonText (juce::CharPointer_UTF8 ("\xe2\x96\xa0  Stop preview"));
+        preview.setButtonText (juce::CharPointer_UTF8 ("\xe2\x96\xa0  Stop preview (Space)"));
         status.setText ("Previewing in a loop: every change is heard at once.", juce::dontSendNotification);
     }
 
@@ -3656,7 +4309,7 @@ private:
             shared.host.stop();
 
         shared.previewing = false;
-        preview.setButtonText (juce::CharPointer_UTF8 ("\xe2\x96\xb6  Preview"));
+        preview.setButtonText (juce::CharPointer_UTF8 ("\xe2\x96\xb6  Preview (Space)"));
 
         if (shared.source.showPlayhead != nullptr)
             shared.source.showPlayhead (-1.0);
@@ -3745,7 +4398,7 @@ private:
     std::unique_ptr<Editor> editor;
     juce::String name;
     juce::Label title, status, tailLabel;
-    juce::TextButton preview { juce::CharPointer_UTF8 ("\xe2\x96\xb6  Preview") }, bypass { "Bypass" }, apply { "Apply" },
+    juce::TextButton preview { juce::CharPointer_UTF8 ("\xe2\x96\xb6  Preview (Space)") }, bypass { "Bypass" }, apply { "Apply" },
                      cancel { "Close" }, autoTail { "Auto" };
     juce::Slider tailSlider;
     juce::Rectangle<int> card;

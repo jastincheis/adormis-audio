@@ -320,7 +320,7 @@ const std::vector<CommandDef>& allCommands()
         toolsNoiseReduction, toolsCaptureNoise, toolsHumRemoval, toolsDeclick, toolsClipRestore,
         insertRegion, viewRegionsList, toolsAutoRegion, toolsExtractRegions, toolsBatch,
         procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDeEsser, toolsMp3Restore, optRecord, optRecordComputer,
-        procEqParametric, procEqGraphic, fxCompressor, fxDelay, fxReverb,
+        procEqParametric, procEqGraphic, procFadeGraphic, insertVolumeEnv, fxCompressor, fxDelay, fxReverb,
         winCascade, winTile, winNext, winPrev,
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,
         optPlay, optPlayAll, optPlayPause, optStop, optGoStart, optGoEnd, optGoLeftEdge, optGoRightEdge, optAudioDevice,
