@@ -54,7 +54,7 @@ On macOS, `Ctrl` shortcuts use `Cmd` and `Alt` uses `Option`.
 ## Install
 
 Download the file for your system from the
-[latest release](https://github.com/jastincheis/waveforge/releases).
+[latest release](https://github.com/jastincheis/adormis-audio/releases).
 The apps are not signed yet, so each system asks you to confirm the first time.
 
 ### macOS (11 Big Sur or newer, Apple Silicon and Intel)
@@ -105,7 +105,7 @@ timings, and the stack of a crash):
 - Linux: `~/.config/Adormis Audio/adormis-audio.log`
 
 The previous start's log is kept next to it as `adormis-audio-previous.log`. Please attach
-both to an [issue](https://github.com/jastincheis/waveforge/issues). If a start ever
+both to an [issue](https://github.com/jastincheis/adormis-audio/issues). If a start ever
 gets stuck opening the audio device, the next one starts without ASIO and without
 the saved device, and says so.
 
@@ -142,7 +142,7 @@ certificate by [SignPath Foundation](https://signpath.org).
 - Only binaries built by this repository's public GitHub Actions workflow
   ([build.yml](.github/workflows/build.yml)) from the `main` branch are signed,
   and only for releases published on the
-  [Releases page](https://github.com/jastincheis/waveforge/releases).
+  [Releases page](https://github.com/jastincheis/adormis-audio/releases).
 - Roles — authors, reviewers and approvers: [@jastincheis](https://github.com/jastincheis)
   (sole maintainer). Contributions from anyone else are reviewed by the
   maintainer before they are merged. Every signing request is approved manually.
