@@ -101,6 +101,17 @@ target_sources(AdormisAudio PRIVATE
     Source/TimeStretch.cpp
     Source/WaveformView.cpp)
 
+# Recording what the computer plays: one backend per system.
+if(WIN32)
+    target_sources(AdormisAudio PRIVATE Source/SystemAudioWindows.cpp)
+elseif(APPLE)
+    target_sources(AdormisAudio PRIVATE Source/SystemAudioMac.mm)
+    set_source_files_properties(Source/SystemAudioMac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_link_libraries(AdormisAudio PRIVATE "-weak_framework ScreenCaptureKit" "-framework CoreMedia" "-framework CoreGraphics")
+else()
+    target_sources(AdormisAudio PRIVATE Source/SystemAudioLinux.cpp)
+endif()
+
 target_compile_definitions(AdormisAudio PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0

@@ -54,6 +54,24 @@ void iconRecord (juce::Graphics& g, juce::Rectangle<float> a)
     fillIcon (g, p, a);
 }
 
+// Record what the computer plays: a screen with a red dot on it.
+void iconRecordComputer (juce::Graphics& g, juce::Rectangle<float> a)
+{
+    juce::Path screen, stand;
+    screen.addRoundedRectangle (3.5f, 4.0f, 17.0f, 12.0f, 2.0f);
+    stand.startNewSubPath (9.0f, 20.0f);
+    stand.lineTo (15.0f, 20.0f);
+    stand.startNewSubPath (12.0f, 16.0f);
+    stand.lineTo (12.0f, 20.0f);
+    strokeIcon (g, screen, a, 1.8f);
+    strokeIcon (g, stand, a, 1.8f);
+
+    juce::Path dot;
+    dot.addEllipse (8.5f, 6.5f, 7.0f, 7.0f);
+    g.setColour (juce::Colour (0xffe53935));
+    fillIcon (g, dot, a);
+}
+
 // Loop: a rounded loop with an arrow on each side.
 void iconLoop (juce::Graphics& g, juce::Rectangle<float> a)
 {
@@ -407,6 +425,7 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     addButton (wf::optPlay,        transportTint, iconPlay);
     addButton (wf::optStop,        transportTint, iconStop);
     addButton (wf::optRecord,      transportTint, iconRecord);
+    addButton (wf::optRecordComputer, transportTint, iconRecordComputer);
     addButton (wf::optLoop,        transportTint, iconLoop);
     addGap();
     addButton (wf::editUndo,       historyTint,   iconUndo);

@@ -87,6 +87,12 @@ public:
     // A marker dragged to `position` (sent once, when the mouse is let go).
     std::function<void (int markerIndex, juce::int64 position)> onMoveMarker;
 
+    // Scrubbing: dragging along the time ruler (or Ctrl / Cmd + drag in the
+    // waveform) plays the audio under the mouse, forwards or backwards, at
+    // the speed of the hand; the cursor stays where the mouse is let go.
+    enum class Scrub { start, move, end };
+    std::function<void (Scrub, juce::int64 sample)> onScrub;
+
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -145,6 +151,7 @@ private:
     bool markerDragged = false;
     std::vector<juce::int64> selectedMarkers;
     bool draggingOut = false;
+    bool scrubbing = false;
     juce::Range<juce::int64> selection;
     int selectedChannel = -1;   // -1: all channels
     int dragChannel = -1;       // channel the current drag-select started in

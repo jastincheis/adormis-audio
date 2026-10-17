@@ -11,6 +11,7 @@
 #include "MixPreview.h"
 #include "ProcessToolbar.h"
 #include "Recorder.h"
+#include "SystemAudioBackend.h"
 #include "StretchDialog.h"
 #include "TemplateDialog.h"
 #include "VolumeDialog.h"
@@ -168,6 +169,7 @@ private:
     void startPlayback (juce::Range<juce::int64> range, int soloChannel = -1);
     void stopPlayback (bool returnToStart);
     void releasePlaybackSource();   // before a document's buffer is changed
+    void scrub (DataWindow* doc, WaveformView::Scrub phase, juce::int64 sample);
     void setLooping (bool shouldLoop);
     void toggleLoop();   // Q: loop on (a selection starts looping) / off
     void followSelectionLoop (DataWindow* doc);
@@ -244,6 +246,7 @@ private:
     std::unique_ptr<wf::MeterTap> meterTap;     // the device plays through this (for the meters)
     std::unique_ptr<wf::MeterPanel> meters;
     std::unique_ptr<juce::PositionableAudioSource> memorySource;
+    std::function<void (juce::int64)> scrubTo;   // while scrubbing: where the mouse is
     juce::Component::SafePointer<DataWindow> playingDocument;
     juce::Range<juce::int64> playRange;
     juce::int64 playStartCursor = 0;
@@ -277,6 +280,10 @@ private:
     std::unique_ptr<juce::PositionableAudioSource> toolPreview;
 
     wf::InputRecorder recorder;
+    std::unique_ptr<wf::SystemAudioBackend> systemAudio;   // after the recorder: stops before it goes
+    bool recordingSystemAudio = false;
+    juce::String setRecordSource (bool systemAudio);
+    void recordComputer();
     std::unique_ptr<juce::DocumentWindow> recordWindow;
     juce::Component::SafePointer<DataWindow> recordDocument;
     juce::AudioBuffer<float> recordChunk;

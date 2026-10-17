@@ -33,6 +33,12 @@ public:
 
     void audioDeviceIOCallbackWithContext (const float* const* inputs, int numInputs, float* const* outputs, int numOutputs,
                                            int numSamples, const juce::AudioIODeviceCallbackContext&) override;
+
+    // Another source instead of the audio device (what the computer plays):
+    // it calls push() from its own thread while it runs.
+    void externalSourceStarted (double rate, int channels, const juce::String& name);
+    void externalSourceStopped()   { inputChannels = 0; }
+    void push (const float* const* channels, int numSamples);
     void audioDeviceAboutToStart (juce::AudioIODevice*) override;
     void audioDeviceStopped() override;
 
@@ -72,6 +78,12 @@ struct RecordCallbacks
     std::function<bool()> fileIsEmpty;
     std::function<int()> fileChannels;
     std::function<juce::String()> fileTitle;
+
+    // What to record: the audio input, or what the computer plays (empty
+    // when this system can't). Returns a message when switching failed.
+    std::function<bool()> systemAudioAvailable;
+    std::function<bool()> recordingSystemAudio;
+    std::function<juce::String (bool systemAudio)> setSource;
 };
 
 // The Record window: input meter, input level slider, mono/stereo and Record / Stop.

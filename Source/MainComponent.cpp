@@ -511,6 +511,7 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
         return;
 
     auto* raw = doc.get();
+    raw->getView().onScrub = [this, raw] (WaveformView::Scrub phase, juce::int64 sample) { scrub (raw, phase, sample); };
     raw->onRegionAction = [this, raw] (int index, bool menu)
     {
         if (menu) regionMenu (raw, index);
@@ -2378,6 +2379,22 @@ void MainComponent::record()
         startTake();
 }
 
+// Opens the Record window set to what the computer plays (or switches it there).
+void MainComponent::recordComputer()
+{
+    if (isRecording())
+        return;
+
+    if (recordWindow == nullptr)
+        openRecorder();
+
+    if (const auto error = setRecordSource (true); error.isNotEmpty())
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Record What the Computer Plays", error);
+
+    if (recordWindow != nullptr)
+        recordWindow->toFront (true);
+}
+
 void MainComponent::openRecorder()
 {
     releasePlaybackSource();
@@ -2422,6 +2439,16 @@ void MainComponent::openRecorder()
     callbacks.fileIsEmpty = [this] { auto* d = recordDocument.getComponent(); return d == nullptr || d->isEmpty(); };
     callbacks.fileChannels = [this] { auto* d = recordDocument.getComponent(); return d != nullptr ? d->getBuffer().getNumChannels() : 2; };
     callbacks.fileTitle = [this] { auto* d = recordDocument.getComponent(); return d != nullptr ? d->getTitle() : juce::String ("(closed)"); };
+    callbacks.systemAudioAvailable = []
+    {
+#if JUCE_WINDOWS || JUCE_LINUX || JUCE_MAC
+        return true;
+#else
+        return false;
+#endif
+    };
+    callbacks.recordingSystemAudio = [this] { return recordingSystemAudio; };
+    callbacks.setSource = [this] (bool system) { return setRecordSource (system); };
     callbacks.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
     {
         juce::MessageManager::callAsync ([safeThis]
@@ -2436,6 +2463,57 @@ void MainComponent::openRecorder()
     recordWindow->toFront (false);
     recordPump.tick = [this] { pumpRecording(); };
     commandManager.commandStatusChanged();
+}
+
+// Record > what the computer plays: the system's own capture of the default
+// output feeds the recorder instead of the audio device's input.
+juce::String MainComponent::setRecordSource (bool system)
+{
+    if (system == recordingSystemAudio || isRecording())
+        return {};
+
+    if (system)
+    {
+        if (systemAudio == nullptr)
+            systemAudio = wf::createSystemAudioBackend();
+
+        if (systemAudio == nullptr)
+            return "This system can't record what the computer plays.";
+
+        deviceManager.removeAudioCallback (&recorder);
+        setInputEnabled (false);
+        recorder.externalSourceStarted (systemAudio->sampleRate(), 2, juce::String (systemAudio->name()));
+        std::string error;
+
+        if (! systemAudio->start ([this] (const float* const* channels, int n) { recorder.push (channels, n); }, error))
+        {
+            recorder.externalSourceStopped();
+            setInputEnabled (true);
+            deviceManager.addAudioCallback (&recorder);
+            return juce::String (error);
+        }
+
+        // the backend may only know its real rate once it runs
+        recorder.externalSourceStarted (systemAudio->sampleRate(), 2, juce::String (systemAudio->name()));
+        recordingSystemAudio = true;
+
+        if (auto* d = recordDocument.getComponent(); d != nullptr && d->isEmpty())
+            d->setEmptyFormat (systemAudio->sampleRate(), 2);
+    }
+    else
+    {
+        systemAudio->stop();
+        recorder.externalSourceStopped();
+        recordingSystemAudio = false;
+        setInputEnabled (true);
+        deviceManager.addAudioCallback (&recorder);
+
+        if (auto* d = recordDocument.getComponent(); d != nullptr && d->isEmpty())
+            d->setEmptyFormat (recorder.getSampleRate(), d->getBuffer().getNumChannels());
+    }
+
+    commandManager.commandStatusChanged();
+    return {};
 }
 
 void MainComponent::startTake()
@@ -2505,6 +2583,14 @@ void MainComponent::stopTake()
 void MainComponent::closeRecorder()
 {
     stopTake();
+
+    if (recordingSystemAudio)
+    {
+        systemAudio->stop();
+        recorder.externalSourceStopped();
+        recordingSystemAudio = false;
+    }
+
     recordWindow.reset();
     recordDocument = nullptr;
     deviceManager.removeAudioCallback (&recorder);
@@ -2617,6 +2703,7 @@ void MainComponent::releasePlaybackSource()
     // The memory source points straight at a document's samples, so detach it
     // (under the audio callback lock) before any buffer is modified or reallocated.
     stopPlayback (false);
+    scrubTo = nullptr;
     transport.setSource (nullptr);
     memorySource.reset();
     playingDocument = nullptr;
@@ -2686,6 +2773,62 @@ juce::int64 MainComponent::playPosition() const
 
 namespace
 {
+// Scrubbing: the read position follows the mouse like a record under the
+// hand. It glides towards where the mouse is (about 50 ms behind), so the
+// speed and direction of the hand become the playback speed (up to 8x either
+// way); when the hand stops, the sound fades out instead of holding a click.
+class ScrubSource final : public juce::PositionableAudioSource
+{
+public:
+    ScrubSource (const juce::AudioBuffer<float>& audioIn, juce::int64 start, double rateIn)
+        : audio (audioIn), rate (rateIn), position ((double) start), target ((double) start) {}
+
+    void setTarget (juce::int64 sample)   { target = (double) sample; }
+
+    void prepareToPlay (int, double) override {}
+    void releaseResources() override {}
+
+    void getNextAudioBlock (const juce::AudioSourceChannelInfo& info) override
+    {
+        const auto length = audio.getNumSamples();
+        const auto channels = audio.getNumChannels();
+        const auto lag = 0.05 * rate;                        // how far behind the mouse it glides
+        const auto smooth = 1.0 - std::exp (-1.0 / (0.01 * rate));
+        const auto fade = 1.0 - std::exp (-1.0 / (0.005 * rate));
+        const auto goal = target.load();
+
+        for (int i = 0; i < info.numSamples; ++i)
+        {
+            const auto wanted = juce::jlimit (-8.0, 8.0, (goal - position) / lag);
+            speed += (wanted - speed) * smooth;
+            position = juce::jlimit (0.0, (double) std::max (0, length - 1), position + speed);
+            gain += (std::min (1.0, std::abs (speed) / 0.15) - gain) * fade;
+
+            const auto index = (int) position;
+            const auto frac = (float) (position - index);
+            const auto next = std::min (index + 1, length - 1);
+
+            for (int ch = 0; ch < info.buffer->getNumChannels(); ++ch)
+            {
+                const auto* in = audio.getReadPointer (std::min (ch, channels - 1));
+                const auto v = in[index] + (in[next] - in[index]) * frac;
+                info.buffer->setSample (ch, info.startSample + i, (float) (v * gain));
+            }
+        }
+    }
+
+    void setNextReadPosition (juce::int64) override {}
+    juce::int64 getNextReadPosition() const override  { return (juce::int64) position; }
+    juce::int64 getTotalLength() const override       { return audio.getNumSamples(); }
+    bool isLooping() const override                   { return false; }
+
+private:
+    const juce::AudioBuffer<float>& audio;
+    const double rate;
+    double position, speed = 0.0, gain = 0.0;
+    std::atomic<double> target;
+};
+
 // Plays a document through MemoryAudioSource, optionally with only one
 // channel audible (the others silenced), for single-channel selections.
 class SoloPlaybackSource final : public juce::PositionableAudioSource
@@ -2918,6 +3061,44 @@ void MainComponent::setLooping (bool shouldLoop)
     commandManager.commandStatusChanged();
 }
 
+void MainComponent::scrub (DataWindow* doc, WaveformView::Scrub phase, juce::int64 sample)
+{
+    if (phase == WaveformView::Scrub::start)
+    {
+        if (isRecording())
+            return;
+
+        releasePlaybackSource();
+        auto source = std::make_unique<ScrubSource> (doc->getBuffer(), sample, doc->getSampleRate());
+        auto* raw = source.get();
+        memorySource = std::move (source);
+        transport.setSource (memorySource.get(), 0, nullptr, doc->getSampleRate(), juce::jmax (2, doc->getBuffer().getNumChannels()));
+        playingDocument = doc;
+        scrubTo = [raw] (juce::int64 s) { raw->setTarget (s); };
+        transport.start();
+        return;
+    }
+
+    if (scrubTo == nullptr || playingDocument.getComponent() != doc)
+        return;
+
+    if (phase == WaveformView::Scrub::move)
+    {
+        scrubTo (sample);
+        statusBar.setText ("  Scrubbing " + doc->getTitle() + "   " + WaveformView::formatTime ((double) sample / doc->getSampleRate()),
+                           juce::dontSendNotification);
+        return;
+    }
+
+    scrubTo = nullptr;
+    transport.stop();
+    transport.setSource (nullptr);
+    memorySource.reset();
+    playingDocument = nullptr;
+    updateStatus();
+    commandManager.commandStatusChanged();
+}
+
 void MainComponent::startPlayback (juce::Range<juce::int64> range, int soloChannel)
 {
     auto* doc = activeDocument();
@@ -3078,7 +3259,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
     switch (id)
     {
         case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice: case wf::optKeyboard: case wf::toolsBatch:
-        case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord:
+        case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord: case wf::optRecordComputer:
             break;
 
         case wf::editUndo:  available = available && doc != nullptr && doc->canUndo(); break;
@@ -3214,6 +3395,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::optAudioDevice:    showAudioSettings(); return true;
         case wf::optKeyboard:       showKeyboardEditor(); return true;
         case wf::optRecord:         record(); return true;
+        case wf::optRecordComputer: recordComputer(); return true;
         case wf::helpShortcuts:     showShortcuts(); return true;
         case wf::helpAbout:         showAbout(); return true;
         case wf::winCascade:        arrangeWindows (true); return true;

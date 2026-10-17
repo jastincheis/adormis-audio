@@ -334,6 +334,13 @@ void WaveformView::mouseMove (const juce::MouseEvent& e)
         return;
     }
 
+    // The ruler scrubs: a hand that drags the audio along.
+    if (hasAudio() && e.y < rulerHeight)
+    {
+        setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+        return;
+    }
+
     const auto zone = waveArea().contains (e.getPosition()) && markerAt (e.getPosition()) < 0
                           ? channelZoneAt (e.getPosition()) : -1;
     setMouseCursor (zone == 0 ? leftCursor : zone > 0 ? rightCursor : juce::MouseCursor::NormalCursor);
@@ -489,6 +496,18 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
         repaint();
     }
 
+    // The time ruler (or Ctrl / Cmd in the waveform): scrub.
+    if (onScrub != nullptr && ! e.mods.isPopupMenu()
+        && (e.y < rulerHeight || (e.mods.isCommandDown() && waveArea().contains (e.getPosition()))))
+    {
+        const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
+        scrubbing = true;
+        pressedOnMarker = true;   // no drag-select
+        setPlayhead (sample);
+        onScrub (Scrub::start, sample);
+        return;
+    }
+
     // The region strip: a click selects the region, a right-click offers a menu.
     if (regionLane().contains (e.getPosition()))
     {
@@ -549,6 +568,27 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
 
 void WaveformView::mouseDrag (const juce::MouseEvent& e)
 {
+    if (scrubbing)
+    {
+        // Past an edge of the view the view moves along (faster the further out).
+        const auto wave = waveArea();
+        const auto outside = e.x < wave.getX() ? e.x - wave.getX() : e.x > wave.getRight() ? e.x - wave.getRight() : 0;
+
+        if (outside != 0)
+        {
+            viewStart += outside * samplesPerPixel * 0.25;
+            clampView();
+            updateScrollBar();
+            repaint();
+        }
+
+        const auto x = (float) juce::jlimit (wave.getX(), wave.getRight(), e.x);
+        const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample (x));
+        setPlayhead (sample);
+        onScrub (Scrub::move, sample);
+        return;
+    }
+
     // Dragging a marker (its flag or its line) moves it left / right.
     if (hasAudio() && pressedOnMarker && markerDragIndex >= 0)
     {
@@ -588,6 +628,24 @@ void WaveformView::mouseDrag (const juce::MouseEvent& e)
 
 void WaveformView::mouseUp (const juce::MouseEvent& e)
 {
+    if (scrubbing)
+    {
+        scrubbing = false;
+        pressedOnMarker = false;
+        const auto wave = waveArea();
+        const auto x = (float) juce::jlimit (wave.getX(), wave.getRight(), e.x);
+        const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample (x));
+        setPlayhead (-1);
+        dragAnchor = sample;
+        cursor = sample;
+        setSelection ({});
+
+        if (onScrub != nullptr)
+            onScrub (Scrub::end, sample);
+
+        return;
+    }
+
     // A plain click inside the selection (no drag) just places the cursor.
     if (pressedInSelection && ! draggingOut && hasAudio())
     {

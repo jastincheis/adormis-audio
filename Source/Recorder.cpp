@@ -162,6 +162,21 @@ void InputRecorder::audioDeviceStopped()
     inputChannels = 0;
 }
 
+void InputRecorder::externalSourceStarted (double rate, int channels, const juce::String& name)
+{
+    rightHasSignal = true;   // a stereo mix: never fold it to the left channel
+    inputChannels = channels;
+    sampleRate = rate;
+
+    const juce::ScopedLock sl (nameLock);
+    deviceName = name;
+}
+
+void InputRecorder::push (const float* const* channels, int numSamples)
+{
+    audioDeviceIOCallbackWithContext (channels, 2, nullptr, 0, numSamples, {});
+}
+
 namespace
 {
 const juce::Colour panel (0xffd4d0c8);
@@ -325,7 +340,7 @@ class RecordPanel final : public juce::Component,
 public:
     RecordPanel (InputRecorder& r, RecordCallbacks cb) : recorder (r), callbacks (std::move (cb))
     {
-        for (auto* l : { &target, &device, &levelLabel, &channelsLabel, &bitsLabel, &time, &status, &hint })
+        for (auto* l : { &target, &sourceLabel, &device, &levelLabel, &channelsLabel, &bitsLabel, &time, &status, &hint })
         {
             l->setColour (juce::Label::textColourId, juce::Colours::black);
             addAndMakeVisible (l);
@@ -342,6 +357,23 @@ public:
                       juce::dontSendNotification);
         hint.setJustificationType (juce::Justification::topLeft);
         levelLabel.setText ("Input level:", juce::dontSendNotification);
+        sourceLabel.setText ("Record:", juce::dontSendNotification);
+
+        const auto systemAvailable = callbacks.systemAudioAvailable != nullptr && callbacks.systemAudioAvailable();
+        sourceBox.addItem ("The audio input (microphone, line in)", 1);
+        sourceBox.addItem (systemAvailable ? juce::String ("What the computer plays (YouTube, music, any program)")
+                                           : juce::String ("What the computer plays (not possible on this system)"), 2);
+        sourceBox.setItemEnabled (2, systemAvailable);
+        sourceBox.onChange = [this]
+        {
+            if (callbacks.setSource == nullptr)
+                return;
+
+            const auto error = callbacks.setSource (sourceBox.getSelectedId() == 2);
+            sourceError = error;
+            refresh();
+        };
+        addAndMakeVisible (sourceBox);
         channelsLabel.setText ("Channels:", juce::dontSendNotification);
         bitsLabel.setText ("Bits:", juce::dontSendNotification);
 
@@ -387,7 +419,7 @@ public:
         addAndMakeVisible (closeButton);
         addAndMakeVisible (meter);
 
-        setSize (600, 330);
+        setSize (600, 366);
         refresh();
         startTimerHz (30);
     }
@@ -397,6 +429,11 @@ public:
         auto area = getLocalBounds().reduced (14);
         auto row = area.removeFromTop (22);
         target.setBounds (row);
+        area.removeFromTop (6);
+        row = area.removeFromTop (26);
+        sourceLabel.setBounds (row.removeFromLeft (64));
+        sourceBox.setBounds (row.removeFromLeft (400));
+        area.removeFromTop (4);
         row = area.removeFromTop (22);
         settingsButton.setBounds (row.removeFromRight (120));
         device.setBounds (row);
@@ -443,10 +480,24 @@ private:
 
         target.setText ("Recording into: " + (callbacks.fileTitle != nullptr ? callbacks.fileTitle() : juce::String()),
                         juce::dontSendNotification);
-        device.setText (inputs > 0 ? "Input: " + recorder.getDeviceName() + "  -  " + juce::String (juce::roundToInt (recorder.getSampleRate()))
-                                         + " Hz, " + juce::String (inputs) + (inputs == 1 ? " channel" : " channels")
-                                   : juce::String ("No audio input: choose one in Audio Device..."),
-                        juce::dontSendNotification);
+        const auto system = callbacks.recordingSystemAudio != nullptr && callbacks.recordingSystemAudio();
+        sourceBox.setSelectedId (system ? 2 : 1, juce::dontSendNotification);
+        sourceBox.setEnabled (! rec);
+
+        if (sourceError.isNotEmpty())
+            device.setText (sourceError, juce::dontSendNotification);
+        else if (system)
+            device.setText ("Recording what plays on " + recorder.getDeviceName() + "  -  "
+                                + juce::String (juce::roundToInt (recorder.getSampleRate())) + " Hz, stereo",
+                            juce::dontSendNotification);
+        else
+            device.setText (inputs > 0 ? "Input: " + recorder.getDeviceName() + "  -  " + juce::String (juce::roundToInt (recorder.getSampleRate()))
+                                             + " Hz, " + juce::String (inputs) + (inputs == 1 ? " channel" : " channels")
+                                       : juce::String ("No audio input: choose one in Audio Device..."),
+                            juce::dontSendNotification);
+
+        device.setColour (juce::Label::textColourId, sourceError.isNotEmpty() ? juce::Colour (0xffb71c1c) : juce::Colours::black);
+        settingsButton.setVisible (! system);
 
         const auto empty = callbacks.fileIsEmpty == nullptr || callbacks.fileIsEmpty();
         channels.setEnabled (empty && ! rec);
@@ -467,6 +518,7 @@ private:
             dropped = true;
 
         status.setText (rec ? juce::String ("Recording...") + (dropped ? "  (some audio was lost: the computer was too busy)" : "")
+                            : inputs > 0 && system ? juce::String ("Listening to the computer. Press Record, then play something.")
                             : inputs > 0 ? juce::String ("Listening to the input. Press Record when ready.")
                                          : juce::String ("No input."),
                         juce::dontSendNotification);
@@ -482,11 +534,12 @@ private:
     InputRecorder& recorder;
     RecordCallbacks callbacks;
     bool dropped = false;
+    juce::String sourceError;
 
-    juce::Label target, device, levelLabel, channelsLabel, bitsLabel, time, status, hint;
+    juce::Label target, sourceLabel, device, levelLabel, channelsLabel, bitsLabel, time, status, hint;
     LevelMeter meter;
     juce::Slider level { juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight };
-    juce::ComboBox channels, bitsBox;
+    juce::ComboBox sourceBox, channels, bitsBox;
     juce::TextButton recordButton, settingsButton { "Audio Device..." }, closeButton { "Close" };
 };
 
