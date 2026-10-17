@@ -19,6 +19,7 @@
 #include "MeterPanel.h"
 #include "StatisticsWindow.h"
 #include "RegionsWindow.h"
+#include "SpectrumWindow.h"
 
 class ShortcutsWindow;
 
@@ -106,6 +107,8 @@ private:
     void showAutoRegion();
     void extractRegions();
     std::unique_ptr<wf::RegionsWindow> regionsWindow;
+    std::unique_ptr<wf::SpectrumWindow> spectrumWindow;
+    void toggleSpectrum();
     void showBatch();   // Tools > Batch Converter
 
     // Right-click on the workspace: Create New (an empty file) and Open Recent.

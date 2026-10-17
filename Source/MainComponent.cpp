@@ -1489,8 +1489,50 @@ void MainComponent::toggleRegionsList()
     commandManager.commandStatusChanged();
 }
 
+// View > Spectrum Analysis: follows the active file, its selection and cursor,
+// and whatever plays.
+void MainComponent::toggleSpectrum()
+{
+    if (spectrumWindow != nullptr)
+    {
+        spectrumWindow.reset();
+        commandManager.commandStatusChanged();
+        return;
+    }
+
+    if (meterTap == nullptr)
+        return;
+
+    wf::SpectrumSource source;
+    source.audio = [this]() -> const juce::AudioBuffer<float>* { auto* d = activeDocument(); return d != nullptr ? &d->getBuffer() : nullptr; };
+    source.sampleRate = [this] { auto* d = activeDocument(); return d != nullptr ? d->getSampleRate() : 44100.0; };
+    source.selection = [this] { auto* d = activeDocument(); return d != nullptr ? d->getView().getSelection() : juce::Range<juce::int64>(); };
+    source.cursor = [this] { auto* d = activeDocument(); return d != nullptr ? d->getView().getCursor() : (juce::int64) 0; };
+    source.playing = [this] { return isPlaying(); };
+    source.title = [this] { auto* d = activeDocument(); return d != nullptr ? d->getTitle() : juce::String(); };
+    source.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->spectrumWindow.reset();
+                main->commandManager.commandStatusChanged();
+            }
+        });
+    };
+
+    spectrumWindow = std::make_unique<wf::SpectrumWindow> (std::move (source), *meterTap);
+    spectrumWindow->setVisible (true);
+    spectrumWindow->toFront (false);
+    commandManager.commandStatusChanged();
+}
+
 void MainComponent::refreshRegionsList()
 {
+    if (spectrumWindow != nullptr)
+        spectrumWindow->sourceChanged();
+
     if (regionsWindow == nullptr)
         return;
 
@@ -3355,6 +3397,10 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             info.setTicked (regionsWindow != nullptr);
             break;
 
+        case wf::viewSpectrum:
+            info.setTicked (spectrumWindow != nullptr);
+            break;
+
         case wf::toolsExtractRegions:
             available = available && doc != nullptr && ! doc->getRegions().empty() && job == nullptr;
             break;
@@ -3401,10 +3447,11 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
     // while recording, only Record (to stop), the windows and zoom work.
     const auto editsOrPlays = (id >= wf::editUndo && id < wf::favPluginManager) || (id >= wf::optPlay && id <= wf::optGoEnd);
     const auto stillWorksWhileRecording = id == wf::optRecord || id == wf::helpShortcuts || id == wf::helpAbout
-                                       || id == wf::viewChannelMeters || id == wf::viewLoudnessMeters || id == wf::viewRegionsList
+                                       || id == wf::viewChannelMeters || id == wf::viewLoudnessMeters || id == wf::viewRegionsList || id == wf::viewSpectrum
                                        || (id >= wf::winCascade && id <= wf::winPrev) || (id >= wf::viewZoomIn && id <= wf::viewZoomNormal);
 
     if (editsOrPlays && id != wf::optRecord && id != wf::viewChannelMeters && id != wf::viewLoudnessMeters && id != wf::viewRegionsList
+        && id != wf::viewSpectrum
         && id != wf::editPaste && id != wf::editMix
         && doc != nullptr && doc->isEmpty())
         available = false;
@@ -3593,6 +3640,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::toolsCaptureNoise: captureNoisePrint(); return true;
         case wf::insertRegion:      insertRegion(); return true;
         case wf::viewRegionsList:   toggleRegionsList(); return true;
+        case wf::viewSpectrum:      toggleSpectrum(); return true;
         case wf::toolsAutoRegion:   showAutoRegion(); return true;
         case wf::toolsExtractRegions: extractRegions(); return true;
         case wf::toolsBatch:        showBatch(); return true;

@@ -26,13 +26,26 @@ public:
     double getSampleRate() const   { return sampleRate.load(); }
     void setEnabled (bool shouldCopy)   { enabled.store (shouldCopy); }
 
+    // A second copy for View > Spectrum Analysis (its own reader).
+    int readAnalysis (juce::AudioBuffer<float>& destination);
+    void setAnalysisEnabled (bool shouldCopy)   { analysisEnabled.store (shouldCopy); }
+
 private:
-    juce::AudioIODeviceCallback& inner;
     static constexpr int capacity = 1 << 17;   // > 0.6 s at 192 kHz
-    juce::AbstractFifo fifo { capacity };
-    juce::AudioBuffer<float> ring { 2, capacity };
+
+    struct Copy
+    {
+        juce::AbstractFifo fifo { capacity };
+        juce::AudioBuffer<float> ring { 2, capacity };
+
+        void write (const float* const* outputs, int numOutputs, int numSamples);
+        int read (juce::AudioBuffer<float>& destination);
+    };
+
+    juce::AudioIODeviceCallback& inner;
+    Copy meters, analysis;
     std::atomic<double> sampleRate { 0.0 };
-    std::atomic<bool> enabled { false };
+    std::atomic<bool> enabled { false }, analysisEnabled { false };
 };
 
 // The meters docked on the right of the main window: Channel Meters (peak,

@@ -92,6 +92,7 @@ target_sources(AdormisAudio PRIVATE
     Source/BatchWindow.cpp
     Source/Settings.cpp
     Source/StatisticsWindow.cpp
+    Source/SpectrumWindow.cpp
     Source/ProcessToolbar.cpp
     Source/Recorder.cpp
     Source/ShortcutsWindow.cpp

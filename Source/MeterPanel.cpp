@@ -9,13 +9,22 @@ void MeterTap::audioDeviceIOCallbackWithContext (const float* const* inputs, int
 {
     inner.audioDeviceIOCallbackWithContext (inputs, numInputs, outputs, numOutputs, numSamples, context);
 
-    if (! enabled.load() || numOutputs <= 0)
+    if (numOutputs <= 0)
         return;
 
+    if (enabled.load())
+        meters.write (outputs, numOutputs, numSamples);
+
+    if (analysisEnabled.load())
+        analysis.write (outputs, numOutputs, numSamples);
+}
+
+void MeterTap::Copy::write (const float* const* outputs, int numOutputs, int numSamples)
+{
     const auto toWrite = juce::jmin (numSamples, fifo.getFreeSpace());
 
     if (toWrite <= 0)
-        return;   // the meters fell behind: drop rather than block
+        return;   // the reader fell behind: drop rather than block
 
     const auto scope = fifo.write (toWrite);
 
@@ -43,7 +52,7 @@ void MeterTap::audioDeviceStopped()
     sampleRate.store (0.0);
 }
 
-int MeterTap::read (juce::AudioBuffer<float>& destination)
+int MeterTap::Copy::read (juce::AudioBuffer<float>& destination)
 {
     const auto toRead = juce::jmin (fifo.getNumReady(), destination.getNumSamples());
 
@@ -60,6 +69,9 @@ int MeterTap::read (juce::AudioBuffer<float>& destination)
 
     return toRead;
 }
+
+int MeterTap::read (juce::AudioBuffer<float>& destination)           { return meters.read (destination); }
+int MeterTap::readAnalysis (juce::AudioBuffer<float>& destination)   { return analysis.read (destination); }
 
 //==============================================================================
 namespace
