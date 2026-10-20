@@ -10,6 +10,7 @@ namespace wf
 struct BassFinderSource
 {
     juce::String title;                // "Song.wav (selection)"
+    bool isSelection = false;          // a selection, not the whole file
     juce::AudioBuffer<float> audio;
     double sampleRate = 44100.0;
 

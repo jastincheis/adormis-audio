@@ -1,5 +1,6 @@
 #include "MixDialog.h"
 #include "Settings.h"
+#include "SpaceKey.h"
 
 namespace wf
 {
@@ -15,9 +16,12 @@ float gainFromDb (double db)
 }
 
 class MixPanel final : public juce::Component,
+                       public SpaceTarget,
                        private juce::Timer
 {
 public:
+    bool spacePressed() override   { previewButton.onClick(); return true; }   // Space = Preview / Stop preview
+
     MixPanel (const juce::String& description, std::shared_ptr<MixGains> gainsIn, MixDialogCallbacks callbacksIn)
         : gains (std::move (gainsIn)), callbacks (std::move (callbacksIn))
     {

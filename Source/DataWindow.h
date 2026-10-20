@@ -12,6 +12,35 @@
 class DataWindow final : public juce::Component
 {
 public:
+    ~DataWindow() override;
+
+    // Get Stems: the window can hold several pages, one tab each: the song,
+    // then its parts (drums, bass...). The page shown IS the document: every
+    // command, Save included, works on it. The others wait with their own
+    // audio, markers, regions, undo history and file.
+    void addStemPages (std::vector<std::pair<juce::String, juce::AudioBuffer<float>>> parts);
+    int getNumPages() const        { return juce::jmax (1, (int) pages.size()); }
+    int getCurrentPage() const     { return currentPage; }
+    bool hasStemPages() const      { return pages.size() > 1; }
+
+    // A part made by Get Stems (drums, bass...): it gets no Get Stems of its
+    // own. Known from its tab, from the tag Save writes in a WAV, or else from
+    // the file name ("Song - Drums.wav", "Bass.wav", "2 Bas.wav").
+    bool isStem() const            { return stemPart.isNotEmpty(); }
+    static juce::String stemPartFromName (const juce::String& fileName);
+    void showPage (int index);
+
+    // Pages (the shown one included) with changes not saved, by tab name.
+    juce::StringArray unsavedPages() const;
+
+    // Where Save As starts for a page that was never saved (a stem: its song's folder).
+    juce::File getSaveFolder() const;
+
+    // The Get Stems button (top right) and the tab switch: playback is
+    // stopped before (the samples change) and may go on after.
+    std::function<void()> onGetStems, beforePageChange, afterPageChange;
+    void setGettingStems (bool busy);
+
     // The tempo a file was made with (File > New from a tempo template),
     // shown instead of a detected one for the whole file. 0 = not known.
     void setKnownTempo (double bpm)   { knownTempo = bpm; }
@@ -236,6 +265,16 @@ public:
 
 private:
     DataWindow() = default;
+
+    struct Page;
+    std::vector<std::unique_ptr<Page>> pages;   // empty = one page (no stems); the shown page's slot is empty
+    int currentPage = 0;
+    juce::File saveFolder;
+    juce::OwnedArray<juce::TextButton> tabs;
+    juce::TextButton getStemsButton { "Get Stems" };
+    juce::String stemPart;   // "Drums", "Bass"... for a part; empty for a song
+    void swapWith (Page&);
+    void updateTabs();
 
     void initialise (const juce::String& title);
 

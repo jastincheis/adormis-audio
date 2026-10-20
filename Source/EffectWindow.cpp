@@ -6,6 +6,7 @@
 #include "Analysis.h"
 #include "DarkTheme.h"
 #include "Effects.h"
+#include "SpaceKey.h"
 #include <juce_dsp/juce_dsp.h>
 
 namespace wf
@@ -4066,6 +4067,7 @@ void keepKeysForPanel (juce::Component& root)
 }
 
 class EffectPanel final : public juce::Component,
+                          public SpaceTarget,
                           private juce::Timer
 {
 public:
@@ -4191,6 +4193,8 @@ public:
 
         return false;
     }
+
+    bool spacePressed() override   { togglePreview(); return true; }   // when the panel hasn't the keyboard
 
     void visibilityChanged() override
     {

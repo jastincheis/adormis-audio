@@ -152,6 +152,16 @@ void AudioFilePreview::playFrom (double seconds)
     playing = true;
 }
 
+bool AudioFilePreview::spacePressed()
+{
+    if (playing)
+        stop();
+    else
+        playFrom (0.0);
+
+    return true;
+}
+
 void AudioFilePreview::stop()
 {
     if (playing && host.stop != nullptr)

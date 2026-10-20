@@ -15,6 +15,9 @@ constexpr juce::int64 maxBufferBytes = (juce::int64) 2 * 1024 * 1024 * 1024;
 // Undo keeps full snapshots; drop the oldest ones beyond this budget.
 constexpr size_t maxUndoBytes = (size_t) 768 * 1024 * 1024;
 
+// The WAV comment Save writes in a part made by Get Stems ("... Drums").
+constexpr const char* stemTag = "Adormis Audio stem:";
+
 size_t bytesOf (const juce::AudioBuffer<float>& b)
 {
     return (size_t) b.getNumChannels() * (size_t) b.getNumSamples() * sizeof (float);
@@ -159,6 +162,10 @@ std::unique_ptr<DataWindow> DataWindow::load (const juce::File& file, juce::Audi
     reader->read (&doc->buffer, 0, (int) length, 0, true, true);
     doc->readCues (reader->metadataValues);
 
+    const auto comment = reader->metadataValues[juce::WavAudioFormat::riffInfoComment2];
+    doc->stemPart = comment.startsWith (stemTag) ? comment.fromFirstOccurrenceOf (stemTag, false, false).trim()
+                                                 : stemPartFromName (file.getFileName());
+
     doc->initialise (file.getFileName());
     return doc;
 }
@@ -205,6 +212,10 @@ void DataWindow::initialise (const juce::String& newTitle)
     view.onRegionMenu = [this] (int index) { if (onRegionAction) onRegionAction (index, true); };
     addAndMakeVisible (view);
 
+    getStemsButton.setTooltip ("Split the song into drums, bass, vocals and the other instruments (AI), one tab each");
+    getStemsButton.onClick = [this] { if (onGetStems) onGetStems(); };
+    addChildComponent (getStemsButton);
+
     for (auto* label : { &resolutionLabel, &lengthBox, &cursorBox })
     {
         label->setFont (juce::FontOptions (14.0f));
@@ -232,6 +243,34 @@ bool DataWindow::isSaveExtension (const juce::String& extension)
         return wf::mp3EncodingAvailable();
 
     return juce::StringArray { ".wav", ".flac", ".aiff", ".aif", ".ogg" }.contains (extension, true);
+}
+
+juce::String DataWindow::stemPartFromName (const juce::String& fileName)
+{
+    // The parts Get Stems makes, plus the usual names (English and Romanian).
+    static const juce::StringArray parts { "Drums", "Bass", "Vocals", "Other instruments", "Other", "Guitar", "Piano",
+                                           "Tobe", "Bas", "Voce", "Restul", "Chitara", "Chitară", "Pian" };
+
+    auto name = fileName.containsChar ('.') ? fileName.upToLastOccurrenceOf (".", false, false) : fileName;
+
+    // "Song - Drums": what Save names a part.
+    if (name.contains (" - "))
+        if (const auto i = parts.indexOf (name.fromLastOccurrenceOf (" - ", false, false).trim(), true); i >= 0)
+            return parts[i];
+
+    // "Bass", "2 Bas", "1 Tobe (6s)": the whole name is a part, give or take
+    // a number in front and notes in brackets after.
+    name = name.trim();
+
+    while (name.endsWithChar (')') && name.containsChar ('('))
+        name = name.upToLastOccurrenceOf ("(", false, false).trim();
+
+    name = name.trimCharactersAtStart ("0123456789.-_ ").trim();
+
+    if (const auto i = parts.indexOf (name, true); i >= 0)
+        return parts[i];
+
+    return {};
 }
 
 bool DataWindow::canSaveInPlace() const
@@ -278,6 +317,7 @@ bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager
         floatingPoint = newFloatingPoint;
         modified = false;
         setName (title);
+        updateTabs();
         updateInfo();
 
         if (onChanged)
@@ -314,8 +354,20 @@ bool DataWindow::saveTo (const juce::File& destination, juce::AudioFormatManager
 
     // WAV keeps the markers and regions (cue points and labels, as Sound
     // Forge and most editors read them).
-    if (destination.hasFileExtension (".wav") && (! markers.empty() || ! regions.empty()))
-        options = options.withMetadataValues (cueMetadata (convert ? targetRate / sampleRate : 1.0));
+    // A part from Get Stems is tagged, so it opens again without Get Stems.
+    if (destination.hasFileExtension (".wav"))
+    {
+        std::unordered_map<juce::String, juce::String> metadata;
+
+        if (! markers.empty() || ! regions.empty())
+            metadata = cueMetadata (convert ? targetRate / sampleRate : 1.0);
+
+        if (isStem())
+            metadata[juce::WavAudioFormat::riffInfoComment2] = juce::String (stemTag) + " " + stemPart;
+
+        if (! metadata.empty())
+            options = options.withMetadataValues (metadata);
+    }
 
     // Save (no choice made) keeps float data float, as long as it stays 32-bit.
     const auto useFloat = bits == 32 && (chosen != nullptr ? chosen->floatingPoint : floatingPoint);
@@ -1540,6 +1592,7 @@ void DataWindow::audioChanged()
     ++editCount;
     modified = true;
     setName ("*" + title);
+    updateTabs();
     updateInfo();
     view.clearMarkerSelection();
     view.audioChanged();
@@ -1551,6 +1604,7 @@ void DataWindow::audioChanged()
 namespace
 {
 constexpr int infoBarHeight = 22;
+constexpr int tabHeight = 26;
 const juce::Colour infoBarColour (0xffd4d0c8);
 }
 
@@ -1559,7 +1613,20 @@ void DataWindow::resized()
     auto area = getLocalBounds();
 
     auto top = area.removeFromTop (infoBarHeight);
+    getStemsButton.setVisible (! hasStemPages() && ! isEmpty() && ! isStem());
+
+    if (getStemsButton.isVisible())
+        getStemsButton.setBounds (top.removeFromRight (getStemsButton.getBestWidthForHeight (infoBarHeight) + 16).reduced (2, 1));
+
     resolutionLabel.setBounds (top.reduced (4, 0));
+
+    if (hasStemPages())
+    {
+        auto row = area.removeFromTop (tabHeight).reduced (2, 1);
+
+        for (auto* t : tabs)
+            t->setBounds (row.removeFromLeft (t->getBestWidthForHeight (row.getHeight()) + 28));
+    }
 
     auto bottom = area.removeFromBottom (infoBarHeight).reduced (3, 2);
     cursorBox.setBounds (bottom.removeFromRight (170));
@@ -1624,4 +1691,186 @@ juce::String DataWindow::describeFormat() const
          << (channels == 1 ? "Mono" : channels == 2 ? "Stereo" : juce::String (channels) + " ch") << ", "
          << WaveformView::formatTime ((double) buffer.getNumSamples() / sampleRate);
     return text;
+}
+
+//==============================================================================
+// Get Stems: pages.
+
+struct DataWindow::Page
+{
+    juce::String label;   // the tab's name; not swapped
+    juce::File file;
+    juce::String title;
+    juce::AudioBuffer<float> buffer;
+    double sampleRate = 44100.0;
+    int bitDepth = 0, resolutionBits = 0;
+    bool floatingPoint = false;
+    juce::String formatName;
+    bool modified = false;
+    std::vector<juce::int64> markers, barStarts;
+    std::vector<AudioRegion> regions;
+    std::vector<Snapshot> undoStack, redoStack;
+    juce::String nextUndoName;
+    double knownTempo = 0.0;
+    juce::String stemPart;
+};
+
+DataWindow::~DataWindow() = default;
+
+void DataWindow::swapWith (Page& p)
+{
+    std::swap (file, p.file);
+    std::swap (title, p.title);
+    std::swap (buffer, p.buffer);
+    std::swap (sampleRate, p.sampleRate);
+    std::swap (bitDepth, p.bitDepth);
+    std::swap (resolutionBits, p.resolutionBits);
+    std::swap (floatingPoint, p.floatingPoint);
+    std::swap (formatName, p.formatName);
+    std::swap (modified, p.modified);
+    std::swap (markers, p.markers);
+    std::swap (barStarts, p.barStarts);
+    std::swap (regions, p.regions);
+    std::swap (undoStack, p.undoStack);
+    std::swap (redoStack, p.redoStack);
+    std::swap (nextUndoName, p.nextUndoName);
+    std::swap (knownTempo, p.knownTempo);
+    std::swap (stemPart, p.stemPart);
+}
+
+void DataWindow::addStemPages (std::vector<std::pair<juce::String, juce::AudioBuffer<float>>> parts)
+{
+    if (parts.empty())
+        return;
+
+    saveFolder = file.existsAsFile() ? file.getParentDirectory() : saveFolder;
+    const auto songName = juce::File (juce::File::createLegalFileName (title)).getFileNameWithoutExtension();
+
+    if (pages.empty())
+    {
+        pages.push_back (std::make_unique<Page>());   // the song's slot: its data stays in this window
+        pages.back()->label = "Whole song";
+        currentPage = 0;
+    }
+
+    for (auto& [name, audio] : parts)
+    {
+        auto p = std::make_unique<Page>();
+        p->label = name;
+        p->title = songName + " - " + name;
+        p->stemPart = name;
+        p->buffer = std::move (audio);
+        p->sampleRate = sampleRate;
+        // Parts can go past 0 dBFS: float keeps their peaks.
+        p->bitDepth = 32;
+        p->floatingPoint = true;
+        p->modified = true;   // not on disk yet
+        pages.push_back (std::move (p));
+    }
+
+    updateTabs();
+    resized();
+}
+
+void DataWindow::showPage (int index)
+{
+    if (! juce::isPositiveAndBelow (index, (int) pages.size()) || index == currentPage)
+        return;
+
+    if (beforePageChange)
+        beforePageChange();
+
+    // Same place on the timeline in the new page, as far as it goes.
+    const auto sel = view.getSelection();
+    const auto channel = view.getSelectedChannel();
+    const auto cursor = view.getCursor();
+
+    swapWith (*pages[(size_t) currentPage]);   // the shown page goes back to its slot...
+    swapWith (*pages[(size_t) index]);         // ...and the new one comes out of its own
+    currentPage = index;
+    ++editCount;   // measurements cached for the other page don't apply
+
+    view.setAudio (&buffer, sampleRate);
+    view.setMarkers (&markers, &barStarts);
+    view.setRegions (&regions);
+    view.clearMarkerSelection();
+    view.audioChanged();
+
+    const auto length = (juce::int64) buffer.getNumSamples();
+
+    if (sel.getStart() < length && ! sel.isEmpty())
+        view.setSelection (sel.withEnd (juce::jmin (sel.getEnd(), length)), channel);
+
+    view.setCursor (juce::jmin (cursor, length));
+
+    setName (modified ? "*" + title : title);
+    updateTabs();
+    updateInfo();
+
+    if (onChanged)
+        onChanged();
+
+    if (afterPageChange)
+        afterPageChange();
+}
+
+juce::StringArray DataWindow::unsavedPages() const
+{
+    juce::StringArray names;
+
+    if (pages.empty())
+    {
+        if (modified)
+            names.add (title);
+
+        return names;
+    }
+
+    for (size_t i = 0; i < pages.size(); ++i)
+        if ((int) i == currentPage ? modified : pages[i]->modified)
+            names.add (pages[i]->label);
+
+    return names;
+}
+
+juce::File DataWindow::getSaveFolder() const
+{
+    if (file.existsAsFile())
+        return file.getParentDirectory();
+
+    return saveFolder.isDirectory() ? saveFolder : juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+}
+
+void DataWindow::setGettingStems (bool busy)
+{
+    getStemsButton.setEnabled (! busy);
+    getStemsButton.setButtonText (busy ? "Getting stems..." : "Get Stems");
+    resized();
+}
+
+void DataWindow::updateTabs()
+{
+    if ((int) pages.size() != tabs.size())
+    {
+        tabs.clear();
+
+        for (int i = 0; i < (int) pages.size(); ++i)
+        {
+            auto* t = tabs.add (new juce::TextButton (pages[(size_t) i]->label));
+            t->setClickingTogglesState (false);
+            t->setWantsKeyboardFocus (false);
+            t->setConnectedEdges (juce::Button::ConnectedOnLeft | juce::Button::ConnectedOnRight);
+            t->setColour (juce::TextButton::buttonOnColourId, juce::Colours::white);
+            t->setColour (juce::TextButton::buttonColourId, juce::Colour (0xffbab6ae));
+            t->onClick = [this, i] { showPage (i); };
+            addAndMakeVisible (t);
+        }
+    }
+
+    for (int i = 0; i < tabs.size(); ++i)
+    {
+        const auto unsaved = i == currentPage ? modified : pages[(size_t) i]->modified;
+        tabs[i]->setButtonText (pages[(size_t) i]->label + (unsaved && i > 0 ? " *" : ""));
+        tabs[i]->setToggleState (i == currentPage, juce::dontSendNotification);
+    }
 }

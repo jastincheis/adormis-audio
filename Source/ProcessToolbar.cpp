@@ -287,6 +287,25 @@ void iconBassFinder (juce::Graphics& g, juce::Rectangle<float> a)
     fillIcon (g, dots, a);
 }
 
+// Drum Rebuilder: a drum (top, sides, bottom rim) with two crossed sticks.
+void iconDrumRebuilder (juce::Graphics& g, juce::Rectangle<float> a)
+{
+    juce::Path drum;
+    drum.addEllipse (4.0f, 10.0f, 16.0f, 5.0f);
+    drum.startNewSubPath (4.0f, 12.5f);
+    drum.lineTo (4.0f, 18.0f);
+    drum.cubicTo (4.0f, 21.3f, 20.0f, 21.3f, 20.0f, 18.0f);
+    drum.lineTo (20.0f, 12.5f);
+    strokeIcon (g, drum, a, 1.6f);
+
+    juce::Path sticks;
+    sticks.startNewSubPath (6.0f, 3.0f);
+    sticks.lineTo (13.0f, 11.5f);
+    sticks.startNewSubPath (18.0f, 3.0f);
+    sticks.lineTo (11.0f, 11.5f);
+    strokeIcon (g, sticks, a, 1.8f);
+}
+
 // De-esser: an "S" under a bell-shaped dip.
 void iconDeEsser (juce::Graphics& g, juce::Rectangle<float> a)
 {
@@ -468,6 +487,7 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     addGap();
     addButton (wf::procTimeStretch, timeTint,     iconStretch);
     addButton (wf::toolsBassFinder, bassTint,     iconBassFinder);
+    addButton (wf::toolsDrumRebuilder, bassTint,  iconDrumRebuilder);
     addButton (wf::toolsDeEsser,   timeTint,      iconDeEsser);
 
     commands.addListener (this);

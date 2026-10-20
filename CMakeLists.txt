@@ -41,6 +41,57 @@ else()
     set(RUBBERBAND_SOURCE_DIR ${rubberband_SOURCE_DIR})
 endif()
 
+# Drum Rebuilder (Tools > Drum Rebuilder), same author, AGPLv3: its analysis
+# core and its whole editor (drb_ui), pinned by commit.
+# -DADORMIS_DRB_DIR=/path/to/drum-rebuilder skips the download.
+set(ADORMIS_DRB_DIR "" CACHE PATH "Local drum-rebuilder checkout (optional)")
+
+if(ADORMIS_DRB_DIR)
+    add_subdirectory(${ADORMIS_DRB_DIR} drum-rebuilder EXCLUDE_FROM_ALL)
+else()
+    include(FetchContent)
+    FetchContent_Declare(drum_rebuilder
+        GIT_REPOSITORY https://github.com/jastincheis/drum-rebuilder.git
+        GIT_TAG        DRB_COMMIT_TO_PIN)
+    FetchContent_MakeAvailable(drum_rebuilder)
+endif()
+
+# Get Stems: Demucs (the htdemucs model by Meta, MIT) run on the CPU by
+# demucs.cpp (MIT), which needs Eigen (MPL 2.0); pinned by commit.
+# -DADORMIS_DEMUCS_DIR=/path/to/demucs.cpp (with vendor/eigen checked out)
+# skips the download. Only its src/ is built, not its own CMake project.
+set(ADORMIS_DEMUCS_DIR "" CACHE PATH "Local demucs.cpp checkout (optional)")
+
+if(ADORMIS_DEMUCS_DIR)
+    set(DEMUCS_SOURCE_DIR ${ADORMIS_DEMUCS_DIR})
+else()
+    include(FetchContent)
+    FetchContent_Declare(demucs_cpp
+        GIT_REPOSITORY https://github.com/sevagh/demucs.cpp.git
+        GIT_TAG        f1206e9adeea103aef4a636b9e62297cf1f8e34e
+        GIT_SUBMODULES vendor/eigen
+        SOURCE_SUBDIR  not-a-cmake-project)
+    FetchContent_MakeAvailable(demucs_cpp)
+    set(DEMUCS_SOURCE_DIR ${demucs_cpp_SOURCE_DIR})
+endif()
+
+file(GLOB DEMUCS_SOURCES ${DEMUCS_SOURCE_DIR}/src/*.cpp)
+add_library(demucs_engine STATIC ${DEMUCS_SOURCES})
+target_include_directories(demucs_engine PUBLIC ${DEMUCS_SOURCE_DIR}/src ${DEMUCS_SOURCE_DIR}/vendor/eigen)
+set_target_properties(demucs_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_compile_features(demucs_engine PUBLIC cxx_std_17)
+# Fast even in Debug builds: the model is slow enough as it is.
+if(MSVC)
+    target_compile_options(demucs_engine PRIVATE /O2 /bigobj /W0)
+    target_compile_definitions(demucs_engine PRIVATE NOMINMAX _USE_MATH_DEFINES)
+else()
+    target_compile_options(demucs_engine PRIVATE -O3 -w)
+endif()
+
+# The converted model (ggml-model-htdemucs-4s-f16.bin, 84 MB) goes next to
+# the program, in "models". -DADORMIS_DEMUCS_MODEL=/path/to/it.
+set(ADORMIS_DEMUCS_MODEL "" CACHE FILEPATH "Converted Demucs model for Get Stems")
+
 add_library(rubberband_single STATIC ${RUBBERBAND_SOURCE_DIR}/single/RubberBandSingle.cpp)
 target_include_directories(rubberband_single PUBLIC ${RUBBERBAND_SOURCE_DIR})
 set_target_properties(rubberband_single PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -58,6 +109,9 @@ juce_add_gui_app(AdormisAudio
     BUNDLE_ID    "io.github.jastincheis.adormisaudio"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "Adormis Audio records audio from the input you choose (Ctrl+R)."
+    # curl on Linux, for the HTTPS question to GitHub (Help > Check for Updates);
+    # Windows and macOS use the system's own.
+    NEEDS_CURL TRUE
     VERSION      ${PROJECT_VERSION})
 
 target_sources(AdormisAudio PRIVATE
@@ -75,6 +129,7 @@ target_sources(AdormisAudio PRIVATE
     Source/Commands.cpp
     Source/DataWindow.cpp
     Source/DeEsser.cpp
+    Source/DrumRebuilderWindow.cpp
     Source/Effects.cpp
     Source/EffectWindow.cpp
     Source/FilePicker.cpp
@@ -98,10 +153,15 @@ target_sources(AdormisAudio PRIVATE
     Source/Recorder.cpp
     Source/ShortcutsWindow.cpp
     Source/Sibilance.cpp
+    Source/SpaceKey.cpp
+    Source/StemSeparator.cpp
+    Source/WaveColourPicker.cpp
+    Source/Appearance.cpp
     Source/StretchDialog.cpp
     Source/TemplateDialog.cpp
     Source/TimeStretch.cpp
     Source/UndoHistoryWindow.cpp
+    Source/UpdateCheck.cpp
     Source/WaveformView.cpp)
 
 # Recording what the computer plays: one backend per system.
@@ -117,7 +177,6 @@ endif()
 
 target_compile_definitions(AdormisAudio PRIVATE
     JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:AdormisAudio,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:AdormisAudio,JUCE_VERSION>")
 
@@ -164,7 +223,24 @@ target_link_libraries(AdormisAudio
         juce::juce_audio_utils
         juce::juce_dsp
         rubberband_single
+        drb_ui
+        demucs_engine
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# Get Stems' model, beside the program.
+if(ADORMIS_DEMUCS_MODEL)
+    if(APPLE)
+        set(ADORMIS_MODELS_DIR "$<TARGET_BUNDLE_CONTENT_DIR:AdormisAudio>/Resources/models")
+    else()
+        set(ADORMIS_MODELS_DIR "$<TARGET_FILE_DIR:AdormisAudio>/models")
+    endif()
+    add_custom_command(TARGET AdormisAudio POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${ADORMIS_MODELS_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${ADORMIS_DEMUCS_MODEL}" "${ADORMIS_MODELS_DIR}/"
+        VERBATIM)
+else()
+    message(WARNING "ADORMIS_DEMUCS_MODEL not set: Get Stems will say the model is missing")
+endif()

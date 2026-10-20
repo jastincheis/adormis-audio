@@ -66,6 +66,8 @@ juce::Path teddyDetailPath()
     return p;
 }
 
+} // namespace
+
 void addGrain (juce::Image& image, juce::Random& random)
 {
     const juce::Image::BitmapData data (image, juce::Image::BitmapData::readWrite);
@@ -85,6 +87,8 @@ void addGrain (juce::Image& image, juce::Random& random)
     }
 }
 
+namespace
+{
 // Draws `shape` at (x, y) and again shifted by one tile in each direction so
 // shapes crossing an edge reappear on the opposite side (seamless tiling).
 void drawWrapped (juce::Graphics& g, const juce::Path& shape, juce::AffineTransform placement, float tile)
@@ -95,7 +99,9 @@ void drawWrapped (juce::Graphics& g, const juce::Path& shape, juce::AffineTransf
 }
 } // namespace
 
-juce::Image makeBackgroundTile (float scale)
+juce::Colour backgroundBaseColour()   { return baseGrey; }
+
+juce::Image makeBackgroundTile (float scale, juce::Colour base, bool animals)
 {
     const auto pixels = juce::roundToInt ((float) backgroundTileSize * scale);
     juce::Image image (juce::Image::ARGB, pixels, pixels, false);
@@ -106,7 +112,7 @@ juce::Image makeBackgroundTile (float scale)
         g.addTransform (juce::AffineTransform::scale (scale));
 
         const auto tile = (float) backgroundTileSize;
-        g.fillAll (baseGrey);
+        g.fillAll (base);
 
         // Soft mottling so the grey isn't flat.
         for (int i = 0; i < 80; ++i)
@@ -118,79 +124,84 @@ juce::Image makeBackgroundTile (float scale)
             drawWrapped (g, blob, juce::AffineTransform::translation (random.nextFloat() * tile, random.nextFloat() * tile), tile);
         }
 
-        const auto elephant = elephantPath();
-        const auto ear = earPath();
-
-        // Elephants, on a jittered grid so they spread evenly.
-        constexpr int cells = 6;
-        const auto cell = tile / (float) cells;
-
-        for (int cy = 0; cy < cells; ++cy)
+        // Elephants, teddy bears and stars ("Teddy bears"); the "Grain"
+        // texture stops at the mottling.
+        if (animals)
         {
-            for (int cx = 0; cx < cells; ++cx)
+            const auto elephant = elephantPath();
+            const auto ear = earPath();
+
+            // Elephants, on a jittered grid so they spread evenly.
+            constexpr int cells = 6;
+            const auto cell = tile / (float) cells;
+
+            for (int cy = 0; cy < cells; ++cy)
             {
-                const auto size   = 0.55f + random.nextFloat() * 0.6f;
-                const auto mirror = random.nextBool() ? -1.0f : 1.0f;
-                const auto angle  = (random.nextFloat() - 0.5f) * 0.6f;
-                const auto x = ((float) cx + 0.2f + random.nextFloat() * 0.6f) * cell;
-                const auto y = ((float) cy + 0.2f + random.nextFloat() * 0.6f) * cell;
+                for (int cx = 0; cx < cells; ++cx)
+                {
+                    const auto size   = 0.55f + random.nextFloat() * 0.6f;
+                    const auto mirror = random.nextBool() ? -1.0f : 1.0f;
+                    const auto angle  = (random.nextFloat() - 0.5f) * 0.6f;
+                    const auto x = ((float) cx + 0.2f + random.nextFloat() * 0.6f) * cell;
+                    const auto y = ((float) cy + 0.2f + random.nextFloat() * 0.6f) * cell;
 
-                const auto placement = juce::AffineTransform::translation (-20.0f, -15.0f)
-                                           .scaled (size * mirror, size)
-                                           .rotated (angle)
-                                           .translated (x, y);
+                    const auto placement = juce::AffineTransform::translation (-20.0f, -15.0f)
+                                               .scaled (size * mirror, size)
+                                               .rotated (angle)
+                                               .translated (x, y);
 
-                const auto light = random.nextFloat() < 0.7f;
-                g.setColour ((light ? juce::Colours::white : juce::Colours::black).withAlpha (light ? 0.13f : 0.10f));
-                drawWrapped (g, elephant, placement, tile);
+                    const auto light = random.nextFloat() < 0.7f;
+                    g.setColour ((light ? juce::Colours::white : juce::Colours::black).withAlpha (light ? 0.13f : 0.10f));
+                    drawWrapped (g, elephant, placement, tile);
 
-                g.setColour (juce::Colours::black.withAlpha (0.06f));
-                drawWrapped (g, ear, placement, tile);
+                    g.setColour (juce::Colours::black.withAlpha (0.06f));
+                    drawWrapped (g, ear, placement, tile);
+                }
             }
-        }
 
-        // Teddy bears in the gaps between the elephants: on every other corner
-        // of the elephant grid, with their own random numbers so the elephants
-        // and stars stay where they were.
-        const auto teddy = teddyPath();
-        const auto teddyDetail = teddyDetailPath();
-        juce::Random bearRandom (0x54454459);
+            // Teddy bears in the gaps between the elephants: on every other corner
+            // of the elephant grid, with their own random numbers so the elephants
+            // and stars stay where they were.
+            const auto teddy = teddyPath();
+            const auto teddyDetail = teddyDetailPath();
+            juce::Random bearRandom (0x54454459);
 
-        for (int cy = 0; cy < cells; ++cy)
-        {
-            for (int cx = 0; cx < cells; ++cx)
+            for (int cy = 0; cy < cells; ++cy)
             {
-                if ((cx + cy) % 2 != 0)
-                    continue;
+                for (int cx = 0; cx < cells; ++cx)
+                {
+                    if ((cx + cy) % 2 != 0)
+                        continue;
 
-                const auto size  = 0.6f + bearRandom.nextFloat() * 0.45f;
-                const auto angle = (bearRandom.nextFloat() - 0.5f) * 0.7f;
-                const auto x = ((float) cx + (bearRandom.nextFloat() - 0.5f) * 0.2f) * cell;
-                const auto y = ((float) cy + (bearRandom.nextFloat() - 0.5f) * 0.2f) * cell;
+                    const auto size  = 0.6f + bearRandom.nextFloat() * 0.45f;
+                    const auto angle = (bearRandom.nextFloat() - 0.5f) * 0.7f;
+                    const auto x = ((float) cx + (bearRandom.nextFloat() - 0.5f) * 0.2f) * cell;
+                    const auto y = ((float) cy + (bearRandom.nextFloat() - 0.5f) * 0.2f) * cell;
 
-                const auto placement = juce::AffineTransform::translation (-15.0f, -18.0f)
-                                           .scaled (size)
-                                           .rotated (angle)
-                                           .translated (x, y);
+                    const auto placement = juce::AffineTransform::translation (-15.0f, -18.0f)
+                                               .scaled (size)
+                                               .rotated (angle)
+                                               .translated (x, y);
 
-                const auto light = bearRandom.nextFloat() < 0.7f;
-                g.setColour ((light ? juce::Colours::white : juce::Colours::black).withAlpha (light ? 0.13f : 0.10f));
-                drawWrapped (g, teddy, placement, tile);
+                    const auto light = bearRandom.nextFloat() < 0.7f;
+                    g.setColour ((light ? juce::Colours::white : juce::Colours::black).withAlpha (light ? 0.13f : 0.10f));
+                    drawWrapped (g, teddy, placement, tile);
 
-                g.setColour (juce::Colours::black.withAlpha (0.06f));
-                drawWrapped (g, teddyDetail, placement, tile);
+                    g.setColour (juce::Colours::black.withAlpha (0.06f));
+                    drawWrapped (g, teddyDetail, placement, tile);
+                }
             }
-        }
 
-        // Stars scattered between the elephants.
-        for (int i = 0; i < 95; ++i)
-        {
-            const auto outer = 2.5f + random.nextFloat() * 5.5f;
-            juce::Path star;
-            star.addStar ({}, 5, outer * 0.45f, outer, random.nextFloat() * juce::MathConstants<float>::twoPi);
+            // Stars scattered between the elephants.
+            for (int i = 0; i < 95; ++i)
+            {
+                const auto outer = 2.5f + random.nextFloat() * 5.5f;
+                juce::Path star;
+                star.addStar ({}, 5, outer * 0.45f, outer, random.nextFloat() * juce::MathConstants<float>::twoPi);
 
-            g.setColour (juce::Colours::white.withAlpha (0.10f + random.nextFloat() * 0.14f));
-            drawWrapped (g, star, juce::AffineTransform::translation (random.nextFloat() * tile, random.nextFloat() * tile), tile);
+                g.setColour (juce::Colours::white.withAlpha (0.10f + random.nextFloat() * 0.14f));
+                drawWrapped (g, star, juce::AffineTransform::translation (random.nextFloat() * tile, random.nextFloat() * tile), tile);
+            }
         }
     }
 

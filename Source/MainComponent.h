@@ -22,6 +22,8 @@
 #include "RegionsWindow.h"
 #include "SpectrumWindow.h"
 #include "UndoHistoryWindow.h"
+#include "SpaceKey.h"
+#include "UpdateCheck.h"
 
 class ShortcutsWindow;
 
@@ -115,6 +117,8 @@ private:
 
     // Right-click on the workspace: Create New (an empty file) and Open Recent.
     void showWorkspaceMenu (juce::Point<int> position);
+    void chooseBackgroundPhoto (std::function<void()> onChanged);   // Background > Photo...
+    void addLookItems (juce::PopupMenu& menu);
     void createEmptyDocument (std::optional<juce::Point<int>> position);
     void addRecentFile (const juce::File& file);
     juce::PopupMenu recentFilesMenu();
@@ -136,6 +140,13 @@ private:
     void runStretch (DataWindow* doc, juce::Range<int> range, wf::StretchSettings settings);
     void showBassFinder();
     void showDeEsser();
+    void showDrumRebuilder();
+
+    // Get Stems: the song in `doc` split by the AI into drums, bass, vocals
+    // and the rest, added to its window as tabs.
+    void getStems (DataWindow* doc);
+    juce::Component::SafePointer<DataWindow> gettingStems;
+    std::optional<std::pair<juce::int64, int>> resumeAfterPageChange;   // play position and solo channel
     wf::BassFinderHost toolHost();   // playback, jobs and files for the tool windows
 
     // Time Stretch, Bass Finder and De-esser work on the active file (the
@@ -188,6 +199,7 @@ private:
     // Undo step names: the command being done, and the tool window that is open.
     juce::String lastCommandName, toolUndoName;
     std::unique_ptr<wf::UndoHistoryWindow> undoHistoryWindow;
+    std::unique_ptr<wf::SpaceEverywhere> spaceEverywhere;   // Space plays / stops in every window
     void toggleUndoHistory();
     void refreshUndoHistory();
     void setLooping (bool shouldLoop);
@@ -222,6 +234,14 @@ private:
 
     void showAudioSettings();
     void showAbout();
+
+    // A newer release on GitHub: a button in the top right corner, and a
+    // message at start (until "Skip this version").
+    void checkForUpdates (bool askedByUser);
+    void updateFound (std::optional<wf::updates::Release>, bool askedByUser);
+    void showUpdateMessage();
+    std::optional<wf::updates::Release> availableUpdate;
+    juce::TextButton updateButton;
     void showShortcuts();
     void updateStatus();
     void updateTitle();
@@ -296,6 +316,7 @@ private:
     std::unique_ptr<juce::DocumentWindow> stretchWindow;
     std::unique_ptr<juce::DocumentWindow> bassFinderWindow;
     std::unique_ptr<juce::DocumentWindow> deEsserWindow;
+    std::unique_ptr<juce::DocumentWindow> drumRebuilderWindow;   // not a tool window: it works on its own copy
     std::unique_ptr<juce::DocumentWindow> effectWindow;   // EQ, compressor, delay or reverb
     std::unique_ptr<juce::ThreadWithProgressWindow> job;
     std::unique_ptr<juce::PositionableAudioSource> toolPreview;

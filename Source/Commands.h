@@ -42,7 +42,7 @@ enum CommandIDs : juce::CommandID
     toolsAutoRegion = 0x1600, toolsExtractRegions, toolsClipDetect, toolsFind,
     toolsRepairInterpolate, toolsRepairReplace, toolsRepairCopyChannel, toolsSynthSimple,
     toolsSynthFm, toolsBassFinder, toolsDeEsser, toolsMp3Restore, toolsStatistics,
-    toolsNoiseReduction, toolsCaptureNoise, toolsHumRemoval, toolsDeclick, toolsClipRestore, toolsBatch,
+    toolsNoiseReduction, toolsCaptureNoise, toolsHumRemoval, toolsDeclick, toolsClipRestore, toolsBatch, toolsDrumRebuilder, toolsGetStems,
 
     // FX Favorites
     favPluginManager = 0x1700, favPluginChain, favRescan,
@@ -56,7 +56,7 @@ enum CommandIDs : juce::CommandID
     winCascade = 0x1900, winTile, winNext, winPrev, winMaximizeAll,
 
     // Help
-    helpShortcuts = 0x1a00, helpAbout
+    helpShortcuts = 0x1a00, helpAbout, helpCheckUpdates, helpUpdatesAtStart
 };
 
 struct CommandDef

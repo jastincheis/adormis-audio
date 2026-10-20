@@ -138,6 +138,8 @@ std::vector<CommandDef> makeCommands()
         { toolsSynthSimple,       "Simple Synthesis...",      "Tools", {} },
         { toolsSynthFm,           "FM Synthesis...",          "Tools", {} },
         { toolsBassFinder,        "Bass Creator...",          "Tools", {} },
+        { toolsDrumRebuilder,     "Drum Rebuilder...",        "Tools", {} },
+        { toolsGetStems,          "Get Stems",                "Tools", {} },
         { toolsDeEsser,           "De-esser...",              "Tools", {} },
         { toolsMp3Restore,        "MP3 Restore...",           "Tools", {} },
         { toolsStatistics,        "Statistics...",            "Tools", {} },
@@ -186,6 +188,8 @@ std::vector<CommandDef> makeCommands()
         // Help
         { helpShortcuts, "Keyboard Shortcuts",                "Help", { key (KeyPress::F1Key) }, true },
         { helpAbout,     "About Adormis Audio",                   "Help", {}, true },
+        { helpCheckUpdates,   "Check for Updates...",            "Help", {}, true },
+        { helpUpdatesAtStart, "Check for Updates at Start",      "Help", {}, true },
     };
 }
 
@@ -252,7 +256,7 @@ const std::vector<TopMenu>& menuBar()
                      sub ("Noise Reduction", { C (toolsNoiseReduction), C (toolsCaptureNoise), sep(),
                                                C (toolsHumRemoval), C (toolsDeclick), C (toolsClipRestore) }),
                      sub ("Repair", { C (toolsRepairInterpolate), C (toolsRepairReplace), C (toolsRepairCopyChannel) }),
-                     sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsBassFinder), C (toolsDeEsser), C (toolsMp3Restore), sep(), C (toolsBatch) } },
+                     sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsGetStems), sep(), C (toolsBassFinder), C (toolsDrumRebuilder), C (toolsDeEsser), C (toolsMp3Restore), sep(), C (toolsBatch) } },
 
         { "FX Favorites", { C (favPluginManager), C (favPluginChain), sep(), C (favRescan) } },
 
@@ -265,7 +269,7 @@ const std::vector<TopMenu>& menuBar()
 
         { "Window", { C (winCascade), C (winTile), C (winMaximizeAll), sep(), C (winNext), C (winPrev) } },
 
-        { "Help", { C (helpShortcuts), sep(), C (helpAbout) } },
+        { "Help", { C (helpShortcuts), sep(), C (helpCheckUpdates), C (helpUpdatesAtStart), sep(), C (helpAbout) } },
     };
     return menus;
 }
@@ -321,13 +325,13 @@ const std::vector<CommandDef>& allCommands()
         fxLimiter, fxGate, fxChorus, fxFlange, fxVibrato, fxDistortion, fxPitchShift,
         toolsNoiseReduction, toolsCaptureNoise, toolsHumRemoval, toolsDeclick, toolsClipRestore,
         insertRegion, viewRegionsList, toolsAutoRegion, toolsExtractRegions, toolsBatch,
-        procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDeEsser, toolsMp3Restore, optRecord, optRecordComputer,
+        procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDrumRebuilder, toolsGetStems, toolsDeEsser, toolsMp3Restore, optRecord, optRecordComputer,
         procEqParametric, procEqGraphic, procFadeGraphic, insertVolumeEnv, fxCompressor, fxDelay, fxReverb,
         winCascade, winTile, winNext, winPrev,
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,
         optPlay, optPlayAll, optPlayPause, optStop, optGoStart, optGoEnd, optGoLeftEdge, optGoRightEdge, optAudioDevice,
         optCursorLeft, optCursorRight, optExtendLeft, optExtendRight, optPlayFromCursor,
-        helpShortcuts, helpAbout
+        helpShortcuts, helpAbout, helpCheckUpdates, helpUpdatesAtStart
     };
 
     static const auto commands = []

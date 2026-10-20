@@ -3,6 +3,7 @@
 #include "Analysis.h"
 #include "BassGenerator.h"
 #include "NoteDetector.h"
+#include "SpaceKey.h"
 
 namespace wf
 {
@@ -570,10 +571,18 @@ struct DetectorState
 // The detected notes over time on a piano-roll grid: grey raw pitch trace,
 // coloured notes (green in tolerance, yellow up to 25 cents, red beyond),
 // a red frame around notes outside the key. Click a note to hear it.
-class PitchGraph final : public juce::Component
+class PitchGraph final : public juce::Component,
+                         private juce::ScrollBar::Listener
 {
 public:
-    PitchGraph (Model& m, DetectorState& s) : model (m), state (s) {}
+    PitchGraph (Model& m, DetectorState& s) : model (m), state (s)
+    {
+        scrollBar.setAutoHide (false);
+        scrollBar.setColour (juce::ScrollBar::thumbColourId, colours::muted.withAlpha (0.6f));
+        scrollBar.setWantsKeyboardFocus (false);
+        scrollBar.addListener (this);
+        addChildComponent (scrollBar);
+    }
 
     std::function<void (int)> onNoteClicked;
     std::function<void (double)> onTimeClicked;
@@ -583,8 +592,74 @@ public:
         if (t != playhead)
         {
             playhead = t;
+
+            // Zoomed in: turn the page when the playhead leaves the view.
+            const auto length = shownLength();
+
+            if (t.has_value() && zoomed() && (*t < viewStart || *t > viewStart + length))
+                setViewStart (*t - 0.05 * length);
+
             repaint();
         }
+    }
+
+    // Up / Down in the panel: halves or doubles the stretch shown, keeping
+    // the playhead (or the clicked place) where it is on screen.
+    void zoom (bool in)
+    {
+        const auto duration = model.duration();
+
+        if (duration <= 0.0)
+            return;
+
+        const auto oldLength = shownLength();
+        const auto newLength = juce::jlimit (std::min (minViewSeconds, duration), duration, in ? oldLength / 2.0 : oldLength * 2.0);
+        auto anchor = viewStart + oldLength / 2.0;
+
+        if (playhead.has_value() && *playhead >= viewStart && *playhead <= viewStart + oldLength)
+            anchor = *playhead;
+        else if (cursor.has_value() && *cursor >= viewStart && *cursor <= viewStart + oldLength)
+            anchor = *cursor;
+
+        const auto fraction = (anchor - viewStart) / oldLength;
+        viewLength = newLength;
+        setViewStart (anchor - fraction * newLength);
+    }
+
+    // Where Space starts playing: the clicked place if it is in view, else
+    // the start of what is shown.
+    double playStart() const
+    {
+        if (cursor.has_value() && *cursor >= viewStart && *cursor < viewStart + shownLength())
+            return *cursor;
+
+        return viewStart;
+    }
+
+    void resetView()
+    {
+        viewStart = 0.0;
+        viewLength = 0.0;
+        cursor.reset();
+        updateScrollBar();
+        repaint();
+    }
+
+    void resized() override
+    {
+        scrollBar.setBounds ((int) left, getHeight() - scrollBarHeight, getWidth() - (int) left, scrollBarHeight);
+    }
+
+    void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
+    {
+        if (! zoomed())
+        {
+            juce::Component::mouseWheelMove (e, wheel);
+            return;
+        }
+
+        const auto delta = wheel.deltaX != 0.0f ? -wheel.deltaX : -wheel.deltaY;
+        setViewStart (viewStart + delta * shownLength() * 0.5);
     }
 
     void paint (juce::Graphics& g) override
@@ -624,9 +699,10 @@ public:
         }
 
         const auto rows = hi - lo + 1;
-        const auto h = bounds.getHeight(), w = bounds.getWidth();
+        const auto h = bounds.getHeight() - (zoomed() ? (float) scrollBarHeight : 0.0f), w = bounds.getWidth();
         const auto rowHeight = h / (float) rows;
-        auto X = [&] (double t) { return (float) (left + t / duration * (w - left)); };
+        const auto length = shownLength();
+        auto X = [&] (double t) { return (float) (left + (t - viewStart) / length * (w - left)); };
         auto Y = [&] (double m) { return (float) (h - (m - lo + 0.5) * rowHeight); };
         const auto flats = keyUsesFlats (model.keyTonic, model.minor);
 
@@ -649,6 +725,14 @@ public:
                             juce::Justification::centredLeft);
             }
         }
+
+        g.setColour (colours::muted.withAlpha (0.7f));
+        g.drawText (juce::CharPointer_UTF8 ("Up / Down: zoom   Space: play / stop"),
+                    juce::Rectangle<float> (left, h - 15.0f, w - left - 6.0f, 13.0f), juce::Justification::centredRight);
+
+        // Everything below is drawn right of the note names only.
+        juce::Graphics::ScopedSaveState keepClip (g);
+        g.reduceClipRegion (juce::Rectangle<float> (left, 0.0f, w - left, h).toNearestInt());
 
         // Bar lines.
         if (model.tempo.has_value() && model.tempo->bpm > 0.0)
@@ -748,6 +832,12 @@ public:
             }
         }
 
+        if (cursor.has_value())
+        {
+            g.setColour (colours::ink.withAlpha (0.55f));
+            g.fillRect (X (*cursor) - 0.5f, 0.0f, 1.0f, h);
+        }
+
         if (playhead.has_value())
         {
             g.setColour (colours::accent);
@@ -762,7 +852,9 @@ public:
         if (duration <= 0.0)
             return;
 
-        const auto t = (e.x - left) / (getWidth() - left) * duration;
+        const auto t = viewStart + std::max (0.0f, e.x - left) / (getWidth() - left) * shownLength();
+        cursor = t;
+        repaint();
         int best = -1;
         double bestDistance = 1.0e9;
 
@@ -791,10 +883,38 @@ public:
     }
 
 private:
+    double shownLength() const
+    {
+        const auto duration = model.duration();
+        return viewLength > 0.0 ? std::min (viewLength, duration) : duration;
+    }
+
+    bool zoomed() const   { return shownLength() < model.duration() - 1.0e-9; }
+
+    void setViewStart (double start)
+    {
+        viewStart = juce::jlimit (0.0, std::max (0.0, model.duration() - shownLength()), start);
+        updateScrollBar();
+        repaint();
+    }
+
+    void updateScrollBar()
+    {
+        scrollBar.setVisible (zoomed());
+        scrollBar.setRangeLimits (0.0, std::max (model.duration(), 1.0e-6), juce::dontSendNotification);
+        scrollBar.setCurrentRange (viewStart, shownLength(), juce::dontSendNotification);
+    }
+
+    void scrollBarMoved (juce::ScrollBar*, double newStart) override   { setViewStart (newStart); }
+
     static constexpr float left = 36.0f;
+    static constexpr int scrollBarHeight = 10;
+    static constexpr double minViewSeconds = 0.5;
     Model& model;
     DetectorState& state;
-    std::optional<double> playhead;
+    std::optional<double> playhead, cursor;   // cursor = last clicked place
+    double viewStart = 0.0, viewLength = 0.0;   // seconds; length 0 = the whole audio
+    juce::ScrollBar scrollBar { false };
 };
 
 // The current note and its cents on a needle while playing.
@@ -855,6 +975,21 @@ private:
 
 //==============================================================================
 // Tab 2: how far off each note is, with manual and automatic correction.
+// Buttons, sliders and combo boxes inside `root` stop taking the keyboard
+// (text boxes keep it), so keys reach the panel.
+static void keepKeysHere (juce::Component& root)
+{
+    for (auto* c : root.getChildren())
+    {
+        if (dynamic_cast<juce::Button*> (c) != nullptr || dynamic_cast<juce::ComboBox*> (c) != nullptr
+            || dynamic_cast<juce::Slider*> (c) != nullptr)
+            c->setWantsKeyboardFocus (false);
+
+        if (dynamic_cast<juce::TextEditor*> (c) == nullptr)
+            keepKeysHere (*c);
+    }
+}
+
 class DetectorPanel final : public juce::Component,
                             private juce::ListBoxModel,
                             private juce::Timer
@@ -970,6 +1105,12 @@ public:
 
         updateEditor();
         startTimerHz (30);
+
+        // Up / Down and Space belong to the panel (zoom, play), so the
+        // buttons, sliders and the list don't take the keyboard.
+        setWantsKeyboardFocus (true);
+        list.setWantsKeyboardFocus (false);
+        keepKeysHere (*this);
     }
 
     // Runs the detector the first time the tab is shown and after "Analyse again".
@@ -977,10 +1118,35 @@ public:
     {
         if (! state.track.has_value() && ! running)
             run();
+
+        if (isShowing())
+            grabKeyboardFocus();
+    }
+
+    bool keyPressed (const juce::KeyPress& key) override
+    {
+        if (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey)
+        {
+            graph.zoom (key == juce::KeyPress::upKey);
+            return true;
+        }
+
+        if (key == juce::KeyPress::spaceKey)
+        {
+            if (model.playing != Model::Playing::nothing)
+                model.stop();
+            else
+                playFrom (graph.playStart());
+
+            return true;
+        }
+
+        return false;
     }
 
     void reset()
     {
+        graph.resetView();
         state.track.reset();
         state.corrected.reset();
         state.selected = -1;
@@ -1790,6 +1956,7 @@ class GeneratorPanel final : public juce::Component,
                              private juce::Timer
 {
 public:
+    void spacePlay()   { togglePreview(); }   // Space in the window: the bass preview
     explicit GeneratorPanel (Model& m)
         : model (m), chips (m), roll (m, true)
     {
@@ -2514,9 +2681,35 @@ public:
     }
 };
 
-class BassFinderPanel final : public juce::Component
+class BassFinderPanel final : public juce::Component,
+                              public SpaceTarget
 {
 public:
+    // Space in the window: Key & Bass plays / stops the analysed audio, the
+    // Note Detector does what Space does there, MIDI Bass previews the bass.
+    bool spacePressed() override
+    {
+        switch (tabs.getCurrentTabIndex())
+        {
+            case 1:
+                return detectorPanel->keyPressed (juce::KeyPress (juce::KeyPress::spaceKey));
+            case 2:
+                generatorPanel->spacePlay();
+                return true;
+            default:
+                if (model.playing != Model::Playing::nothing)
+                {
+                    model.stop();
+                    generatorPanel->stopPreview();
+                }
+                else
+                {
+                    model.play (model.source.audio, {}, false, Model::Playing::audio, 0.0);
+                }
+                return true;
+        }
+    }
+
     BassFinderPanel (BassFinderSource source, BassFinderHost host, std::function<void()> onCloseIn)
         : onClose (std::move (onCloseIn))
     {

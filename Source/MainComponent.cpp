@@ -5,10 +5,13 @@
 #include "BatchWindow.h"
 #include "StartupLog.h"
 #include "Settings.h"
-#include "BackgroundPattern.h"
 #include "Commands.h"
 #include "MixDialog.h"
 #include "ShortcutsWindow.h"
+#include "DrumRebuilderWindow.h"
+#include "StemSeparator.h"
+#include "WaveColourPicker.h"
+#include "Appearance.h"
 
 namespace
 {
@@ -17,6 +20,99 @@ constexpr int statusBarHeight = 22;
 constexpr int cascadeStep     = 26;
 
 const juce::Colour panelColour (0xffd4d0c8);
+
+// A file's window in the workspace. Minimize (Sound Forge style): the window
+// stays open but shrinks to a small title bar along the bottom of the
+// workspace; a click on the bar brings it back as it was.
+class DocumentFrame final : public juce::MultiDocumentPanelWindow
+{
+public:
+    static constexpr int barWidth = 220;
+
+    explicit DocumentFrame (juce::Colour colour) : MultiDocumentPanelWindow (colour)
+    {
+        setTitleBarButtonsRequired (allButtons, false);
+    }
+
+    ~DocumentFrame() override
+    {
+        // The document may live on in another window (or a tab).
+        if (auto* content = getContentComponent())
+            content->setVisible (true);
+
+        if (minimised && onBarsChanged)
+            juce::MessageManager::callAsync (onBarsChanged);
+    }
+
+    bool isMinimisedToBar() const   { return minimised; }
+    int barHeight() const           { return barHeightPx; }
+
+    void setMinimisedToBar (bool shouldBe)
+    {
+        if (shouldBe == minimised)
+            return;
+
+        minimised = shouldBe;
+
+        if (minimised)
+        {
+            restoredBounds = getBounds();   // before the border changes
+            barHeightPx = getTitleBarHeight() + 6;   // measured while the window is tall (it's capped by the height)
+        }
+
+        if (auto* content = getContentComponent())
+            content->setVisible (! minimised);
+
+        // The bar keeps only Restore (the minimize button) and Close.
+        setTitleBarButtonsRequired (minimised ? (minimiseButton | closeButton) : allButtons, false);
+        setResizable (! minimised, false);
+        setDraggable (! minimised);
+
+        if (minimised)
+            toBack();
+        else
+        {
+            setBounds (restoredBounds);
+            toFront (true);
+        }
+
+        if (onBarsChanged)
+            onBarsChanged();
+    }
+
+    void minimiseButtonPressed() override   { setMinimisedToBar (! minimised); }
+
+    void maximiseButtonPressed() override
+    {
+        // Tabs replace the windows: every document comes back first.
+        if (beforeMaximise)
+            beforeMaximise();
+
+        MultiDocumentPanelWindow::maximiseButtonPressed();
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        MultiDocumentPanelWindow::mouseUp (e);
+
+        if (minimised && e.mouseWasClicked())
+            setMinimisedToBar (false);
+    }
+
+    void mouseDoubleClick (const juce::MouseEvent& e) override
+    {
+        if (! minimised)
+            MultiDocumentPanelWindow::mouseDoubleClick (e);
+    }
+
+    std::function<void()> onBarsChanged, beforeMaximise;
+
+private:
+    static constexpr int allButtons = minimiseButton | maximiseButton | closeButton;
+    bool minimised = false;
+    int barHeightPx = 32;
+    juce::Rectangle<int> restoredBounds;
+};
 }
 
 //==============================================================================
@@ -33,22 +129,105 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        const auto scale = (float) g.getInternalContext().getPhysicalPixelScaleFactor();
-
-        if (tile.isNull() || ! juce::approximatelyEqual (tileScale, scale))
-        {
-            tile = wf::makeBackgroundTile (scale);
-            tileScale = scale;
-        }
-
-        g.setFillType (juce::FillType (tile, juce::AffineTransform::scale (1.0f / scale)));
-        g.fillAll();
+        wf::appearance::paintBackground (g, *this, getLocalBounds());
 
         // Slightly darker than the data windows so they stand out.
         g.fillAll (juce::Colours::black.withAlpha (0.18f));
     }
 
     void activeDocumentChanged() override  { owner.activeDocumentChanged(); }
+
+    juce::MultiDocumentPanelWindow* createNewDocumentWindow() override
+    {
+        auto* frame = new DocumentFrame (getBackgroundColour());
+        const juce::Component::SafePointer<Workspace> safeThis (this);
+
+        frame->onBarsChanged = [safeThis]
+        {
+            if (auto* w = safeThis.getComponent())
+                w->barsChanged();
+        };
+
+        frame->beforeMaximise = [safeThis]
+        {
+            if (auto* w = safeThis.getComponent())
+                w->restoreAllBars();
+        };
+
+        return frame;
+    }
+
+    void resized() override
+    {
+        MultiDocumentPanel::resized();
+        layoutBars();
+    }
+
+    static DocumentFrame* frameOf (juce::Component* c)   { return dynamic_cast<DocumentFrame*> (c); }
+
+    std::vector<DocumentFrame*> minimisedBars() const
+    {
+        std::vector<DocumentFrame*> bars;
+
+        for (int i = 0; i < getNumDocuments(); ++i)
+            if (auto* frame = frameOf (getWindowFor (getDocument (i))); frame != nullptr && frame->isMinimisedToBar())
+                bars.push_back (frame);
+
+        return bars;
+    }
+
+    // Minimized windows: side by side along the bottom, more rows upwards
+    // when they don't fit in one.
+    void layoutBars()
+    {
+        const auto bars = minimisedBars();
+        const auto perRow = juce::jmax (1, getWidth() / DocumentFrame::barWidth);
+
+        for (int i = 0; i < (int) bars.size(); ++i)
+        {
+            const auto h = bars[(size_t) i]->barHeight();
+            bars[(size_t) i]->setBounds ((i % perRow) * DocumentFrame::barWidth, getHeight() - (i / perRow + 1) * h,
+                                         DocumentFrame::barWidth, h);
+        }
+    }
+
+    // What's left for the windows above the bars (Cascade / Tile).
+    juce::Rectangle<int> areaAboveBars() const
+    {
+        auto area = getLocalBounds();
+        const auto bars = minimisedBars();
+
+        if (! bars.empty())
+        {
+            const auto perRow = juce::jmax (1, getWidth() / DocumentFrame::barWidth);
+            const auto rows = ((int) bars.size() + perRow - 1) / perRow;
+            area.removeFromBottom (rows * bars.front()->barHeight());
+        }
+
+        return area;
+    }
+
+    void restoreAllBars()
+    {
+        for (auto* frame : minimisedBars())
+            frame->setMinimisedToBar (false);
+    }
+
+    void barsChanged()
+    {
+        layoutBars();
+
+        // A minimized file isn't the one to work on: the top open window is.
+        if (auto* frame = frameOf (getWindowFor (getActiveDocument())); frame != nullptr && frame->isMinimisedToBar())
+        {
+            for (int i = getNumChildComponents(); --i >= 0;)
+                if (auto* other = frameOf (getChildComponent (i)); other != nullptr && ! other->isMinimisedToBar())
+                {
+                    other->toFront (true);
+                    break;
+                }
+        }
+    }
 
     // Right-click on the empty workspace (not on a window).
     void mouseDown (const juce::MouseEvent& e) override
@@ -250,7 +429,8 @@ public:
     {
         for (int i = getNumChildComponents(); --i >= 0;)
             if (auto* window = dynamic_cast<juce::MultiDocumentPanelWindow*> (getChildComponent (i)))
-                if (window->isVisible() && window->getBounds().contains (position))
+                if (window->isVisible() && window->getBounds().contains (position)
+                    && ! (frameOf (window) != nullptr && frameOf (window)->isMinimisedToBar()))
                     return dynamic_cast<DataWindow*> (window->getContentComponent());
 
         return nullptr;
@@ -271,8 +451,6 @@ private:
     MainComponent& owner;
     bool fileDragHighlight = false;
     juce::Component::SafePointer<DataWindow> previewDoc;
-    juce::Image tile;
-    float tileScale = 0.0f;
 };
 
 //==============================================================================
@@ -335,10 +513,28 @@ MainComponent::MainComponent()
     meters = std::make_unique<wf::MeterPanel> (*meterTap);
     addAndMakeVisible (*meters);
 
+    spaceEverywhere = std::make_unique<wf::SpaceEverywhere> (*this, [this] (bool all)
+    {
+        commandManager.invokeDirectly (all ? wf::optPlayAll : wf::optPlay, false);
+    });
+
     setWantsKeyboardFocus (true);
     setSize (1100, 700);
     updateStatus();
     scheduleTempo();
+
+    updateButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2e7d32));
+    updateButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+    updateButton.setWantsKeyboardFocus (false);
+    updateButton.onClick = [this] { showUpdateMessage(); };
+    addChildComponent (updateButton);
+
+    // Once a day, a few seconds after the start (not in the --list-commands self-test).
+    juce::Timer::callAfterDelay (3000, [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        if (auto* main = safeThis.getComponent(); main != nullptr && main->isShowing())
+            main->checkForUpdates (false);
+    });
 
     // The audio device opens once the window is on screen.
     juce::Timer::callAfterDelay (150, [safeThis = juce::Component::SafePointer<MainComponent> (this)]
@@ -397,6 +593,7 @@ void MainComponent::startAudio()
 
 MainComponent::~MainComponent()
 {
+    spaceEverywhere.reset();
     wf::setDynamicSubmenus (nullptr);
     wf::settings::flush();
     tempoTimer.stopTimer();
@@ -411,6 +608,7 @@ MainComponent::~MainComponent()
     stretchWindow.reset();
     bassFinderWindow.reset();
     deEsserWindow.reset();
+    drumRebuilderWindow.reset();   // takes its player off the audio device
     effectWindow.reset();
     job.reset();
     stopToolPreview();
@@ -445,6 +643,13 @@ void MainComponent::resized()
         menuBar->setBounds (area.removeFromTop (menuBarHeight));
 
     statusBar.setBounds (area.removeFromBottom (statusBarHeight));
+
+    // Top right, on the menu bar (on macOS, where the menu is at the top of
+    // the screen, on the right of the status bar).
+    const auto updateWidth = updateButton.getBestWidthForHeight (menuBarHeight) + 24;
+    updateButton.setBounds (menuBar != nullptr ? getLocalBounds().removeFromTop (menuBarHeight).removeFromRight (updateWidth).reduced (1)
+                                               : statusBar.getBounds().removeFromRight (updateWidth).reduced (1));
+    updateButton.toFront (false);
     toolbar->setBounds (area.removeFromBottom (ProcessToolbar::preferredHeight));
 
     if (meters != nullptr)
@@ -521,6 +726,31 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
     raw->getView().onScrub = [this, raw] (WaveformView::Scrub phase, juce::int64 sample) { scrub (raw, phase, sample); };
     raw->getView().onCursorClicked = [this, raw] (juce::int64 sample) { jumpPlayback (raw, sample); };
     raw->getView().onContextMenu = [this, raw] { showWaveMenu (raw); };
+    raw->onGetStems = [this, raw] { getStems (raw); };
+
+    // A tab switch while playing goes on at the same place in the new part.
+    raw->beforePageChange = [this, raw]
+    {
+        resumeAfterPageChange.reset();
+
+        if (isPlaying() && playingDocument.getComponent() == raw)
+            resumeAfterPageChange = std::make_pair (playPosition(), playSoloChannel);
+
+        releasePlaybackSource();
+    };
+    raw->afterPageChange = [this, raw]
+    {
+        if (! resumeAfterPageChange.has_value() || raw != activeDocument())
+            return;
+
+        const auto [at, solo] = *resumeAfterPageChange;
+        resumeAfterPageChange.reset();
+        const auto length = (juce::int64) raw->getBuffer().getNumSamples();
+
+        if (at < length)
+            startPlayback ({ at, length }, solo);
+    };
+
     raw->onRegionAction = [this, raw] (int index, bool menu)
     {
         if (menu) regionMenu (raw, index);
@@ -857,8 +1087,7 @@ void MainComponent::saveDocument (DataWindow* doc, bool forceSaveAs, std::functi
             return;
         }
 
-        auto folder = doc->getFile().existsAsFile() ? doc->getFile().getParentDirectory()
-                                                    : juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+        auto folder = doc->getSaveFolder();
         auto name = juce::File (juce::File::createLegalFileName (doc->getTitle())).getFileNameWithoutExtension()
                   + format.extension;
 
@@ -908,9 +1137,25 @@ void MainComponent::saveDocument (DataWindow* doc, bool forceSaveAs, std::functi
 
 void MainComponent::askToSaveBeforeClosing (DataWindow* doc, std::function<void (bool)> done)
 {
-    if (doc == nullptr || ! doc->isModified())
+    if (doc == nullptr || doc->unsavedPages().isEmpty())
     {
         done (true);
+        return;
+    }
+
+    // With stem tabs, Save would only save the tab shown: say which tabs go.
+    if (doc->hasStemPages())
+    {
+        const auto unsaved = doc->unsavedPages();
+        auto options = juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::QuestionIcon)
+                                                .withTitle ("Adormis Audio")
+                                                .withMessage ("These tabs of \"" + doc->getTitle() + "\" are not saved: "
+                                                              + unsaved.joinIntoString (", ") + ".\n\nClose and lose them? "
+                                                              "(Cancel, then Save on each tab to keep them.)")
+                                                .withButton ("Close")
+                                                .withButton ("Cancel");
+
+        juce::AlertWindow::showAsync (options, [done] (int result) { done (result == 1); });
         return;
     }
 
@@ -934,7 +1179,7 @@ void MainComponent::requestQuit (std::function<void()> quit)
     int unsaved = 0;
 
     for (int i = 0; i < workspace->getNumDocuments(); ++i)
-        if (auto* doc = dynamic_cast<DataWindow*> (workspace->getDocument (i)); doc != nullptr && doc->isModified())
+        if (auto* doc = dynamic_cast<DataWindow*> (workspace->getDocument (i)); doc != nullptr && ! doc->unsavedPages().isEmpty())
             ++unsaved;
 
     if (unsaved == 0)
@@ -1931,9 +2176,36 @@ void MainComponent::showWorkspaceMenu (juce::Point<int> position)
         menu.addCommandItem (&commandManager, wf::editPasteToNew);
     }
 
+    menu.addSeparator();
+    addLookItems (menu);
+
     // Inside the main window: Hyprland moves focus onto separate menu windows
     // and JUCE then closes them as soon as the mouse slips off.
     menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition().withParentComponent (getTopLevelComponent()));
+}
+
+// Waveform Colour... and Background...: the look of every window at once,
+// in the right-click menus of the waveforms and of the empty workspace.
+void MainComponent::addLookItems (juce::PopupMenu& menu)
+{
+    const juce::Component::SafePointer<MainComponent> safeThis (this);
+    const auto at = getLocalArea (nullptr, juce::Rectangle<int> (1, 1) + juce::Desktop::getMousePosition());
+    const auto repaintAll = [safeThis] { if (auto* main = safeThis.getComponent()) main->repaint(); };
+
+    menu.addItem ("Waveform Colour...", [safeThis, at, repaintAll]
+    {
+        if (auto* main = safeThis.getComponent())
+            wf::showWaveColourPicker (*main, at, repaintAll);
+    });
+    menu.addItem ("Background...", [safeThis, at, repaintAll]
+    {
+        if (auto* main = safeThis.getComponent())
+            wf::showBackgroundPicker (*main, at, repaintAll, [safeThis, repaintAll]
+            {
+                if (auto* m = safeThis.getComponent())
+                    m->chooseBackgroundPhoto (repaintAll);
+            });
+    });
 }
 
 // Right-click in a file's waveform: the usual edits, a few tools, and files.
@@ -1959,6 +2231,10 @@ void MainComponent::showWaveMenu (DataWindow* doc)
         menu.addCommandItem (&commandManager, id);
 
     menu.addSeparator();
+
+    addLookItems (menu);
+    menu.addSeparator();
+
     menu.addItem ("New (empty)", [safeThis]
     {
         if (auto* main = safeThis.getComponent())
@@ -1973,6 +2249,34 @@ void MainComponent::showWaveMenu (DataWindow* doc)
     // Inside the main window: Hyprland moves focus onto separate menu windows
     // and JUCE then closes them as soon as the mouse slips off.
     menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition().withParentComponent (getTopLevelComponent()));
+}
+
+void MainComponent::chooseBackgroundPhoto (std::function<void()> onChanged)
+{
+    const auto current = wf::appearance::background().photo;
+    const auto start = current.existsAsFile() ? current : juce::File::getSpecialLocation (juce::File::userPicturesDirectory);
+
+    filePicker.launch ("Background photo", start, "*.jpg;*.jpeg;*.png;*.gif",
+                       juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                       [onChanged = std::move (onChanged)] (const juce::Array<juce::File>& files)
+    {
+        if (files.isEmpty())
+            return;
+
+        if (! wf::appearance::canUsePhoto (files[0]))
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Background",
+                                                    "\"" + files[0].getFileName() + "\" isn't a picture Adormis Audio can read (JPG, PNG or GIF).");
+            return;
+        }
+
+        auto b = wf::appearance::background();
+        b.photo = files[0];
+        wf::appearance::setBackground (b);
+
+        if (onChanged)
+            onChanged();
+    });
 }
 
 void MainComponent::showStatistics()
@@ -2311,7 +2615,8 @@ std::optional<wf::BassFinderSource> MainComponent::bassFinderSource()
 
     const auto range = doc->processRange();
     wf::BassFinderSource source;
-    source.title = doc->getTitle() + (doc->getView().getSelection().isEmpty() ? " (whole file)" : " (selection)");
+    source.isSelection = ! doc->getView().getSelection().isEmpty();
+    source.title = doc->getTitle() + (source.isSelection ? " (selection)" : " (whole file)");
     source.sampleRate = doc->getSampleRate();
     source.audio.setSize (doc->getBuffer().getNumChannels(), range.getLength());
 
@@ -2431,6 +2736,218 @@ void MainComponent::showDeEsser()
     deEsserWindow->setVisible (true);
     deEsserWindow->toFront (true);
     commandManager.commandStatusChanged();
+}
+
+void MainComponent::getStems (DataWindow* doc)
+{
+    if (doc == nullptr || doc->isEmpty() || doc->hasStemPages() || doc->isStem() || job != nullptr)
+        return;
+
+    if (! wf::stems::modelFile().existsAsFile())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Get Stems",
+                                                "The AI model for stems is missing from this copy of Adormis Audio.");
+        return;
+    }
+
+    // The whole song, stereo at the model's rate; the parts come back in the file's format.
+    auto input = std::make_shared<juce::AudioBuffer<float>> (
+        DataWindow::prepareForMix (doc->getBuffer(), doc->getSampleRate(), wf::stems::modelRate, 2));
+    auto parts = std::make_shared<std::optional<std::array<juce::AudioBuffer<float>, wf::stems::numParts>>>();
+    auto error = std::make_shared<juce::String>();
+    const auto rate = doc->getSampleRate();
+    const auto channels = doc->getBuffer().getNumChannels();
+    const auto minutes = juce::roundToInt (input->getNumSamples() / wf::stems::modelRate / 60.0 * 2.0);
+
+    gettingStems = doc;
+    doc->setGettingStems (true);
+
+    runJob ("Getting stems with AI (about " + juce::String (juce::jmax (1, minutes)) + " min on a laptop)...",
+            [input, parts, error] (std::function<bool (float)> progress)
+            {
+                *parts = wf::stems::separate (*input, progress, *error);
+                return parts->has_value();
+            },
+            [this, parts, error, rate, channels] (bool finished)
+            {
+                auto* target = gettingStems.getComponent();
+                gettingStems = nullptr;
+
+                if (target == nullptr)
+                    return;
+
+                target->setGettingStems (false);
+
+                if (! finished || ! parts->has_value())
+                {
+                    if (error->isNotEmpty())
+                        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Get Stems", *error);
+
+                    return;
+                }
+
+                // The tab order: drums, bass, vocals, then the rest.
+                std::vector<std::pair<juce::String, juce::AudioBuffer<float>>> pages;
+                const std::pair<wf::stems::Part, const char*> order[] { { wf::stems::drums, "Drums" }, { wf::stems::bass, "Bass" },
+                                                                        { wf::stems::vocals, "Vocals" }, { wf::stems::other, "Other instruments" } };
+
+                for (auto [part, name] : order)
+                    pages.emplace_back (name, DataWindow::prepareForMix ((**parts)[(size_t) part], wf::stems::modelRate, rate, channels));
+
+                parts->reset();
+                target->addStemPages (std::move (pages));
+                commandManager.commandStatusChanged();
+            });
+}
+
+// Opens the selection (or the whole file) in Drum Rebuilder; with the window
+// already open, the new stretch replaces the beat in it.
+void MainComponent::showDrumRebuilder()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->getBuffer().getNumSamples() == 0)
+        return;
+
+    const auto range = doc->processRange();
+    const auto whole = doc->getView().getSelection().isEmpty();
+    juce::AudioBuffer<float> audio (doc->getBuffer().getNumChannels(), range.getLength());
+
+    for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+        audio.copyFrom (ch, 0, doc->getBuffer(), ch, range.getStart(), range.getLength());
+
+    const auto beat = wf::drumRebuilderBeatFile (doc->getTitle(), doc->getFile(), whole && ! doc->isModified(), audio,
+                                                 doc->getSampleRate(), range.getStart() / doc->getSampleRate());
+
+    if (beat == juce::File())
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Drum Rebuilder",
+                                                "Could not write the audio for Drum Rebuilder into " + wf::startup::settingsFolder().getFullPathName());
+        return;
+    }
+
+    if (drumRebuilderWindow == nullptr)
+    {
+        wf::DrumRebuilderHost host;
+        host.devices = &deviceManager;
+        host.openAsNewFile = [this] (const juce::String& title, juce::AudioBuffer<float> rebuilt, double rate)
+        {
+            addDocument (DataWindow::fromAudio (title, rate, std::move (rebuilt), {}));
+        };
+        host.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+        {
+            juce::MessageManager::callAsync ([safeThis]
+            {
+                if (auto* main = safeThis.getComponent())
+                {
+                    main->drumRebuilderWindow.reset();
+                    main->commandManager.commandStatusChanged();
+                }
+            });
+        };
+        drumRebuilderWindow = wf::createDrumRebuilderWindow (std::move (host));
+    }
+
+    stopPlayback (false);
+    wf::loadDrumRebuilderBeat (*drumRebuilderWindow, beat,
+                               juce::File (doc->getTitle()).getFileNameWithoutExtension() + (whole ? "" : " (selection)"));
+    drumRebuilderWindow->setVisible (true);
+    drumRebuilderWindow->toFront (true);
+}
+
+// At start: GitHub is asked at most once a day; in between, the last answer
+// (kept in the settings) still shows the button and the message.
+void MainComponent::checkForUpdates (bool askedByUser)
+{
+    if (! askedByUser)
+    {
+        const auto atStart = wf::settings::get ("update.atStart");
+
+        if (atStart.isBool() && ! (bool) atStart)
+            return;
+
+        const auto last = (juce::int64) wf::settings::get ("update.lastCheck");
+
+        if (juce::Time::currentTimeMillis() - last < 24 * 60 * 60 * 1000LL)
+        {
+            const auto version = wf::settings::get ("update.version").toString();
+
+            if (version.isNotEmpty())
+                updateFound (wf::updates::Release { version, wf::settings::get ("update.page").toString() }, false);
+
+            return;
+        }
+    }
+
+    juce::Thread::launch ([safeThis = juce::Component::SafePointer<MainComponent> (this), askedByUser]
+    {
+        auto newest = wf::updates::fetchNewest();
+
+        juce::MessageManager::callAsync ([safeThis, newest, askedByUser]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                if (newest.has_value())
+                {
+                    wf::settings::set ("update.lastCheck", juce::Time::currentTimeMillis());
+                    wf::settings::set ("update.version", newest->version);
+                    wf::settings::set ("update.page", newest->pageUrl);
+                }
+
+                main->updateFound (newest, askedByUser);
+            }
+        });
+    });
+}
+
+void MainComponent::updateFound (std::optional<wf::updates::Release> newest, bool askedByUser)
+{
+    const juce::String current (JUCE_APPLICATION_VERSION_STRING);
+
+    if (newest.has_value() && wf::updates::isNewer (newest->version, current))
+    {
+        availableUpdate = newest;
+        updateButton.setButtonText ("New update: " + newest->version);
+        updateButton.setVisible (true);
+        resized();
+
+        if (askedByUser || wf::settings::get ("update.skip").toString() != newest->version)
+            showUpdateMessage();
+
+        return;
+    }
+
+    availableUpdate.reset();
+    updateButton.setVisible (false);
+
+    if (askedByUser)
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Check for Updates",
+                                                newest.has_value() ? "You have the newest version (" + current + ")."
+                                                                   : juce::String ("Could not reach GitHub. Check the internet connection and try again."));
+}
+
+void MainComponent::showUpdateMessage()
+{
+    if (! availableUpdate.has_value())
+        return;
+
+    const auto release = *availableUpdate;
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions()
+                                      .withIconType (juce::MessageBoxIconType::InfoIcon)
+                                      .withTitle ("New update")
+                                      .withMessage ("Adormis Audio " + release.version + " is out (you have " JUCE_APPLICATION_VERSION_STRING ").\n\n"
+                                                    "Download opens its page on GitHub, with the files for Windows, macOS and Linux.")
+                                      .withButton ("Download")
+                                      .withButton ("Skip this version")
+                                      .withButton ("Later"),
+                                  [release] (int result)
+                                  {
+                                      // JUCE: the buttons give 1, 2 and 0 (the last one, also Escape).
+                                      if (result == 1)
+                                          juce::URL (release.pageUrl).launchInDefaultBrowser();
+                                      else if (result == 2)
+                                          wf::settings::set ("update.skip", release.version);
+                                  });
 }
 
 void MainComponent::showEffect (wf::EffectKind kind)
@@ -2925,14 +3442,21 @@ void MainComponent::arrangeWindows (bool cascade)
     if (count == 0)
         return;
 
-    const auto area = workspace->getLocalBounds();
+    // Minimized windows stay in their bars.
+    const auto area = workspace->areaAboveBars();
+    std::vector<juce::MultiDocumentPanelWindow*> windows;
 
     for (int i = 0; i < count; ++i)
-    {
-        auto* window = workspace->getWindowFor (workspace->getDocument (i));
+        if (auto* window = workspace->getWindowFor (workspace->getDocument (i)))
+            if (auto* frame = Workspace::frameOf (window); frame == nullptr || ! frame->isMinimisedToBar())
+                windows.push_back (window);
 
-        if (window == nullptr)
-            continue;
+    if (windows.empty())
+        return;
+
+    for (int i = 0; i < (int) windows.size(); ++i)
+    {
+        auto* window = windows[(size_t) i];
 
         if (cascade)
         {
@@ -2943,7 +3467,7 @@ void MainComponent::arrangeWindows (bool cascade)
         else
         {
             // Stack windows top to bottom, each one full width.
-            const auto rowHeight = area.getHeight() / count;
+            const auto rowHeight = area.getHeight() / (int) windows.size();
             window->setBounds (area.getX(), area.getY() + i * rowHeight, area.getWidth(), rowHeight);
         }
     }
@@ -2967,7 +3491,9 @@ void MainComponent::cycleWindows (int direction)
     auto* next = workspace->getDocument ((current + direction + count) % count);
     workspace->setActiveDocument (next);
 
-    if (auto* window = workspace->getWindowFor (next))
+    if (auto* frame = Workspace::frameOf (workspace->getWindowFor (next)); frame != nullptr && frame->isMinimisedToBar())
+        frame->setMinimisedToBar (false);
+    else if (auto* window = workspace->getWindowFor (next))
         window->toFront (true);
 }
 
@@ -3521,7 +4047,11 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
     switch (id)
     {
         case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice: case wf::optKeyboard: case wf::toolsBatch:
-        case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord: case wf::optRecordComputer:
+        case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord: case wf::optRecordComputer: case wf::helpCheckUpdates:
+            break;
+
+        case wf::helpUpdatesAtStart:
+            info.setTicked (! wf::settings::get ("update.atStart").isBool() || (bool) wf::settings::get ("update.atStart"));
             break;
 
         case wf::editSnapZero:   // an option: always there
@@ -3619,6 +4149,8 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             available = available && doc != nullptr && ! toolWindowOpen() && job == nullptr && doc->getView().getSelectedChannel() < 0;
             break;
         case wf::toolsBassFinder: available = available && doc != nullptr && (bassFinderWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
+        case wf::toolsDrumRebuilder: available = available && doc != nullptr && job == nullptr; break;
+        case wf::toolsGetStems:      available = available && doc != nullptr && ! doc->hasStemPages() && ! doc->isStem() && job == nullptr; break;
         case wf::toolsDeEsser:    available = available && doc != nullptr && (deEsserWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
 
         case wf::procEqParametric: case wf::procEqGraphic: case wf::procFadeGraphic: case wf::insertVolumeEnv: case wf::fxCompressor: case wf::fxDelay: case wf::fxReverb: case wf::toolsMp3Restore:
@@ -3693,6 +4225,14 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::optRecordComputer: recordComputer(); return true;
         case wf::helpShortcuts:     showShortcuts(); return true;
         case wf::helpAbout:         showAbout(); return true;
+        case wf::helpCheckUpdates:  checkForUpdates (true); return true;
+        case wf::helpUpdatesAtStart:
+        {
+            const auto v = wf::settings::get ("update.atStart");
+            wf::settings::set ("update.atStart", v.isBool() && ! (bool) v);
+            commandManager.commandStatusChanged();
+            return true;
+        }
         case wf::winCascade:        arrangeWindows (true); return true;
         case wf::winTile:           arrangeWindows (false); return true;
         case wf::winNext:           cycleWindows (1); return true;
@@ -3828,6 +4368,8 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::procVolume:        showVolumeDialog(); return true;
         case wf::procTimeStretch:   showStretchDialog(); return true;
         case wf::toolsBassFinder:   showBassFinder(); return true;
+        case wf::toolsDrumRebuilder: showDrumRebuilder(); return true;
+        case wf::toolsGetStems:     getStems (activeDocument()); return true;
         case wf::toolsDeEsser:      showDeEsser(); return true;
         case wf::procEqParametric:  showEffect (wf::EffectKind::eq); return true;
         case wf::procEqGraphic:     showEffect (wf::EffectKind::graphicEq); return true;

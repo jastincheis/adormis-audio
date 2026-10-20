@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_utils/juce_audio_utils.h>
+#include "SpaceKey.h"
 
 namespace wf
 {
@@ -16,6 +17,7 @@ struct FilePreviewHost
 };
 
 class AudioFilePreview final : public juce::FilePreviewComponent,
+                               public SpaceTarget,
                                private juce::ChangeListener,
                                private juce::Timer
 {
@@ -28,6 +30,7 @@ public:
     void resized() override;
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
+    bool spacePressed() override;   // play / stop the file
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override   { repaint(); }

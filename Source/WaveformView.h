@@ -199,8 +199,6 @@ private:
     int dropSnappedTo = -1;
 
     juce::ScrollBar scrollBar { false };
-    juce::Image backgroundTile;
-    float backgroundScale = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveformView)
 };

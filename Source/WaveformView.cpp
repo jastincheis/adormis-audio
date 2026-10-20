@@ -1,5 +1,5 @@
 #include "WaveformView.h"
-#include "BackgroundPattern.h"
+#include "Appearance.h"
 #include "Settings.h"
 #include <numeric>
 
@@ -10,7 +10,6 @@ constexpr int scrollBarHeight = 14;
 constexpr int regionLaneHeight = 17;
 constexpr int laneGap         = 14;   // the drag strip between channels (and under a mono one)
 
-const juce::Colour waveColour      (0xffd8ecff);
 const juce::Colour waveSelected    (0xffffffff);
 const juce::Colour selectionShade  = juce::Colours::black.withAlpha (0.38f);
 const juce::Colour cursorColour    (0xffffffff);
@@ -881,7 +880,7 @@ juce::Image WaveformView::makeDragImage() const
     {
         const auto columns = 40;
         const auto step = juce::jmax ((juce::int64) 1, selection.getLength() / columns);
-        g.setColour (waveColour);
+        g.setColour (wf::appearance::waveColour());
 
         for (int i = 0; i < columns; ++i)
         {
@@ -992,16 +991,7 @@ void WaveformView::resized()
 
 void WaveformView::paint (juce::Graphics& g)
 {
-    const auto scale = (float) g.getInternalContext().getPhysicalPixelScaleFactor();
-
-    if (backgroundTile.isNull() || ! juce::approximatelyEqual (backgroundScale, scale))
-    {
-        backgroundTile = wf::makeBackgroundTile (scale);
-        backgroundScale = scale;
-    }
-
-    g.setFillType (juce::FillType (backgroundTile, juce::AffineTransform::scale (1.0f / scale)));
-    g.fillRect (getLocalBounds());
+    wf::appearance::paintBackground (g, *this, getLocalBounds());
 
     const auto area = waveArea();
     paintRuler (g, getLocalBounds().removeFromTop (rulerHeight));
@@ -1088,6 +1078,7 @@ void WaveformView::paintChannel (juce::Graphics& g, int channel, juce::Rectangle
     const auto mid = (float) lane.getCentreY();
     const auto lanes = (float) lane.getHeight() * 0.5f - 1.0f;
     const auto half = lanes * levelZoom;
+    const auto waveColour = wf::appearance::waveColour();
 
     g.setColour (juce::Colours::white.withAlpha (0.25f));
     g.drawHorizontalLine (lane.getCentreY(), (float) clip.getX(), (float) clip.getRight());

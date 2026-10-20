@@ -1,6 +1,7 @@
 #include "DeEsser.h"
 #include "DarkTheme.h"
 #include "Sibilance.h"
+#include "SpaceKey.h"
 
 namespace wf
 {
@@ -859,9 +860,12 @@ private:
 
 //==============================================================================
 class DeEsserPanel final : public juce::Component,
+                           public SpaceTarget,
                            private juce::Timer
 {
 public:
+    bool spacePressed() override   { model.playCurrent (true); return true; }   // when the panel hasn't the keyboard
+
     DeEsserPanel (BassFinderSource source, BassFinderHost host, std::function<void()> onCloseIn)
         : onClose (std::move (onCloseIn)), spectrumView (model), timeline (model)
     {
@@ -869,7 +873,7 @@ public:
         model.host = std::move (host);
         model.changed = [this] { refresh(); };
 
-        for (auto* l : { &title, &sensitivityLabel, &depthLabel, &position, &gainLabel, &freqLabel, &qLabel, &status, &hint })
+        for (auto* l : { &title, &sensitivityLabel, &depthLabel, &position, &gainLabel, &freqLabel, &qLabel, &status, &hint, &applyNote })
             addAndMakeVisible (l);
 
         styleLabel (title, 14.0f, true);
@@ -884,6 +888,9 @@ public:
         styleLabel (hint, 11.5f, false, colours::muted);
         hint.setJustificationType (juce::Justification::topLeft);
         hint.setMinimumHorizontalScale (1.0f);   // wrap onto two lines instead of squeezing
+        styleLabel (applyNote, 11.5f, false, colours::muted);
+        applyNote.setJustificationType (juce::Justification::centredTop);
+        applyNote.setText ("Changes every S in the list, not just the one shown", juce::dontSendNotification);
 
         title.setText ("De-esser: " + model.source.title, juce::dontSendNotification);
         sensitivityLabel.setText ("Sensitivity", juce::dontSendNotification);
@@ -1157,7 +1164,11 @@ public:
         position.setBounds (row);
         e.removeFromTop (6);
 
-        auto bottom = e.removeFromBottom (36);
+        auto bottom = e.removeFromBottom (52);
+        auto applyColumn = bottom.removeFromRight (300);
+        apply.setBounds (applyColumn.removeFromTop (36).reduced (2));
+        applyNote.setBounds (applyColumn);
+        bottom = bottom.removeFromTop (36);
         hint.setBounds (e.removeFromBottom (34));
         e.removeFromBottom (6);
 
@@ -1203,7 +1214,6 @@ public:
 
         playAll.setBounds (bottom.removeFromLeft (210).reduced (2));
         playAllOriginal.setBounds (bottom.removeFromLeft (190).reduced (2));
-        apply.setBounds (bottom.removeFromRight (200).reduced (2));
     }
 
 private:
@@ -1262,8 +1272,11 @@ private:
             if (item.changesSound())
                 ++changedCount;
 
+        // Says plainly that it changes every S found, not just the one on show.
+        const auto where = model.source.isSelection ? " in the selection" : " in the file";
         apply.setEnabled (changedCount > 0);
-        apply.setButtonText ("Apply to file (" + juce::String (changedCount) + ")");
+        apply.setButtonText (changedCount == 1 ? "Apply to the 1 S" + juce::String (where)
+                                               : "Apply to all " + juce::String (changedCount) + " S's" + where);
         spectrumView.refresh();
         timeline.repaint();
     }
@@ -1343,7 +1356,7 @@ private:
     Model model;
     std::function<void()> onClose;
 
-    juce::Label title, sensitivityLabel, depthLabel, position, gainLabel, freqLabel, qLabel, status, hint, pointLabel;
+    juce::Label title, sensitivityLabel, depthLabel, position, gainLabel, freqLabel, qLabel, status, hint, pointLabel, applyNote;
     juce::Slider sensitivity, depth, gain, frequency, q;
     juce::TextButton detectButton { "Detect again" }, prevButton { juce::CharPointer_UTF8 ("\xe2\x97\x80  Previous") },
                      nextButton { juce::CharPointer_UTF8 ("Next  \xe2\x96\xb6") },
