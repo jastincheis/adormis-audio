@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Get Stems' model (Demucs htdemucs by Meta, MIT, converted for demucs.cpp),
+# kept in its own repo so the program's release page stays clean.
+env:
+  MODEL: ggml-model-htdemucs-4s-f16.bin
+  MODEL_SHA256: 72b17c42d308982ddb5069bc3bf48b81a5aac4cb6516e4366c0fa7cef6df0064
+
 jobs:
   macos:
     name: "macOS (Universal: Apple Silicon + Intel)"
@@ -19,8 +25,15 @@ jobs:
         id: v
         shell: bash
         run: echo "version=$(sed -n 's/^project(AdormisAudio VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" >> "$GITHUB_OUTPUT"
+      - name: Get Stems model
+        shell: bash
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/$MODEL" "https://github.com/jastincheis/adormis-audio-models/releases/download/htdemucs-4s-f16/$MODEL"
+          echo "$MODEL_SHA256  $RUNNER_TEMP/$MODEL" | shasum -a 256 -c -
+          p="$RUNNER_TEMP/$MODEL"; command -v cygpath > /dev/null && p=$(cygpath -m "$p")
+          echo "MODEL_PATH=$p" >> "$GITHUB_ENV"
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DADORMIS_DEMUCS_MODEL="$MODEL_PATH"
       - name: Build
         run: cmake --build build --config Release -j 4
       - name: Package
@@ -52,12 +65,19 @@ jobs:
           sudo apt-get install -y libasound2-dev libcurl4-openssl-dev libjack-jackd2-dev libfreetype-dev libfontconfig1-dev \
             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev \
             libxrender-dev libxi-dev libgl1-mesa-dev libmp3lame-dev libsamplerate0-dev
+      - name: Get Stems model
+        shell: bash
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/$MODEL" "https://github.com/jastincheis/adormis-audio-models/releases/download/htdemucs-4s-f16/$MODEL"
+          echo "$MODEL_SHA256  $RUNNER_TEMP/$MODEL" | shasum -a 256 -c -
+          p="$RUNNER_TEMP/$MODEL"; command -v cygpath > /dev/null && p=$(cygpath -m "$p")
+          echo "MODEL_PATH=$p" >> "$GITHUB_ENV"
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DADORMIS_DEMUCS_MODEL="$MODEL_PATH"
       - name: Build
         run: cmake --build build -j 4
       - name: Package
-        run: tar -C build/AdormisAudio_artefacts/Release -czf AdormisAudio-${{ steps.v.outputs.version }}-Linux-${{ matrix.arch }}.tar.gz "Adormis Audio"
+        run: tar -C build/AdormisAudio_artefacts/Release -czf AdormisAudio-${{ steps.v.outputs.version }}-Linux-${{ matrix.arch }}.tar.gz "Adormis Audio" models
       - uses: actions/upload-artifact@v4
         with:
           name: AdormisAudio-Linux-${{ matrix.arch }}
@@ -72,12 +92,20 @@ jobs:
         id: v
         shell: bash
         run: echo "version=$(sed -n 's/^project(AdormisAudio VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)" >> "$GITHUB_OUTPUT"
+      - name: Get Stems model
+        shell: bash
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/$MODEL" "https://github.com/jastincheis/adormis-audio-models/releases/download/htdemucs-4s-f16/$MODEL"
+          echo "$MODEL_SHA256  $RUNNER_TEMP/$MODEL" | shasum -a 256 -c -
+          p="$RUNNER_TEMP/$MODEL"; command -v cygpath > /dev/null && p=$(cygpath -m "$p")
+          echo "MODEL_PATH=$p" >> "$GITHUB_ENV"
       - name: Configure
-        run: cmake -S . -B build
+        shell: bash
+        run: cmake -S . -B build -DADORMIS_DEMUCS_MODEL="$MODEL_PATH"
       - name: Build
         run: cmake --build build --config Release -j 4
       - name: Package
-        run: Compress-Archive -Path 'build/AdormisAudio_artefacts/Release/Adormis Audio.exe' -DestinationPath AdormisAudio-${{ steps.v.outputs.version }}-Windows.zip
+        run: Compress-Archive -Path 'build/AdormisAudio_artefacts/Release/Adormis Audio.exe','build/AdormisAudio_artefacts/Release/models' -DestinationPath AdormisAudio-${{ steps.v.outputs.version }}-Windows.zip
       - name: Self-test (which menu commands are usable)
         continue-on-error: true
         run: |

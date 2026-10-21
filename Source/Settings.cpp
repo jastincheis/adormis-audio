@@ -53,7 +53,9 @@ void collect (juce::Component& c, std::vector<juce::Component*>& out)
 juce::var get (const juce::String& key)
 {
     const auto text = file().getValue (key);
-    return text.isEmpty() ? juce::var() : juce::JSON::parse (text);
+    // fromString, not parse: parse only takes an object or a list, and plain
+    // values (true, a number, "text") would come back empty.
+    return text.isEmpty() ? juce::var() : juce::JSON::fromString (text);
 }
 
 void set (const juce::String& key, const juce::var& value)
