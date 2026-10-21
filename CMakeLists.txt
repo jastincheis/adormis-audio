@@ -161,6 +161,7 @@ target_sources(AdormisAudio PRIVATE
     Source/TemplateDialog.cpp
     Source/TimeStretch.cpp
     Source/UndoHistoryWindow.cpp
+    Source/LinkDownload.cpp
     Source/UpdateCheck.cpp
     Source/WaveformView.cpp)
 
@@ -222,6 +223,7 @@ target_link_libraries(AdormisAudio
         juce::juce_gui_extra
         juce::juce_audio_utils
         juce::juce_dsp
+        juce::juce_cryptography
         rubberband_single
         drb_ui
         demucs_engine

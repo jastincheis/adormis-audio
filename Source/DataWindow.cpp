@@ -1862,6 +1862,8 @@ void DataWindow::updateTabs()
             t->setConnectedEdges (juce::Button::ConnectedOnLeft | juce::Button::ConnectedOnRight);
             t->setColour (juce::TextButton::buttonOnColourId, juce::Colours::white);
             t->setColour (juce::TextButton::buttonColourId, juce::Colour (0xffbab6ae));
+            t->setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+            t->setColour (juce::TextButton::textColourOffId, juce::Colours::black);
             t->onClick = [this, i] { showPage (i); };
             addAndMakeVisible (t);
         }

@@ -242,6 +242,12 @@ private:
     void showUpdateMessage();
     std::optional<wf::updates::Release> availableUpdate;
     juce::TextButton updateButton;
+
+    // The link box next to Help: the sound of a YouTube, TikTok... page,
+    // saved as a WAV in Music/Adormis Audio Downloads and opened.
+    juce::TextEditor linkBox;
+    juce::TextButton linkButton { "Get WAV" };
+    void downloadLink();
     void showShortcuts();
     void updateStatus();
     void updateTitle();

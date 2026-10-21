@@ -12,6 +12,7 @@
 #include "StemSeparator.h"
 #include "WaveColourPicker.h"
 #include "Appearance.h"
+#include "LinkDownload.h"
 
 namespace
 {
@@ -529,6 +530,17 @@ MainComponent::MainComponent()
     updateButton.onClick = [this] { showUpdateMessage(); };
     addChildComponent (updateButton);
 
+    linkBox.setTextToShowWhenEmpty ("Paste a link (YouTube, TikTok, Instagram, Facebook...)", juce::Colours::grey);
+    linkBox.setTooltip ("The sound of the page is saved as a WAV in Music/Adormis Audio Downloads and opened here.");
+    linkBox.setSelectAllWhenFocused (true);
+    linkBox.setIndents (6, 3);
+    linkBox.onReturnKey = [this] { downloadLink(); };
+    linkBox.onEscapeKey = [this] { linkBox.clear(); grabKeyboardFocus(); };
+    addAndMakeVisible (linkBox);
+    linkButton.setWantsKeyboardFocus (false);
+    linkButton.onClick = [this] { downloadLink(); };
+    addAndMakeVisible (linkButton);
+
     // Once a day, a few seconds after the start (not in the --list-commands self-test).
     juce::Timer::callAfterDelay (3000, [safeThis = juce::Component::SafePointer<MainComponent> (this)]
     {
@@ -650,6 +662,31 @@ void MainComponent::resized()
     updateButton.setBounds (menuBar != nullptr ? getLocalBounds().removeFromTop (menuBarHeight).removeFromRight (updateWidth).reduced (1)
                                                : statusBar.getBounds().removeFromRight (updateWidth).reduced (1));
     updateButton.toFront (false);
+
+    // Right after the last menu (Help); on macOS, at the left of the status bar.
+    {
+        auto row = statusBar.getBounds();
+
+        if (menuBar != nullptr)
+        {
+            row = getLocalBounds().removeFromTop (menuBarHeight);
+            const auto names = getMenuBarNames();
+            int menusWidth = 0;
+
+            for (int i = 0; i < names.size(); ++i)
+                menusWidth += getLookAndFeel().getMenuBarItemWidth (*menuBar, i, names[i]);
+
+            row.removeFromLeft (menusWidth + 12);
+            row.removeFromRight (updateButton.isVisible() ? updateButton.getWidth() + 8 : 4);
+        }
+
+        row = row.withWidth (juce::jmin (row.getWidth(), 460)).reduced (0, 2);
+        linkButton.setBounds (row.removeFromRight (linkButton.getBestWidthForHeight (row.getHeight()) + 16));
+        row.removeFromRight (4);
+        linkBox.setBounds (row);
+        linkBox.toFront (false);
+        linkButton.toFront (false);
+    }
     toolbar->setBounds (area.removeFromBottom (ProcessToolbar::preferredHeight));
 
     if (meters != nullptr)
@@ -2797,6 +2834,90 @@ void MainComponent::getStems (DataWindow* doc)
                 parts->reset();
                 target->addStemPages (std::move (pages));
                 commandManager.commandStatusChanged();
+            });
+}
+
+// The link box: first the tools (once, asked), then the download as a job;
+// the WAV opens in a new window.
+void MainComponent::downloadLink()
+{
+    const auto link = linkBox.getText().trim();
+
+    if (job != nullptr)
+        return;
+
+    if (! wf::links::looksLikeLink (link))
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Get WAV",
+                                                "Paste the address of a video or song page, e.g. https://www.youtube.com/watch?v=...");
+        return;
+    }
+
+    if (const auto missing = wf::links::missingTools(); missing.isNotEmpty())
+    {
+        if (! wf::links::canFetchMissingTools())
+        {
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Get WAV",
+                                                    missing + " is needed for links. " + wf::links::installHint());
+            return;
+        }
+
+        juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::QuestionIcon, "Get WAV",
+            "Getting the sound from links needs " + missing + " (free programs, from their GitHub pages; "
+            "about 130 MB, more on Windows with ffmpeg).\n\n"
+            "Download " + (missing.contains (" and ") ? "them" : "it") + " now into the Adormis Audio settings folder?",
+            "Download", "Cancel", this,
+            juce::ModalCallbackFunction::create ([safeThis = juce::Component::SafePointer<MainComponent> (this)] (int answer)
+            {
+                auto* main = safeThis.getComponent();
+
+                if (main == nullptr || answer == 0 || main->job != nullptr)
+                    return;
+
+                auto error = std::make_shared<juce::String>();
+                main->runJob ("Downloading the tools for links...",
+                              [error] (std::function<bool (float)> progress) { return wf::links::fetchMissingTools (progress, *error); },
+                              [safeThis, error] (bool finished)
+                              {
+                                  if (safeThis == nullptr)
+                                      return;
+
+                                  // Then the link itself, once this job has let go.
+                                  if (finished)
+                                      juce::Timer::callAfterDelay (200, [safeThis] { if (auto* m = safeThis.getComponent()) m->downloadLink(); });
+                                  else if (error->isNotEmpty())
+                                      juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Get WAV", *error);
+                              });
+            }));
+        return;
+    }
+
+    auto error = std::make_shared<juce::String>();
+    auto file = std::make_shared<juce::File>();
+
+    runJob ("Getting the sound from the link...",
+            [link, error, file] (std::function<bool (float)> progress)
+            {
+                *file = wf::links::download (link, progress, *error);
+                return file->existsAsFile();
+            },
+            [safeThis = juce::Component::SafePointer<MainComponent> (this), error, file] (bool finished)
+            {
+                auto* main = safeThis.getComponent();
+
+                if (main == nullptr)
+                    return;
+
+                if (finished && file->existsAsFile())
+                {
+                    main->linkBox.clear();
+                    main->loadFile (*file);
+                }
+                else if (error->isNotEmpty())
+                {
+                    juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Get WAV",
+                                                            "Could not get the sound from this link:\n\n" + *error);
+                }
             });
 }
 

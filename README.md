@@ -55,6 +55,11 @@ menu structure and default shortcuts so the workflow feels familiar.
 - How long it takes: a few minutes, on the processor (a 2½-minute song took about 4 minutes on an Apple M1 laptop with 16 GB); it uses more cores when there is enough memory, and you can cancel it
 - Tip: send the Drums tab to Drum Rebuilder and the Bass tab to Bass Creator
 
+**Get WAV from a link** (the box next to Help)
+- Paste a YouTube, TikTok, Instagram, Facebook... link and press Enter: the best audio the page has is saved as a WAV (24-bit, at the site's own sample rate) in `Music/Adormis Audio Downloads` and opens right away
+- It works through the free programs [yt-dlp](https://github.com/yt-dlp/yt-dlp), [Deno](https://github.com/denoland/deno) and [ffmpeg](https://ffmpeg.org): the first time, Adormis Audio asks, then downloads them from their GitHub releases into its settings folder and checks them against the published SHA-256 sums (ffmpeg only on Windows; on macOS and Linux install it yourself, e.g. `brew install ffmpeg`). yt-dlp keeps itself up to date
+- The sites send compressed audio: the WAV keeps it as it is, it doesn't make it better. Some posts need an account and can't be fetched. Only download what you have the right to use
+
 **Repair and tools**
 - Noise Reduction (from a captured noise print, or learned from the quietest parts), Hum Removal (finds 50 / 60 Hz by itself), Click and Crackle Removal, Clipped Peak Restoration
 - MP3 Restore: grows back the top end an MP3 cut off (by saturation or spectral copy), smooths the "swirl", adds warmth and punch
@@ -180,10 +185,12 @@ certificate by [SignPath Foundation](https://signpath.org).
 - Roles — authors, reviewers and approvers: [@jastincheis](https://github.com/jastincheis)
   (sole maintainer). Contributions from anyone else are reviewed by the
   maintainer before they are merged. Every signing request is approved manually.
-- Privacy: Adormis Audio does not collect or send any data. Its only connection
-  to the internet is the update check: at most once a day it asks GitHub for the
+- Privacy: Adormis Audio does not collect or send any data. It connects to the
+  internet for the update check: at most once a day it asks GitHub for the
   list of Adormis Audio releases (nothing about you or your files is sent; turn
-  it off in Help > Check for Updates at Start). Get Stems runs on your own
+  it off in Help > Check for Updates at Start). Get WAV contacts the site of the
+  link you paste (through yt-dlp) and, the first time, GitHub for the tools,
+  only when you use it. Get Stems runs on your own
   computer. It only reads and writes the audio files you open or save, and
   keeps its settings and a start-up log in your user profile folder
   (`%APPDATA%\Adormis Audio` on Windows).
