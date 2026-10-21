@@ -88,7 +88,7 @@ The apps are not signed yet, so each system asks you to confirm the first time.
 
 ### macOS (11 Big Sur or newer, Apple Silicon and Intel)
 
-1. Download `AdormisAudio-<version>-macOS.zip` (for example `AdormisAudio-0.1.15-macOS.zip`) and double-click it to unzip (Safari may do this for you).
+1. Download `AdormisAudio-<version>-macOS.zip` (for example `AdormisAudio-0.1.16-macOS.zip`) and double-click it to unzip (Safari may do this for you).
 2. Drag `Adormis Audio.app` into **Applications**.
 3. Open it. macOS says it cannot check the app for malware:
    - **macOS 15 Sequoia and newer:** click **Done**, open **System Settings → Privacy & Security**,
