@@ -52,7 +52,7 @@ else()
     include(FetchContent)
     FetchContent_Declare(drum_rebuilder
         GIT_REPOSITORY https://github.com/jastincheis/drum-rebuilder.git
-        GIT_TAG        8b116f1454748bd03f4b58d91ff5a9a12b5f1946)
+        GIT_TAG        bb55e969bb640b9676ec20df76af5eeb2889f381)
     FetchContent_MakeAvailable(drum_rebuilder)
 endif()
 
