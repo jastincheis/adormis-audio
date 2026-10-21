@@ -24,6 +24,8 @@ menu structure and default shortcuts so the workflow feels familiar.
 - Undo/Redo History (Alt+8): every edit by name; click one to go back (or forward) to it
 - Record (Ctrl+R) with input meter, mono / stereo and bit depth, or **record what the computer plays** (Ctrl+Shift+R: YouTube, music, any program); File > New from a tempo template with beat markers
 - Right-click the workspace for Create New (an empty window to paste or drag audio into) and Open Recent (also in the File menu); right-click a file's waveform for play, the edits, New, Open and Open Recent
+- **Minimize** a file window (the – button): it stays open as a small bar along the bottom of the workspace; click the bar to bring it back where it was, with its tabs and unsaved changes
+- **Space plays / stops everywhere**: in the file windows and in every other window (effects and Mix play their preview, the Open window the file you clicked, De-esser the S shown)
 
 **Playback and meters**
 - Loop button on the toolbar; Q loops the selection, and a new selection while looping becomes the loop
@@ -46,14 +48,26 @@ menu structure and default shortcuts so the workflow feels familiar.
 - Graphic EQ (5, 10, 15, 20 or 31 sliders; the curve passes through every slider), Parametric EQ, Compressor, Limiter (true peak; finds the gain for -14 / -16 / -23 LUFS), Noise Gate
 - Delay / Echo, Reverb, Chorus, Flanger, Vibrato, Distortion (4 types, oversampled)
 
+**Get Stems** (Tools > Get Stems, or the Get Stems button on a file window)
+- Splits a song into **Vocals, Drums, Bass and Other instruments**, on your own computer (nothing is uploaded), with the AI model Demucs by Meta, which comes with the program
+- The parts open as **tabs in the same window**: Original | Drums | Bass | Vocals | Other. Each tab is a full file: edit, select L / R, markers, effects, undo, play, drag in and out
+- **Save** saves the tab you are looking at (on the Bass tab, the bass); a saved part remembers it is a stem, so it doesn't offer Get Stems again
+- How long it takes: a few minutes, on the processor (a 2½-minute song took about 4 minutes on an Apple M1 laptop with 16 GB); it uses more cores when there is enough memory, and you can cancel it
+- Tip: send the Drums tab to Drum Rebuilder and the Bass tab to Bass Creator
+
 **Repair and tools**
 - Noise Reduction (from a captured noise print, or learned from the quietest parts), Hum Removal (finds 50 / 60 Hz by itself), Click and Crackle Removal, Clipped Peak Restoration
 - MP3 Restore: grows back the top end an MP3 cut off (by saturation or spectral copy), smooths the "swirl", adds warmth and punch
-- De-esser, Detect Clipping, Copy Other Channel, Statistics (peak, true peak, RMS, DC offset, LUFS, LRA)
-- Bass Creator: suggests a bass line for a sample that has none (also with no drums): key, tempo (auto or by hand, Tap), the chords, bass lines in 10 styles to listen to with the sample and save as MIDI or audio; a note detector to check and correct an existing bass (in the song's own tuning; mains hum ignored)
+- De-esser (**Apply to all N S's** changes every S found in the file or the selection, not just the one shown), Detect Clipping, Copy Other Channel, Statistics (peak, true peak, RMS, DC offset, LUFS, LRA)
+- Bass Creator: suggests a bass line for a sample that has none (also with no drums): key, tempo (auto or by hand, Tap), the chords, bass lines in 10 styles to listen to with the sample and save as MIDI or audio; a note detector to check and correct an existing bass (in the song's own tuning; mains hum ignored; Up / Down zoom, Space plays from the cursor)
+- **Drum Rebuilder** (Tools > Drum Rebuilder, or the drum button next to Bass Creator): the whole [Drum Rebuilder](https://github.com/jastincheis/drum-rebuilder) inside Adormis Audio. It takes the active file (or the selection), finds the kicks, snares and hats, lets you swap them for other sounds, and sends the rebuilt beat back as a new window
 - Batch Converter: many files at once through the same steps (channels, sample rate, trim silence, normalize to a peak or a LUFS target with the limiter if needed, fades) into WAV / FLAC / AIFF / MP3 / OGG; the originals are not changed
 
 **Remembered settings:** the effect windows, Mix, Volume and the small settings windows start where you left them (also after a restart); each effect window has a **Defaults** button. Values measured from each file (hum frequency, clip level, MP3 cut-off, tempo) are measured again.
+
+**Look:** right-click a waveform or the empty workspace for **Waveform Colour...** (one colour for all windows) and **Background...** (textures such as the teddy bears, stripes, dots or waves in any colour, a plain colour, or your own photo behind everything).
+
+**Updates:** when a newer version is out, a green **New update** button appears at the top right (on macOS, next to the status bar); it opens a message with Download / Skip this version / Later. Adormis Audio asks GitHub at most once a day; turn it off in **Help > Check for Updates at Start**, or ask by hand with **Help > Check for Updates...**.
 
 **Keyboard:** the classic default shortcuts (F1 lists them); change any of them in **Options > Customize Keyboard** (saved).
 
@@ -69,7 +83,7 @@ The apps are not signed yet, so each system asks you to confirm the first time.
 
 ### macOS (11 Big Sur or newer, Apple Silicon and Intel)
 
-1. Download `AdormisAudio-<version>-macOS.zip` (for example `AdormisAudio-0.1.9-macOS.zip`) and double-click it to unzip (Safari may do this for you).
+1. Download `AdormisAudio-<version>-macOS.zip` (for example `AdormisAudio-0.1.15-macOS.zip`) and double-click it to unzip (Safari may do this for you).
 2. Drag `Adormis Audio.app` into **Applications**.
 3. Open it. macOS says it cannot check the app for malware:
    - **macOS 15 Sequoia and newer:** click **Done**, open **System Settings → Privacy & Security**,
@@ -83,7 +97,7 @@ You only do this once. Alternatively, in Terminal:
 ### Windows (10 / 11, 64-bit)
 
 1. Download `AdormisAudio-<version>-Windows.zip`, right-click it → **Extract All…** → **Extract**.
-2. Double-click `Adormis Audio.exe`.
+2. Double-click `Adormis Audio.exe` (keep the `models` folder next to it: Get Stems needs it).
 3. If **Windows protected your PC** appears, click **More info** → **Run anyway**.
 4. Optional: right-click `Adormis Audio.exe` → **Show more options** → **Send to → Desktop (create shortcut)**.
 
@@ -94,11 +108,11 @@ Adormis Audio plays through Windows Audio. To use an audio interface's ASIO driv
 
 1. Check your processor: `uname -m` prints `x86_64` or `aarch64`, then download
    `AdormisAudio-<version>-Linux-x86_64.tar.gz` or `AdormisAudio-<version>-Linux-arm64.tar.gz`.
-2. Install libsamplerate (the only extra library it needs):
-   - Debian / Ubuntu / Mint: `sudo apt install libsamplerate0`
-   - Fedora: `sudo dnf install libsamplerate`
-   - Arch: `sudo pacman -S libsamplerate`
-3. Unpack and run:
+2. Install libsamplerate and libcurl (most systems already have libcurl):
+   - Debian / Ubuntu / Mint: `sudo apt install libsamplerate0 libcurl4`
+   - Fedora: `sudo dnf install libsamplerate libcurl`
+   - Arch: `sudo pacman -S libsamplerate curl`
+3. Unpack and run (keep the `models` folder next to the program: Get Stems needs it):
    ```bash
    tar -xzf AdormisAudio-*-Linux-*.tar.gz
    ./"Adormis Audio"
@@ -139,9 +153,18 @@ cmake --build build -j
 Linux needs the usual JUCE development packages (ALSA, JACK, FreeType,
 fontconfig, X11, Xcomposite, Xcursor, Xext, Xi, Xinerama, Xrandr, Xrender,
 OpenGL). Optional: libmp3lame (MP3 export) and libsamplerate (best
-sample-rate conversion). Rubber Band 4.0.0 is downloaded automatically.
+sample-rate conversion). Rubber Band 4.0.0, [Drum Rebuilder](https://github.com/jastincheis/drum-rebuilder)
+and [demucs.cpp](https://github.com/sevagh/demucs.cpp) (with Eigen) are downloaded
+automatically, pinned by commit. Linux also needs libcurl (for the update check).
 To use an existing JUCE checkout instead of downloading it, add
 `-DADORMIS_JUCE_DIR=/path/to/JUCE`.
+
+Get Stems needs its model next to the program. Download
+`ggml-model-htdemucs-4s-f16.bin` from
+[adormis-audio-models](https://github.com/jastincheis/adormis-audio-models/releases/tag/htdemucs-4s-f16)
+and add `-DADORMIS_DEMUCS_MODEL=/path/to/ggml-model-htdemucs-4s-f16.bin`;
+the build copies it into `models` (or the app bundle's Resources). Without it,
+Get Stems says the model is missing.
 
 ## Code signing policy
 
@@ -157,12 +180,19 @@ certificate by [SignPath Foundation](https://signpath.org).
 - Roles — authors, reviewers and approvers: [@jastincheis](https://github.com/jastincheis)
   (sole maintainer). Contributions from anyone else are reviewed by the
   maintainer before they are merged. Every signing request is approved manually.
-- Privacy: Adormis Audio does not connect to the internet and does not collect or
-  send any data. It only reads and writes the audio files you open or save, and
+- Privacy: Adormis Audio does not collect or send any data. Its only connection
+  to the internet is the update check: at most once a day it asks GitHub for the
+  list of Adormis Audio releases (nothing about you or your files is sent; turn
+  it off in Help > Check for Updates at Start). Get Stems runs on your own
+  computer. It only reads and writes the audio files you open or save, and
   keeps its settings and a start-up log in your user profile folder
   (`%APPDATA%\Adormis Audio` on Windows).
 
 ## License
 
 GNU Affero General Public License v3.0 — see [LICENSE](LICENSE). Built with
-[JUCE](https://juce.com), used under the AGPLv3.
+[JUCE](https://juce.com), used under the AGPLv3. Includes
+[Drum Rebuilder](https://github.com/jastincheis/drum-rebuilder) (AGPLv3, same author),
+[demucs.cpp](https://github.com/sevagh/demucs.cpp) (MIT) with
+[Eigen](https://eigen.tuxfamily.org) (MPL 2.0), and the
+[Demucs](https://github.com/facebookresearch/demucs) htdemucs model by Meta (MIT).

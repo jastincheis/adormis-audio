@@ -29,7 +29,8 @@ jobs:
         shell: bash
         run: |
           curl -fsSL -o "$RUNNER_TEMP/$MODEL" "https://github.com/jastincheis/adormis-audio-models/releases/download/htdemucs-4s-f16/$MODEL"
-          echo "$MODEL_SHA256  $RUNNER_TEMP/$MODEL" | shasum -a 256 -c -
+          if command -v sha256sum > /dev/null; then sum="sha256sum"; else sum="shasum -a 256"; fi
+          echo "$MODEL_SHA256  $RUNNER_TEMP/$MODEL" | $sum -c -
           p="$RUNNER_TEMP/$MODEL"; command -v cygpath > /dev/null && p=$(cygpath -m "$p")
           echo "MODEL_PATH=$p" >> "$GITHUB_ENV"
       - name: Configure
@@ -69,7 +70,8 @@ jobs:
         shell: bash
         run: |
           curl -fsSL -o "$RUNNER_TEMP/$MODEL" "https://github.com/jastincheis/adormis-audio-models/releases/download/htdemucs-4s-f16/$MODEL"
-          echo "$MODEL_SHA256  $RUNNER_TEMP/$MODEL" | shasum -a 256 -c -
+          if command -v sha256sum > /dev/null; then sum="sha256sum"; else sum="shasum -a 256"; fi
+          echo "$MODEL_SHA256  $RUNNER_TEMP/$MODEL" | $sum -c -
           p="$RUNNER_TEMP/$MODEL"; command -v cygpath > /dev/null && p=$(cygpath -m "$p")
           echo "MODEL_PATH=$p" >> "$GITHUB_ENV"
       - name: Configure
@@ -96,7 +98,8 @@ jobs:
         shell: bash
         run: |
           curl -fsSL -o "$RUNNER_TEMP/$MODEL" "https://github.com/jastincheis/adormis-audio-models/releases/download/htdemucs-4s-f16/$MODEL"
-          echo "$MODEL_SHA256  $RUNNER_TEMP/$MODEL" | shasum -a 256 -c -
+          if command -v sha256sum > /dev/null; then sum="sha256sum"; else sum="shasum -a 256"; fi
+          echo "$MODEL_SHA256  $RUNNER_TEMP/$MODEL" | $sum -c -
           p="$RUNNER_TEMP/$MODEL"; command -v cygpath > /dev/null && p=$(cygpath -m "$p")
           echo "MODEL_PATH=$p" >> "$GITHUB_ENV"
       - name: Configure
