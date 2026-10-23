@@ -619,7 +619,7 @@ MainComponent::MainComponent()
     linkButton.onClick = [this] { downloadLink(); };
     addAndMakeVisible (linkButton);
 
-    // Once a day, a few seconds after the start (not in the --list-commands self-test).
+    // A few seconds after the start (not in the --list-commands self-test).
     juce::Timer::callAfterDelay (3000, [safeThis = juce::Component::SafePointer<MainComponent> (this)]
     {
         if (auto* main = safeThis.getComponent(); main != nullptr && main->isShowing())
@@ -3130,7 +3130,7 @@ void MainComponent::showDrumRebuilder()
     drumRebuilderWindow->toFront (true);
 }
 
-// At start: GitHub is asked at most once a day; in between, the last answer
+// At every start GitHub is asked; when it can't be reached, the last answer
 // (kept in the settings) still shows the button and the message.
 void MainComponent::checkForUpdates (bool askedByUser)
 {
@@ -3140,25 +3140,13 @@ void MainComponent::checkForUpdates (bool askedByUser)
 
         if (atStart.isBool() && ! (bool) atStart)
             return;
-
-        const auto last = (juce::int64) wf::settings::get ("update.lastCheck");
-
-        if (juce::Time::currentTimeMillis() - last < 24 * 60 * 60 * 1000LL)
-        {
-            const auto version = wf::settings::get ("update.version").toString();
-
-            if (version.isNotEmpty())
-                updateFound (wf::updates::Release { version, wf::settings::get ("update.page").toString() }, false);
-
-            return;
-        }
     }
 
     juce::Thread::launch ([safeThis = juce::Component::SafePointer<MainComponent> (this), askedByUser]
     {
         auto newest = wf::updates::fetchNewest();
 
-        juce::MessageManager::callAsync ([safeThis, newest, askedByUser]
+        juce::MessageManager::callAsync ([safeThis, newest, askedByUser]() mutable
         {
             if (auto* main = safeThis.getComponent())
             {
@@ -3167,6 +3155,14 @@ void MainComponent::checkForUpdates (bool askedByUser)
                     wf::settings::set ("update.lastCheck", juce::Time::currentTimeMillis());
                     wf::settings::set ("update.version", newest->version);
                     wf::settings::set ("update.page", newest->pageUrl);
+                }
+                else if (! askedByUser)
+                {
+                    // Offline at start: what GitHub said last time.
+                    const auto version = wf::settings::get ("update.version").toString();
+
+                    if (version.isNotEmpty())
+                        newest = wf::updates::Release { version, wf::settings::get ("update.page").toString() };
                 }
 
                 main->updateFound (newest, askedByUser);

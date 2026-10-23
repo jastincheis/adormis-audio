@@ -72,7 +72,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 
 **Look:** right-click a waveform or the empty workspace for **Waveform Colour...** (one colour for all windows) and **Background...** (textures such as the teddy bears, stripes, dots or waves in any colour, a plain colour, or your own photo behind everything).
 
-**Updates:** when a newer version is out, a green **New update** button appears at the top right (on macOS, next to the status bar); it opens a message with Download / Skip this version / Later. Adormis Audio asks GitHub at most once a day; turn it off in **Help > Check for Updates at Start**, or ask by hand with **Help > Check for Updates...**.
+**Updates:** when a newer version is out, a green **New update** button appears at the top right (on macOS, next to the status bar); it opens a message with Download / Skip this version / Later. Adormis Audio asks GitHub each time it starts; turn it off in **Help > Check for Updates at Start**, or ask by hand with **Help > Check for Updates...**.
 
 **Keyboard:** the classic default shortcuts (F1 lists them); change any of them in **Options > Customize Keyboard** (saved).
 
@@ -186,7 +186,7 @@ certificate by [SignPath Foundation](https://signpath.org).
   (sole maintainer). Contributions from anyone else are reviewed by the
   maintainer before they are merged. Every signing request is approved manually.
 - Privacy: Adormis Audio does not collect or send any data. It connects to the
-  internet for the update check: at most once a day it asks GitHub for the
+  internet for the update check: each time it starts it asks GitHub for the
   list of Adormis Audio releases (nothing about you or your files is sent; turn
   it off in Help > Check for Updates at Start). Get WAV contacts the site of the
   link you paste (through yt-dlp) and, the first time, GitHub for the tools,
