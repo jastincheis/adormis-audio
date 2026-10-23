@@ -576,6 +576,9 @@ MainComponent::MainComponent()
     // Remembered from last time.
     WaveformView::snapToZeroCrossings = (bool) wf::settings::get ("edit.snapZero");
 
+    if (const auto v = wf::settings::get ("view.beatLines"); ! v.isVoid())
+        WaveformView::showBeatLines = (bool) v;
+
     if (const auto v = wf::settings::get ("view.followPlayback"); ! v.isVoid())
         followPlayback = (bool) v;
 
@@ -1086,6 +1089,8 @@ void MainComponent::showTempoMenu()
     menu.addItem (101, "As detected", true, tempoMode == 0);
     menu.addItem (102, "Double time (x2)", true, tempoMode == 1);
     menu.addItem (103, "Half time (x1/2)", true, tempoMode == 2);
+    menu.addSeparator();
+    menu.addItem (201, "Beat lines in the selection", true, WaveformView::showBeatLines);
 
     const juce::Component::SafePointer<MainComponent> safeThis (this);
     // Inside the main window: Hyprland moves focus onto separate menu windows
@@ -1099,16 +1104,21 @@ void MainComponent::showTempoMenu()
                             if (main == nullptr || result == 0)
                                 return;
 
-                            if (result > 100)
+                            if (result == 201)
+                            {
+                                WaveformView::showBeatLines = ! WaveformView::showBeatLines;
+                                wf::settings::set ("view.beatLines", WaveformView::showBeatLines);
+                            }
+                            else if (result > 100)
                                 main->tempoMode = result - 101;
                             else
                             {
                                 main->selectionBeats = result;
                                 WaveformView::selectionBeats = result;
-
-                                for (int i = 0; i < main->workspace->getNumDocuments(); ++i)
-                                    main->workspace->getDocument (i)->repaint();   // the beat lines
                             }
+
+                            for (int i = 0; i < main->workspace->getNumDocuments(); ++i)
+                                main->workspace->getDocument (i)->repaint();   // the beat lines
 
                             main->refreshTempoDisplay();
                         });

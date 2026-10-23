@@ -357,6 +357,7 @@ void WaveformView::showStripMenu()
 
 bool WaveformView::snapToZeroCrossings = false;
 int WaveformView::selectionBeats = 4;
+bool WaveformView::showBeatLines = true;
 
 juce::Value& WaveformView::zoomOnCursor()
 {
@@ -1078,7 +1079,7 @@ void WaveformView::paint (juce::Graphics& g)
     }
 
     // The selection split into its beats (see selectionBeats).
-    if (! selection.isEmpty() && selectionBeats > 0)
+    if (showBeatLines && ! selection.isEmpty() && selectionBeats > 0)
     {
         const auto band = selectedChannel >= 0 ? laneBounds (selectedChannel) : area;
         const auto step = (double) selection.getLength() / selectionBeats;

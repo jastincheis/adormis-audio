@@ -116,6 +116,7 @@ public:
     // that many equal parts, with a line at the start, between the beats
     // and at the end. No selection = no lines.
     static int selectionBeats;
+    static bool showBeatLines;   // the tempo box's "Beat lines in the selection", remembered
     juce::int64 nearestZeroCrossing (juce::int64 sample, int channel) const;
     juce::int64 arrowStep() const;   // the arrow-key step in samples at this zoom
 
