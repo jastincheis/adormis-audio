@@ -13,6 +13,16 @@ struct DrumRebuilderHost
     juce::AudioDeviceManager* devices = nullptr;
     std::function<void (const juce::String& title, juce::AudioBuffer<float>, double sampleRate)> openAsNewFile;
     std::function<void()> onClose;
+
+    // The files open in Adormis Audio (each stem tab too), for Drum
+    // Rebuilder's Open list: `write` hands one over as a file (see
+    // drumRebuilderBeatFile), empty when it is gone or can't be written.
+    struct OpenBeat
+    {
+        juce::String name;
+        std::function<juce::File()> write;
+    };
+    std::function<std::vector<OpenBeat>()> openBeats;
 };
 
 std::unique_ptr<juce::DocumentWindow> createDrumRebuilderWindow (DrumRebuilderHost);

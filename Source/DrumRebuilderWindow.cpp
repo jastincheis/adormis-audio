@@ -2,6 +2,7 @@
 #include "StartupLog.h"
 
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <map>
 #include "plugin/PluginProcessor.h"
 
 namespace wf
@@ -18,8 +19,22 @@ public:
         processor.sendToHost = [this] (juce::AudioBuffer<float> beat, double rate)
         {
             if (host.openAsNewFile != nullptr)
-                host.openAsNewFile (beatName + " rebuilt", std::move (beat), rate);
+                host.openAsNewFile (nameOfLoaded() + " rebuilt", std::move (beat), rate);
         };
+        if (host.openBeats != nullptr)
+            processor.hostBeats = [this]
+            {
+                std::vector<DrumRebuilderProcessor::HostBeat> list;
+                for (auto& b : host.openBeats())
+                    list.push_back ({ b.name, [this, name = b.name, write = b.write]
+                    {
+                        const auto f = write();
+                        if (f != juce::File())
+                            names[f.getFullPathName()] = name;   // what comes back is "<name> rebuilt"
+                        return f;
+                    } });
+                return list;
+            };
 
         player.setProcessor (&processor);
         if (host.devices != nullptr)
@@ -54,7 +69,7 @@ public:
 
     void load (const juce::File& beat, const juce::String& name)
     {
-        beatName = name;
+        names[beat.getFullPathName()] = name;
         processor.loadFile (beat);
     }
 
@@ -68,7 +83,18 @@ private:
     DrumRebuilderHost host;
     DrumRebuilderProcessor processor;
     juce::AudioProcessorPlayer player;
-    juce::String beatName;
+    std::map<juce::String, juce::String> names;   // beat file -> the name it had in Adormis Audio
+
+    juce::String nameOfLoaded() const
+    {
+        if (const auto* l = processor.getLoaded())
+        {
+            if (const auto it = names.find (l->file.getFullPathName()); it != names.end())
+                return it->second;
+            return l->file.getFileNameWithoutExtension();   // opened from a folder inside Drum Rebuilder
+        }
+        return "Drum Rebuilder";
+    }
 };
 
 juce::String contentTag (const juce::AudioBuffer<float>& audio)

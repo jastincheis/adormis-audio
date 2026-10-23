@@ -2966,6 +2966,31 @@ void MainComponent::showDrumRebuilder()
                 }
             });
         };
+        host.openBeats = [this]
+        {
+            std::vector<wf::DrumRebuilderHost::OpenBeat> list;
+
+            for (int i = 0; i < workspace->getNumDocuments(); ++i)
+                if (auto* d = dynamic_cast<DataWindow*> (workspace->getDocument (i)))
+                    for (int page = 0; page < d->getNumPages(); ++page)
+                    {
+                        const auto a = d->getPageAudio (page);
+                        if (a.buffer == nullptr || a.buffer->getNumSamples() == 0)
+                            continue;
+
+                        const auto name = juce::File (a.title).getFileNameWithoutExtension();   // a stem tab's: "Song - Drums"
+
+                        list.push_back ({ name, [doc = juce::Component::SafePointer<DataWindow> (d), page]
+                        {
+                            if (doc == nullptr)
+                                return juce::File();
+                            const auto p = doc->getPageAudio (page);
+                            return wf::drumRebuilderBeatFile (p.title, p.file, ! p.modified, *p.buffer, p.sampleRate, 0.0);
+                        } });
+                    }
+
+            return list;
+        };
         drumRebuilderWindow = wf::createDrumRebuilderWindow (std::move (host));
     }
 

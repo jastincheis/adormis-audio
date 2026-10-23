@@ -1772,6 +1772,22 @@ void DataWindow::addStemPages (std::vector<std::pair<juce::String, juce::AudioBu
     resized();
 }
 
+DataWindow::PageAudio DataWindow::getPageAudio (int index) const
+{
+    PageAudio a;
+
+    if (pages.empty() || index == currentPage || ! juce::isPositiveAndBelow (index, (int) pages.size()))
+    {
+        a = { title, {}, file, &buffer, sampleRate, modified };
+        if (! pages.empty())
+            a.label = pages[(size_t) currentPage]->label;
+        return a;
+    }
+
+    const auto& p = *pages[(size_t) index];
+    return { p.title, p.label, p.file, &p.buffer, p.sampleRate, p.modified };
+}
+
 void DataWindow::showPage (int index)
 {
     if (! juce::isPositiveAndBelow (index, (int) pages.size()) || index == currentPage)

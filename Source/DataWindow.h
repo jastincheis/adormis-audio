@@ -30,6 +30,17 @@ public:
     static juce::String stemPartFromName (const juce::String& fileName);
     void showPage (int index);
 
+    // One page's audio without showing it (Drum Rebuilder lists them all).
+    struct PageAudio
+    {
+        juce::String title, label;   // label: the tab's name, empty without stems
+        juce::File file;
+        const juce::AudioBuffer<float>* buffer = nullptr;
+        double sampleRate = 44100.0;
+        bool modified = false;
+    };
+    PageAudio getPageAudio (int index) const;
+
     // Pages (the shown one included) with changes not saved, by tab name.
     juce::StringArray unsavedPages() const;
 
