@@ -216,6 +216,29 @@ void DataWindow::initialise (const juce::String& newTitle)
     getStemsButton.onClick = [this] { if (onGetStems) onGetStems(); };
     addChildComponent (getStemsButton);
 
+    zoomLabel.setFont (juce::FontOptions (14.0f));
+    zoomLabel.setColour (juce::Label::textColourId, juce::Colours::black);
+    zoomLabel.setInterceptsMouseClicks (false, false);
+    addAndMakeVisible (zoomLabel);
+
+    zoomMouseButton.setTooltip ("The mouse wheel zooms where the mouse is");
+    zoomCursorButton.setTooltip ("The mouse wheel zooms where the cursor is (click, W / E...)");
+    zoomMouseButton.setConnectedEdges (juce::Button::ConnectedOnRight);
+    zoomCursorButton.setConnectedEdges (juce::Button::ConnectedOnLeft);
+    zoomOnCursor.referTo (WaveformView::zoomOnCursor());
+    zoomOnCursor.addListener (this);
+
+    for (auto* b : { &zoomMouseButton, &zoomCursorButton })
+    {
+        b->setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+        b->setColour (juce::TextButton::textColourOffId, juce::Colours::black);
+        b->setWantsKeyboardFocus (false);
+        b->onClick = [this, b] { zoomOnCursor = (b == &zoomCursorButton); };
+        addAndMakeVisible (b);
+    }
+
+    valueChanged (zoomOnCursor);
+
     for (auto* label : { &resolutionLabel, &lengthBox, &cursorBox })
     {
         label->setFont (juce::FontOptions (14.0f));
@@ -1633,6 +1656,10 @@ void DataWindow::resized()
     bottom.removeFromRight (6);
     lengthBox.setBounds (bottom.removeFromRight (170));
 
+    zoomLabel.setBounds (bottom.removeFromLeft (64));
+    zoomMouseButton.setBounds (bottom.removeFromLeft (58));
+    zoomCursorButton.setBounds (bottom.removeFromLeft (58));
+
     view.setBounds (area);
 }
 
@@ -1716,6 +1743,13 @@ struct DataWindow::Page
 };
 
 DataWindow::~DataWindow() = default;
+
+void DataWindow::valueChanged (juce::Value&)
+{
+    const auto onCursor = (bool) zoomOnCursor.getValue();
+    zoomMouseButton.setToggleState (! onCursor, juce::dontSendNotification);
+    zoomCursorButton.setToggleState (onCursor, juce::dontSendNotification);
+}
 
 void DataWindow::swapWith (Page& p)
 {

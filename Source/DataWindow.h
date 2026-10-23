@@ -9,7 +9,8 @@
 
 // One open audio file: its samples, format details, waveform and undo history.
 // Lives inside a floating window of the workspace.
-class DataWindow final : public juce::Component
+class DataWindow final : public juce::Component,
+                         private juce::Value::Listener
 {
 public:
     ~DataWindow() override;
@@ -283,6 +284,12 @@ private:
     juce::File saveFolder;
     juce::OwnedArray<juce::TextButton> tabs;
     juce::TextButton getStemsButton { "Get Stems" };
+
+    // Bottom left: where the mouse wheel zooms (WaveformView::zoomOnCursor).
+    juce::Label zoomLabel { {}, "Zoom on:" };
+    juce::TextButton zoomMouseButton { "Mouse" }, zoomCursorButton { "Cursor" };
+    juce::Value zoomOnCursor;
+    void valueChanged (juce::Value&) override;
     juce::String stemPart;   // "Drums", "Bass"... for a part; empty for a song
     void swapWith (Page&);
     void updateTabs();

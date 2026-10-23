@@ -356,6 +356,26 @@ void WaveformView::showStripMenu()
 
 bool WaveformView::snapToZeroCrossings = false;
 
+juce::Value& WaveformView::zoomOnCursor()
+{
+    struct Saver final : juce::Value::Listener
+    {
+        void valueChanged (juce::Value& v) override { wf::settings::set ("view.zoomOnCursor", (bool) v.getValue()); }
+    };
+
+    static juce::Value value;
+    static Saver saver;
+
+    if (value.getValue().isVoid())
+    {
+        const auto stored = wf::settings::get ("view.zoomOnCursor");
+        value = ! stored.isVoid() && (bool) stored;
+        value.addListener (&saver);
+    }
+
+    return value;
+}
+
 // The nearest sample (within 50 ms, or a few pixels when zoomed out further)
 // where the wave changes sign: on `channel`, or on all channels together
 // (their sum) when it is -1. Of the two samples around the crossing, the one
@@ -963,7 +983,8 @@ void WaveformView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseW
     if (! hasAudio())
         return;
 
-    // Horizontal wheel/trackpad scrolls; vertical wheel zooms around the mouse.
+    // Horizontal wheel/trackpad scrolls; vertical wheel zooms around the mouse
+    // (or around the cursor, see zoomOnCursor).
     if (std::abs (wheel.deltaX) > std::abs (wheel.deltaY))
     {
         viewStart -= (double) wheel.deltaX * (double) waveArea().getWidth() * samplesPerPixel * 0.5;
@@ -977,7 +998,12 @@ void WaveformView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseW
         return;
 
     const auto factor = wheel.deltaY > 0.0f ? 0.8 : 1.25;
-    setZoom (samplesPerPixel * factor, xToSample ((float) e.x), (float) e.x);
+
+    if ((bool) zoomOnCursor().getValue())
+        setZoom (samplesPerPixel * factor, (double) cursor,
+                 juce::jlimit ((float) waveArea().getX(), (float) waveArea().getRight(), sampleToX ((double) cursor)));
+    else
+        setZoom (samplesPerPixel * factor, xToSample ((float) e.x), (float) e.x);
 }
 
 //==============================================================================

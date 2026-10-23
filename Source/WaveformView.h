@@ -122,6 +122,11 @@ public:
     };
     static DragOptions dragOptions();
 
+    // "Zoom on: Mouse | Cursor" (bottom left of every window, shared by all):
+    // the mouse wheel zooms around the mouse, or around the cursor (put there
+    // with a click, W / E...). True = cursor. Remembered between starts.
+    static juce::Value& zoomOnCursor();
+
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;
