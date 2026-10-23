@@ -111,6 +111,11 @@ public:
     // made with the mouse move to the nearest point where the wave crosses
     // zero, so cuts and pastes don't click.
     static bool snapToZeroCrossings;
+
+    // How many beats a selection is (the tempo box, shared by all windows):
+    // that many equal parts, with a line at the start, between the beats
+    // and at the end. No selection = no lines.
+    static int selectionBeats;
     juce::int64 nearestZeroCrossing (juce::int64 sample, int channel) const;
     juce::int64 arrowStep() const;   // the arrow-key step in samples at this zoom
 

@@ -1102,7 +1102,13 @@ void MainComponent::showTempoMenu()
                             if (result > 100)
                                 main->tempoMode = result - 101;
                             else
+                            {
                                 main->selectionBeats = result;
+                                WaveformView::selectionBeats = result;
+
+                                for (int i = 0; i < main->workspace->getNumDocuments(); ++i)
+                                    main->workspace->getDocument (i)->repaint();   // the beat lines
+                            }
 
                             main->refreshTempoDisplay();
                         });

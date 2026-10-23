@@ -16,6 +16,7 @@ const juce::Colour cursorColour    (0xffffffff);
 const juce::Colour playheadColour  (0xffffc23a);
 const juce::Colour markerColour    (0xffff8a3d);
 const juce::Colour barMarkerColour (0xffe8344a);   // a marker that begins a bar
+const juce::Colour beatLineColour  (0xff8fe3ff);   // the selection's beats
 } // namespace
 
 WaveformView::WaveformView()
@@ -355,6 +356,7 @@ void WaveformView::showStripMenu()
 }
 
 bool WaveformView::snapToZeroCrossings = false;
+int WaveformView::selectionBeats = 4;
 
 juce::Value& WaveformView::zoomOnCursor()
 {
@@ -1072,6 +1074,27 @@ void WaveformView::paint (juce::Graphics& g)
 
             for (int x = strip.getX() + 6 - offset; x < strip.getRight(); x += 6)
                 g.fillRect (x, strip.getY() + 4, 1, strip.getHeight() - 8);
+        }
+    }
+
+    // The selection split into its beats (see selectionBeats).
+    if (! selection.isEmpty() && selectionBeats > 0)
+    {
+        const auto band = selectedChannel >= 0 ? laneBounds (selectedChannel) : area;
+        const auto step = (double) selection.getLength() / selectionBeats;
+
+        for (int i = 0; i <= selectionBeats; ++i)
+        {
+            const auto x = sampleToX ((double) selection.getStart() + step * i);
+
+            if (x < (float) area.getX() - 2.0f || x > (float) area.getRight() + 2.0f)
+                continue;
+
+            // A dark edge so the line shows on any waveform colour.
+            g.setColour (juce::Colours::black.withAlpha (0.55f));
+            g.fillRect (juce::Rectangle<float> (x - 1.5f, (float) band.getY(), 3.0f, (float) band.getHeight()));
+            g.setColour (beatLineColour);
+            g.fillRect (juce::Rectangle<float> (x - 0.5f, (float) band.getY(), 1.5f, (float) band.getHeight()));
         }
     }
 
