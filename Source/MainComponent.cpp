@@ -89,7 +89,12 @@ public:
         if (beforeMaximise)
             beforeMaximise();
 
+        // This window is deleted as the files turn into tabs: keep a copy.
+        const auto after = afterMaximise;
         MultiDocumentPanelWindow::maximiseButtonPressed();
+
+        if (after)
+            after();
     }
 
     void mouseUp (const juce::MouseEvent& e) override
@@ -106,7 +111,7 @@ public:
             MultiDocumentPanelWindow::mouseDoubleClick (e);
     }
 
-    std::function<void()> onBarsChanged, beforeMaximise;
+    std::function<void()> onBarsChanged, beforeMaximise, afterMaximise;
 
 private:
     static constexpr int allButtons = minimiseButton | maximiseButton | closeButton;
@@ -126,6 +131,39 @@ public:
     {
         setLayoutMode (FloatingWindows);
         setBackgroundColour (juce::Colours::transparentBlack);
+
+        // Drawn like the ones on the file windows' title bars.
+        auto& lf = getLookAndFeel();
+        minimiseActive.reset (lf.createDocumentWindowButton (juce::DocumentWindow::minimiseButton));
+        restoreActive.reset (lf.createDocumentWindowButton (juce::DocumentWindow::maximiseButton));
+        closeActive.reset (lf.createDocumentWindowButton (juce::DocumentWindow::closeButton));
+
+        minimiseActive->setTooltip ("Minimize");
+        restoreActive->setTooltip ("Restore down (back to windows)");
+        closeActive->setTooltip ("Close");
+
+        for (auto* b : { minimiseActive.get(), restoreActive.get(), closeActive.get() })
+        {
+            b->setWantsKeyboardFocus (false);
+            addChildComponent (*b);
+        }
+
+        restoreActive->onClick = [this] { restoreWindows(); };
+
+        minimiseActive->onClick = [this]
+        {
+            auto* doc = getActiveDocument();
+            restoreWindows();
+
+            if (auto* frame = frameOf (getWindowFor (doc)))
+                frame->setMinimisedToBar (true);
+        };
+
+        closeActive->onClick = [this]
+        {
+            if (auto* doc = getActiveDocument())
+                closeDocumentAsync (doc, true, [this] (bool) { updateMaximisedButtons(); });
+        };
     }
 
     void paint (juce::Graphics& g) override
@@ -136,7 +174,11 @@ public:
         g.fillAll (juce::Colours::black.withAlpha (0.18f));
     }
 
-    void activeDocumentChanged() override  { owner.activeDocumentChanged(); }
+    void activeDocumentChanged() override
+    {
+        updateMaximisedButtons();
+        owner.activeDocumentChanged();
+    }
 
     juce::MultiDocumentPanelWindow* createNewDocumentWindow() override
     {
@@ -155,6 +197,12 @@ public:
                 w->restoreAllBars();
         };
 
+        frame->afterMaximise = [safeThis]
+        {
+            if (auto* w = safeThis.getComponent())
+                w->updateMaximisedButtons();
+        };
+
         return frame;
     }
 
@@ -162,6 +210,35 @@ public:
     {
         MultiDocumentPanel::resized();
         layoutBars();
+        updateMaximisedButtons();
+    }
+
+    bool isMaximised() const   { return getLayoutMode() == MaximisedWindowsWithTabs; }
+
+    // Maximized, the files are tabs and their windows (with _ [] x) are
+    // gone, so the same three buttons sit at the top right of the tabs.
+    void restoreWindows()
+    {
+        setLayoutMode (FloatingWindows);
+        updateMaximisedButtons();
+    }
+
+    void updateMaximisedButtons()
+    {
+        if (closeActive == nullptr)
+            return;   // still being built
+
+        const auto show = isMaximised() && getNumDocuments() > 0;
+        const auto* tabs = getCurrentTabbedComponent();
+        const auto size = (tabs != nullptr ? tabs->getTabBarDepth() : 30) - 4;
+        auto area = getLocalBounds().removeFromTop (size + 4).removeFromRight (3 * size + 4).reduced (2);
+
+        for (auto* b : { minimiseActive.get(), restoreActive.get(), closeActive.get() })
+        {
+            b->setVisible (show);
+            b->setBounds (area.removeFromLeft (size).reduced (1));
+            b->toFront (false);
+        }
     }
 
     static DocumentFrame* frameOf (juce::Component* c)   { return dynamic_cast<DocumentFrame*> (c); }
@@ -450,6 +527,7 @@ private:
     }
 
     MainComponent& owner;
+    std::unique_ptr<juce::Button> minimiseActive, restoreActive, closeActive;
     bool fileDragHighlight = false;
     juce::Component::SafePointer<DataWindow> previewDoc;
 };
@@ -3587,6 +3665,9 @@ void MainComponent::arrangeWindows (bool cascade)
 
     if (count == 0)
         return;
+
+    if (workspace->isMaximised())
+        workspace->restoreWindows();
 
     // Minimized windows stay in their bars.
     const auto area = workspace->areaAboveBars();
