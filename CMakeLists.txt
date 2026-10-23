@@ -6,7 +6,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 # Visual C++ Redistributable installed.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(AdormisAudio VERSION 0.1.16 LANGUAGES C CXX)
+project(AdormisAudio VERSION 0.1.17 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,7 +52,7 @@ else()
     include(FetchContent)
     FetchContent_Declare(drum_rebuilder
         GIT_REPOSITORY https://github.com/jastincheis/drum-rebuilder.git
-        GIT_TAG        bb55e969bb640b9676ec20df76af5eeb2889f381)
+        GIT_TAG        fcade236f0678e2e1328c2c80eaf3ccdbe0cc539)
     FetchContent_MakeAvailable(drum_rebuilder)
 endif()
 
