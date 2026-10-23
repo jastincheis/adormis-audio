@@ -50,6 +50,8 @@ public:
         // Fixed size so tiling window managers (Hyprland) float it instead of
         // tiling it next to the main window.
         setResizable (false, false);
+        // Stays in front of the main window when you click there.
+        setAlwaysOnTop (true);
         centreWithSize (getWidth(), getHeight());
     }
 

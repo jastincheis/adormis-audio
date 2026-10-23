@@ -62,5 +62,7 @@ ShortcutsWindow::ShortcutsWindow (juce::KeyPressMappingSet& mappings)
     setUsingNativeTitleBar (true);
     setContentOwned (new ShortcutsTable (mappings), true);
     setResizable (true, false);
+    // Stays in front of the main window when you click there.
+    setAlwaysOnTop (true);
     centreWithSize (getWidth(), getHeight());
 }

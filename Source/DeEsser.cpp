@@ -736,15 +736,25 @@ private:
 
 // The whole audio with a tick per sibilant (bluer = turned down more,
 // orange = turned up); click one to go to it.
+// The file (or, without it, the analysed audio) with the sibilants on it.
+// A click picks the nearest S; a drag picks another stretch of the file.
 class Timeline final : public juce::Component
 {
 public:
     explicit Timeline (Model& m) : model (m) {}
 
     std::function<void (int)> onPick;
+    std::function<void (double start, double end)> onRange;   // seconds in the file
 
     void computePeaks()
     {
+        if (showsFile())
+        {
+            peaks = model.source.filePeaks (600);
+            repaint();
+            return;
+        }
+
         peaks.assign (600, 0.0f);
         const auto& a = model.source.audio;
         const auto total = a.getNumSamples();
@@ -776,10 +786,21 @@ public:
         g.setColour (colours::bg);
         g.fillRoundedRectangle (r, 6.0f);
 
-        const auto duration = model.duration();
-
-        if (duration <= 0.0)
+        if (length() <= 0.0)
             return;
+
+        const auto offset = showsFile() ? model.source.startInFile : 0.0;
+        auto xAt = [&] (double t) { return r.getX() + r.getWidth() * (float) (t / length()); };
+
+        // The stretch being worked on, when it is not the whole file.
+        if (showsFile() && model.source.isSelection)
+        {
+            const auto area = juce::Rectangle<float>::leftTopRightBottom (xAt (offset), r.getY(), xAt (offset + model.duration()), r.getBottom());
+            g.setColour (colours::accent.withAlpha (0.12f));
+            g.fillRect (area);
+            g.setColour (colours::accent.withAlpha (0.6f));
+            g.drawRect (area, 1.0f);
+        }
 
         const auto mid = r.getCentreY();
         g.setColour (colours::muted.withAlpha (0.45f));
@@ -794,8 +815,8 @@ public:
         for (size_t i = 0; i < model.items.size(); ++i)
         {
             const auto& s = model.items[i];
-            const auto x1 = r.getX() + r.getWidth() * (float) (s.start / duration);
-            const auto x2 = r.getX() + r.getWidth() * (float) (s.end / duration);
+            const auto x1 = xAt (offset + s.start);
+            const auto x2 = xAt (offset + s.end);
             double lowest = 0.0, highest = 0.0;
 
             for (const auto& b : s.bands)
@@ -820,20 +841,58 @@ public:
 
         if (playhead.has_value())
         {
-            const auto x = r.getX() + r.getWidth() * (float) (*playhead / duration);
+            const auto x = xAt (offset + *playhead);
             g.setColour (colours::ok);
             g.fillRect (x - 1.5f, r.getY(), 3.0f, r.getHeight());
+        }
+
+        if (dragging)
+        {
+            const auto x1 = (float) std::min (dragFrom, dragTo), x2 = (float) std::max (dragFrom, dragTo);
+            g.setColour (colours::ink.withAlpha (0.18f));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (x1, r.getY(), x2, r.getBottom()));
+            g.setColour (colours::ink);
+            g.drawRect (juce::Rectangle<float>::leftTopRightBottom (x1, r.getY(), x2, r.getBottom()), 1.5f);
         }
     }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
-        const auto duration = model.duration();
+        dragFrom = dragTo = e.x;
+        dragging = false;
+    }
 
-        if (model.items.empty() || duration <= 0.0 || onPick == nullptr)
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (! showsFile() || onRange == nullptr)
             return;
 
-        const auto t = (double) e.x / getWidth() * duration;
+        dragTo = juce::jlimit (0, getWidth(), e.x);
+        dragging = dragging || std::abs (dragTo - dragFrom) > 4;
+        repaint();
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (dragging)
+        {
+            dragging = false;
+            repaint();
+            const auto a = secondsAt (std::min (dragFrom, dragTo)), b = secondsAt (std::max (dragFrom, dragTo));
+
+            if (b - a >= 0.1)
+                onRange (a, b);
+
+            return;
+        }
+
+        // A click: the nearest S, if it is in the stretch being worked on.
+        const auto duration = model.duration();
+        const auto t = secondsAt (e.x) - (showsFile() ? model.source.startInFile : 0.0);
+
+        if (model.items.empty() || duration <= 0.0 || onPick == nullptr || t < 0.0 || t > duration)
+            return;
+
         int best = 0;
         double bestDistance = 1.0e9;
 
@@ -853,9 +912,15 @@ public:
     }
 
 private:
+    bool showsFile() const    { return model.source.filePeaks != nullptr && model.source.fileDuration > 0.0; }
+    double length() const     { return showsFile() ? model.source.fileDuration : model.duration(); }
+    double secondsAt (int x) const   { return getWidth() > 0 ? juce::jlimit (0.0, 1.0, (double) x / getWidth()) * length() : 0.0; }
+
     Model& model;
     std::vector<float> peaks;
     std::optional<double> playhead;
+    int dragFrom = 0, dragTo = 0;
+    bool dragging = false;
 };
 
 //==============================================================================
@@ -892,7 +957,11 @@ public:
         applyNote.setJustificationType (juce::Justification::centredTop);
         applyNote.setText ("Changes every S in the list, not just the one shown", juce::dontSendNotification);
 
-        title.setText ("De-esser: " + model.source.title, juce::dontSendNotification);
+        styleLabel (rangeHint, 11.5f, false, colours::muted);
+        rangeHint.setJustificationType (juce::Justification::centredRight);
+        rangeHint.setText ("Drag on the bar below to work on another stretch", juce::dontSendNotification);
+        addAndMakeVisible (rangeHint);
+        showTitle();
         sensitivityLabel.setText ("Sensitivity", juce::dontSendNotification);
         depthLabel.setText ("New ones start at", juce::dontSendNotification);
         gainLabel.setText ("Louder / quieter", juce::dontSendNotification);
@@ -1000,6 +1069,7 @@ public:
             model.sensitivity = sensitivity.getValue() / 100.0;
             model.defaultGain = depth.getValue();
             model.detect();
+            touched = false;
             timeline.repaint();
             status.setText (juce::String ((int) model.items.size()) + " sibilants found.", juce::dontSendNotification);
         };
@@ -1024,6 +1094,7 @@ public:
                                                     other.peakHz * b.frequency / settings.peakHz);
                 }
 
+                touched = true;
                 status.setText ("These points copied to all " + juce::String ((int) model.items.size())
                                     + " (placed the same way from each one's own peak).",
                                 juce::dontSendNotification);
@@ -1043,13 +1114,14 @@ public:
         playAll.onClick = [this] { togglePlayAll (true); };
         playAllOriginal.onClick = [this] { togglePlayAll (false); };
         apply.onClick = [this] { applyToFile(); };
+        wholeFile.onClick = [this] { pickRange (0.0, 0.0); };
 
         apply.setColour (juce::TextButton::buttonColourId, colours::accent);
         apply.setColour (juce::TextButton::textColourOffId, colours::onAccent);
         playProcessed.setColour (juce::TextButton::buttonColourId, colours::accent.withAlpha (0.25f));
 
         for (auto* b : { &detectButton, &prevButton, &nextButton, &playProcessed, &playOriginal, &copyToAll, &leave, &playAll,
-                         &playAllOriginal, &apply, &addPoint, &removePoint, &prevPoint, &nextPoint, &selectAll })
+                         &playAllOriginal, &apply, &addPoint, &removePoint, &prevPoint, &nextPoint, &selectAll, &wholeFile })
         {
             b->setWantsKeyboardFocus (false);
             addAndMakeVisible (b);
@@ -1063,6 +1135,7 @@ public:
 
         spectrumView.onEdited = [this] { edited(); };
         timeline.onPick = [this] (int i) { model.select (i); model.playCurrent (true); };
+        timeline.onRange = [this] (double start, double end) { pickRange (start, end); };
         addAndMakeVisible (spectrumView);
         addAndMakeVisible (timeline);
 
@@ -1142,6 +1215,9 @@ public:
 
         auto t = topCard.reduced (14, 10);
         auto row = t.removeFromTop (24);
+        wholeFile.setBounds (row.removeFromRight (110).reduced (0, 1));
+        row.removeFromRight (10);
+        rangeHint.setBounds (row.removeFromRight (320));
         title.setBounds (row);
         t.removeFromTop (4);
         row = t.removeFromTop (28);
@@ -1217,6 +1293,58 @@ public:
     }
 
 private:
+    void showTitle()
+    {
+        auto text = "De-esser: " + model.source.title;
+
+        if (model.source.isSelection)
+            text << "  " << formatTime (model.source.startInFile) << " - " << formatTime (model.source.startInFile + model.duration());
+
+        title.setText (text, juce::dontSendNotification);
+        wholeFile.setEnabled (model.source.isSelection && model.source.otherRange != nullptr);
+        rangeHint.setVisible (model.source.otherRange != nullptr);
+    }
+
+    // Works on another stretch of the file (end <= start = the whole file),
+    // finding its sibilants afresh.
+    void pickRange (double start, double end)
+    {
+        if (model.source.otherRange == nullptr)
+            return;
+
+        if (touched)
+        {
+            juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::QuestionIcon, "Another stretch",
+                                                "Your changes to these S's are not applied to the file yet. Leave them and go to the new stretch?",
+                                                "Leave them", "Cancel", this,
+                                                juce::ModalCallbackFunction::create ([safe = juce::Component::SafePointer<DeEsserPanel> (this), start, end] (int ok)
+                                                {
+                                                    if (auto* p = safe.getComponent(); p != nullptr && ok != 0)
+                                                    {
+                                                        p->touched = false;
+                                                        p->pickRange (start, end);
+                                                    }
+                                                }));
+            return;
+        }
+
+        model.stop();
+        auto next = model.source.otherRange (start, end);
+
+        if (! next.has_value())
+        {
+            status.setText ("The file is closed.", juce::dontSendNotification);
+            return;
+        }
+
+        model.source = std::move (*next);
+        showTitle();
+        model.detect();
+        touched = false;
+        timeline.computePeaks();
+        status.setText (juce::String ((int) model.items.size()) + " sibilants found.", juce::dontSendNotification);
+    }
+
     void go (int direction)
     {
         if (model.items.empty())
@@ -1228,8 +1356,11 @@ private:
 
     void edited()
     {
+        touched = true;
         refresh();
     }
+
+    bool touched = false;   // S's changed by hand since they were found
 
     void refresh()
     {
@@ -1258,7 +1389,7 @@ private:
             prevButton.setEnabled (model.current > 0);
             nextButton.setEnabled (model.current < (int) model.items.size() - 1);
             position.setText ("S " + juce::String (model.current + 1) + " of " + juce::String ((int) model.items.size()) + "   |   "
-                                  + formatTime (s->start) + " - " + formatTime (s->end) + "   |   its peak " + formatHz (s->peakHz),
+                                  + formatTime (model.source.startInFile + s->start) + " - " + formatTime (model.source.startInFile + s->end) + "   |   its peak " + formatHz (s->peakHz),
                               juce::dontSendNotification);
         }
         else
@@ -1313,6 +1444,7 @@ private:
         // The file now has them treated: look again from there.
         model.source.audio = std::move (processed);
         model.detect();
+        touched = false;
         timeline.computePeaks();
         status.setText ("Applied to the file (Ctrl+Z undoes it). " + juce::String ((int) model.items.size()) + " sibilants left above the threshold.",
                         juce::dontSendNotification);
@@ -1356,6 +1488,8 @@ private:
     Model model;
     std::function<void()> onClose;
 
+    juce::TextButton wholeFile { "Whole file" };
+    juce::Label rangeHint;
     juce::Label title, sensitivityLabel, depthLabel, position, gainLabel, freqLabel, qLabel, status, hint, pointLabel, applyNote;
     juce::Slider sensitivity, depth, gain, frequency, q;
     juce::TextButton detectButton { "Detect again" }, prevButton { juce::CharPointer_UTF8 ("\xe2\x97\x80  Previous") },
@@ -1390,6 +1524,8 @@ public:
         setContentOwned (new DeEsserPanel (std::move (source), std::move (host), std::move (onClose)), true);
         dark::adoptLook (*getContentComponent());
         setResizable (false, false);
+        // Stays in front of the main window when you click there.
+        setAlwaysOnTop (true);
         centreWithSize (getWidth(), getHeight());
     }
 

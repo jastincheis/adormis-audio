@@ -31,6 +31,16 @@ struct BassFinderSource
     // Moves the file window's playhead to what the tool is playing (seconds
     // from the start of the audio; negative hides it).
     std::function<void (double seconds)> showPlayhead;
+
+    // Where the analysed audio starts in its file, and how long the file is (seconds).
+    double startInFile = 0.0, fileDuration = 0.0;
+
+    // The loudest sample of each of `columns` equal pieces of the whole file.
+    std::function<std::vector<float> (int columns)> filePeaks;
+
+    // Another stretch of the same file (seconds from its start; end <= start =
+    // the whole file), also selected in the file's window; empty when the file is gone.
+    std::function<std::optional<BassFinderSource> (double start, double end)> otherRange;
 };
 
 // What the Bass Finder needs from the main window.

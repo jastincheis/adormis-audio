@@ -2728,17 +2728,68 @@ std::optional<wf::BassFinderSource> MainComponent::bassFinderSource()
     if (doc == nullptr || doc->getBuffer().getNumSamples() == 0)
         return {};
 
-    const auto range = doc->processRange();
+    return bassFinderSourceFor (*doc, doc->processRange(), ! doc->getView().getSelection().isEmpty());
+}
+
+wf::BassFinderSource MainComponent::bassFinderSourceFor (DataWindow& doc, juce::Range<int> range, bool isSelection)
+{
     wf::BassFinderSource source;
-    source.isSelection = ! doc->getView().getSelection().isEmpty();
-    source.title = doc->getTitle() + (source.isSelection ? " (selection)" : " (whole file)");
-    source.sampleRate = doc->getSampleRate();
-    source.audio.setSize (doc->getBuffer().getNumChannels(), range.getLength());
+    source.isSelection = isSelection;
+    source.title = doc.getTitle() + (source.isSelection ? " (selection)" : " (whole file)");
+    source.sampleRate = doc.getSampleRate();
+    source.startInFile = range.getStart() / source.sampleRate;
+    source.fileDuration = doc.getBuffer().getNumSamples() / source.sampleRate;
+    source.audio.setSize (doc.getBuffer().getNumChannels(), range.getLength());
 
     for (int ch = 0; ch < source.audio.getNumChannels(); ++ch)
-        source.audio.copyFrom (ch, 0, doc->getBuffer(), ch, range.getStart(), range.getLength());
+        source.audio.copyFrom (ch, 0, doc.getBuffer(), ch, range.getStart(), range.getLength());
 
-    const juce::Component::SafePointer<DataWindow> safeDoc (doc);
+    const juce::Component::SafePointer<DataWindow> safeDoc (&doc);
+
+    source.filePeaks = [safeDoc] (int columns)
+    {
+        std::vector<float> peaks ((size_t) std::max (0, columns), 0.0f);
+        auto* target = safeDoc.getComponent();
+
+        if (target == nullptr)
+            return peaks;
+
+        const auto& a = target->getBuffer();
+        const auto total = (juce::int64) a.getNumSamples();
+
+        for (size_t c = 0; c < peaks.size() && total > 0; ++c)
+        {
+            const auto from = (int) (total * (juce::int64) c / (juce::int64) peaks.size());
+            const auto to = (int) (total * (juce::int64) (c + 1) / (juce::int64) peaks.size());
+
+            for (int ch = 0; ch < a.getNumChannels(); ++ch)
+                peaks[c] = std::max (peaks[c], a.getMagnitude (ch, from, std::max (1, to - from)));
+        }
+
+        return peaks;
+    };
+
+    source.otherRange = [this, safeDoc] (double start, double end) -> std::optional<wf::BassFinderSource>
+    {
+        auto* target = safeDoc.getComponent();
+
+        if (target == nullptr || target->getBuffer().getNumSamples() == 0)
+            return {};
+
+        const auto total = target->getBuffer().getNumSamples();
+        const auto rate = target->getSampleRate();
+        const auto whole = end <= start;
+        const auto from = whole ? 0 : juce::jlimit (0, total - 1, (int) std::llround (start * rate));
+        const auto to = whole ? total : juce::jlimit (from + 1, total, (int) std::llround (end * rate));
+
+        if (whole)
+            target->getView().setSelection ({});
+        else
+            target->getView().setSelection ({ (juce::int64) from, (juce::int64) to });
+
+        target->getView().ensureVisible (from);
+        return bassFinderSourceFor (*target, { from, to }, ! whole);
+    };
 
     source.applyToFile = [this, safeDoc, range] (const juce::AudioBuffer<float>& corrected)
     {

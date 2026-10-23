@@ -169,6 +169,7 @@ private:
     void setInputEnabled (bool enabled);
     bool isRecording() const  { return recorder.isRecording(); }
     std::optional<wf::BassFinderSource> bassFinderSource();
+    wf::BassFinderSource bassFinderSourceFor (DataWindow& doc, juce::Range<int> range, bool isSelection);
 
     // Runs `work` behind a progress bar with Cancel, one job at a time.
     void runJob (const juce::String& title, std::function<bool (std::function<bool (float)>)> work,
