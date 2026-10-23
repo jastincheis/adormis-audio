@@ -24,7 +24,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 - Undo/Redo History (Alt+8): every edit by name; click one to go back (or forward) to it
 - Record (Ctrl+R) with input meter, mono / stereo and bit depth, or **record what the computer plays** (Ctrl+Shift+R: YouTube, music, any program); File > New from a tempo template with beat markers
 - Right-click the workspace for Create New (an empty window to paste or drag audio into) and Open Recent (also in the File menu); right-click a file's waveform for play, the edits, New, Open and Open Recent
-- **Minimize** a file window (the – button): it stays open as a small bar along the bottom of the workspace; click the bar to bring it back where it was, with its tabs and unsaved changes
+- **Minimize** a file window (the – button): it stays open as a small bar along the bottom of the workspace; click the bar to bring it back where it was, with its tabs and unsaved changes. **Maximized** (the [] button) the files become tabs over the whole workspace; the – [] × buttons at the top right minimize, go back to windows or close the active file (Window > Cascade / Tile also go back)
 - **Space plays / stops everywhere**: in the file windows and in every other window (effects and Mix play their preview, the Open window the file you clicked, De-esser the S shown)
 
 **Playback and meters**
