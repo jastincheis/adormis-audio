@@ -40,8 +40,8 @@ class VolumePanel final : public juce::Component
 {
 public:
     VolumePanel (const juce::String& target, float initial, std::function<void (float)> onApplyIn,
-                 std::function<void()> onCloseIn)
-        : onApply (std::move (onApplyIn)), onClose (std::move (onCloseIn))
+                 std::function<void()> onMuteIn, std::function<void()> onCloseIn)
+        : onApply (std::move (onApplyIn)), onMute (std::move (onMuteIn)), onClose (std::move (onCloseIn))
     {
         for (auto* l : { &info, &label, &unit, &hint })
         {
@@ -66,6 +66,14 @@ public:
 
         okButton.onClick = [this] { apply(); };
         cancelButton.onClick = [this] { close(); };
+        muteButton.setTooltip ("Silence instead of a dB change (same as Process > Mute)");
+        muteButton.onClick = [this]
+        {
+            close();
+            if (onMute != nullptr)
+                onMute();
+        };
+        addAndMakeVisible (muteButton);
         okButton.addShortcut (juce::KeyPress (juce::KeyPress::returnKey));
         cancelButton.addShortcut (juce::KeyPress (juce::KeyPress::escapeKey));
         addAndMakeVisible (okButton);
@@ -92,6 +100,7 @@ public:
         cancelButton.setBounds (buttons.removeFromRight (90));
         buttons.removeFromRight (8);
         okButton.setBounds (buttons.removeFromRight (90));
+        muteButton.setBounds (buttons.removeFromLeft (90));
     }
 
     void focusField()
@@ -129,23 +138,23 @@ private:
     }
 
     std::function<void (float)> onApply;
-    std::function<void()> onClose;
+    std::function<void()> onMute, onClose;
 
     juce::Label info, label { {}, "Volume:" }, unit { {}, "dB" }, hint;
     juce::TextEditor field;
-    juce::TextButton okButton { "OK" }, cancelButton { "Cancel" };
+    juce::TextButton okButton { "OK" }, cancelButton { "Cancel" }, muteButton { "Mute" };
 };
 
 class VolumeWindow final : public juce::DocumentWindow
 {
 public:
     VolumeWindow (const juce::String& target, float initial, std::function<void (float)> onApply,
-                  std::function<void()> onClose)
+                  std::function<void()> onMute, std::function<void()> onClose)
         : juce::DocumentWindow ("Volume", juce::Colour (0xffd4d0c8), juce::DocumentWindow::closeButton)
     {
         // Own title bar so it can be moved on window managers without decorations.
         setUsingNativeTitleBar (false);
-        auto* panel = new VolumePanel (target, initial, std::move (onApply), std::move (onClose));
+        auto* panel = new VolumePanel (target, initial, std::move (onApply), std::move (onMute), std::move (onClose));
         setContentOwned (panel, true);
         setResizable (false, false);
         setAlwaysOnTop (true);
@@ -171,8 +180,9 @@ public:
 
 std::unique_ptr<juce::DocumentWindow> createVolumeWindow (const juce::String& target, float initialDecibels,
                                                           std::function<void (float)> onApply,
+                                                          std::function<void()> onMute,
                                                           std::function<void()> onClose)
 {
-    return std::make_unique<VolumeWindow> (target, initialDecibels, std::move (onApply), std::move (onClose));
+    return std::make_unique<VolumeWindow> (target, initialDecibels, std::move (onApply), std::move (onMute), std::move (onClose));
 }
 } // namespace wf

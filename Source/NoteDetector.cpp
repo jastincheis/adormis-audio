@@ -707,14 +707,41 @@ juce::AudioBuffer<float> renderCorrection (const juce::AudioBuffer<float>& audio
         const auto src = band ? lowBand (x, length, sr, 450.0) : std::vector<float> (x, x + length);
         auto dst = src;
 
+        // A note moved to another note (a semitone or more) takes its
+        // harmonics along too, else the ear still hears the old note: its
+        // own wider band (up to its 8th harmonic), only for its length.
+        auto moved = [band] (const DetectedNote& n) { return band && std::abs (n.shift) >= 100; };
+
         for (const auto& n : notes)
-            if (n.shift != 0)
+            if (n.shift != 0 && ! moved (n))
                 shiftRegion (src, dst, (int) std::lround (n.start * sr), (int) std::lround (n.end * sr), n.shift, n.hz, sr, fade);
 
         auto* o = out.getWritePointer (ch);
 
         for (int i = 0; i < length; ++i)
             o[i] = band ? x[i] - src[(size_t) i] + dst[(size_t) i] : dst[(size_t) i];
+
+        for (const auto& n : notes)
+        {
+            if (! moved (n))
+                continue;
+
+            // The note plus room for the filter and the fades on both sides.
+            const auto pad = (int) std::lround (0.1 * sr);
+            const auto a = (int) std::lround (n.start * sr), b = (int) std::lround (n.end * sr);
+            const auto r0 = std::max (0, a - pad), r1 = std::min (length, b + pad);
+
+            if (r1 - r0 < 8)
+                continue;
+
+            const auto cutoff = juce::jlimit (450.0, 2000.0, 8.0 * (n.hz > 0.0 ? n.hz : 100.0));
+            const auto wide = lowBand (x + r0, r1 - r0, sr, cutoff);
+            auto shifted = wide;
+            shiftRegion (wide, shifted, a - r0, b - r0, n.shift, n.hz, sr, fade);
+
+            for (int i = r0; i < r1; ++i)
+                o[i] += shifted[(size_t) (i - r0)] - wide[(size_t) (i - r0)];
+        }
     }
 
     return out;

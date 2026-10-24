@@ -511,6 +511,11 @@ void ProcessToolbar::showVolumeMenu (juce::Component& button)
     for (int db = 1; db <= 10; ++db)
         menu.addItem (db, "+" + juce::String (db) + " dB");
 
+    // Under the louder ones: silence instead (Process > Mute).
+    constexpr int muteId = 1001;
+    menu.addSeparator();
+    menu.addItem (muteId, "Mute");
+
     const juce::Component::SafePointer<ProcessToolbar> safeThis (this);
     // Drawn inside the main window rather than as its own window: Hyprland
     // (focus follows mouse) moves focus onto a separate menu window, and JUCE
@@ -524,6 +529,8 @@ void ProcessToolbar::showVolumeMenu (juce::Component& button)
 
                             if (result == customId)
                                 safeThis->commands.invokeDirectly (wf::procVolume, true);
+                            else if (result == muteId)
+                                safeThis->commands.invokeDirectly (wf::procMute, true);
                             else if (safeThis->onQuickVolume != nullptr)
                                 safeThis->onQuickVolume (result > 10 ? (float) -(result - 10) : (float) result);
                         });

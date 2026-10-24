@@ -76,6 +76,11 @@ std::array<std::vector<Note>, 3> generate (const Settings&, const std::vector<in
 juce::MemoryBlock midiFile (const std::vector<Note>& notes, double bpm, const juce::String& trackName, bool glide,
                             int tuningCents = 0);
 
+// The notes of a MIDI file on the 16th grid, counted in beats: the file's own
+// tempo is ignored, so the line plays at the sample's tempo. Drums (channel
+// 10) are left out; `bars` gets how many bars the notes fill.
+std::vector<Note> notesFromMidi (const juce::MidiFile&, int& bars);
+
 // The line played by the chosen sound, exactly `bars` long, stereo, not
 // normalised, tuned `tuningCents` away from A = 440 Hz. It is a loop: the tail
 // of the last notes continues at the start, so it repeats without a click.

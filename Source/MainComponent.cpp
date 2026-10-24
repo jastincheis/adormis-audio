@@ -1405,8 +1405,22 @@ void MainComponent::showVolumeDialog()
         });
     };
 
+    // Mute: Process > Mute on the same file (named so in the undo history).
+    auto onMute = [this, safeDoc = juce::Component::SafePointer<DataWindow> (doc)]
+    {
+        if (safeDoc == nullptr)
+            return;
+        if (safeDoc.getComponent() == activeDocument())
+            commandManager.invokeDirectly (wf::procMute, false);
+        else
+        {
+            releasePlaybackSource();
+            safeDoc->applyProcess (wf::Process::mute);
+        }
+    };
+
     volumeWindow = wf::createVolumeWindow (doc->getTitle() + " (" + doc->describeProcessTarget() + ")",
-                                           lastVolumeDecibels, std::move (onApply), std::move (onClose));
+                                           lastVolumeDecibels, std::move (onApply), std::move (onMute), std::move (onClose));
     volumeWindow->setVisible (true);
     volumeWindow->toFront (true);
 }
@@ -2754,6 +2768,22 @@ wf::BassFinderSource MainComponent::bassFinderSourceFor (DataWindow& doc, juce::
     source.title = doc.getTitle() + (source.isSelection ? " (selection)" : " (whole file)");
     source.sampleRate = doc.getSampleRate();
     source.startInFile = range.getStart() / source.sampleRate;
+
+    if (doc.getKnownTempo() > 0.0)
+    {
+        source.fileBpm = doc.getKnownTempo();
+    }
+    else
+    {
+        TempoKey whole;
+        whole.doc = &doc;
+        whole.range = { 0, doc.getBuffer().getNumSamples() };
+        whole.edits = doc.getEditCount();
+
+        if (const auto bpm = cachedTempo (whole); bpm.has_value() && *bpm > 0.0)
+            source.fileBpm = *bpm * (tempoMode == 1 ? 2.0 : tempoMode == 2 ? 0.5 : 1.0);
+    }
+
     source.fileDuration = doc.getBuffer().getNumSamples() / source.sampleRate;
     source.audio.setSize (doc.getBuffer().getNumChannels(), range.getLength());
 
@@ -3096,9 +3126,10 @@ void MainComponent::showDrumRebuilder()
     {
         wf::DrumRebuilderHost host;
         host.devices = &deviceManager;
-        host.openAsNewFile = [this] (const juce::String& title, juce::AudioBuffer<float> rebuilt, double rate)
+        host.openAsNewFile = [this] (const juce::String& title, juce::AudioBuffer<float> rebuilt, double rate,
+                                     std::vector<juce::int64> markers)
         {
-            addDocument (DataWindow::fromAudio (title, rate, std::move (rebuilt), {}));
+            addDocument (DataWindow::fromAudio (title, rate, std::move (rebuilt), std::move (markers)));
         };
         host.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
         {
@@ -3303,6 +3334,17 @@ wf::BassFinderHost MainComponent::toolHost()
         filePicker.launch (title, suggested, pattern,
                            juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
                                | juce::FileBrowserComponent::warnAboutOverwriting,
+                           [onChosen] (const juce::Array<juce::File>& files)
+                           {
+                               onChosen (files.isEmpty() ? juce::File() : files.getFirst());
+                           });
+    };
+
+    host.chooseOpenFile = [this] (const juce::String& title, const juce::File& suggested, const juce::String& pattern,
+                                  std::function<void (juce::File)> onChosen)
+    {
+        filePicker.launch (title, suggested, pattern,
+                           juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                            [onChosen] (const juce::Array<juce::File>& files)
                            {
                                onChosen (files.isEmpty() ? juce::File() : files.getFirst());
@@ -4378,7 +4420,14 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             break;
 
         case wf::editPaste:      available = available && doc != nullptr && hasClipboard(); break;
-        case wf::editPasteToNew: available = available && hasClipboard(); break;
+        case wf::editPasteToNew:
+        {
+            const bool selected = doc != nullptr && ! doc->getView().getSelection().isEmpty();
+            available = available && (selected || hasClipboard());
+            if (selected)
+                info.shortName = "Selection to New File";
+            break;
+        }
         case wf::editMix:        available = available && doc != nullptr && hasClipboard() && mixWindow == nullptr; break;
         case wf::editRepeat:
             available = available && doc != nullptr && lastAction != nullptr;
@@ -4551,8 +4600,18 @@ bool MainComponent::perform (const InvocationInfo& info)
 
         case wf::optLoop:           toggleLoop(); return true;
 
+        // With a selection in the active file: a new file holding it (the
+        // clipboard is left alone); without one, the clipboard as before.
         case wf::editPasteToNew:
-            if (hasClipboard())
+            if (doc != nullptr && ! doc->getView().getSelection().isEmpty())
+            {
+                auto part = DataWindow::fromAudio ("Untitled " + juce::String (++untitledCount), doc->getSampleRate(),
+                                                   doc->copySelection(), {});
+                if (part != nullptr)
+                    part->addMarks (doc->selectionMarks(), 0);
+                addDocument (std::move (part));
+            }
+            else if (hasClipboard())
             {
                 auto pasted = DataWindow::fromAudio ("Untitled " + juce::String (++untitledCount), clipboard.sampleRate,
                                                      clipboard.audio, {});
@@ -4757,7 +4816,10 @@ bool MainComponent::perform (const InvocationInfo& info)
             view.setCursor (to);
 
             if (! selection.isEmpty())
+            {
                 view.setSelection (selection, view.getSelectedChannel());
+                view.pickEdge (left ? -1 : 1);   // Shift + arrows now move this end
+            }
 
             view.ensureVisible (to);
             return true;
@@ -4808,6 +4870,21 @@ bool MainComponent::perform (const InvocationInfo& info)
 
         case wf::optExtendLeft:     view.nudgeCursor (-1, true);  return true;
         case wf::optExtendRight:    view.nudgeCursor (1, true);   return true;
+
+        // Shift + arrows: the selection moves (same length) by the arrow
+        // step, or only its end picked with W / E; with nothing selected
+        // they start one, as Extend does.
+        case wf::optMoveSelectionLeft: case wf::optMoveSelectionRight:
+        {
+            const auto direction = info.commandID == wf::optMoveSelectionLeft ? -1 : 1;
+            if (view.getSelection().isEmpty())
+                view.nudgeCursor (direction, true);
+            else if (view.getPickedEdge() != 0)
+                view.moveEdge (direction);   // the end picked with W / E
+            else
+                view.moveSelection (direction);
+            return true;
+        }
         default: break;
     }
 

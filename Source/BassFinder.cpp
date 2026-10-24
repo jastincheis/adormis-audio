@@ -204,6 +204,7 @@ struct Model
 
     std::optional<KeyAnalysis> analysis;
     std::optional<TempoEstimate> tempo;
+    bool tempoFromFile = false;   // the tempo is the file's, not detected here
     int keyTonic = 5;       // the key the detector and the generator use
     bool minor = true;
 
@@ -223,6 +224,20 @@ struct Model
         const juce::Range<int> all { 0, source.audio.getNumSamples() };
         analysis = analyseKey (source.audio, all, source.sampleRate);
         tempo = detectTempo (source.audio, all, source.sampleRate);
+        tempoFromFile = source.fileBpm > 0.0;
+
+        // The file's own tempo wins over the detection here; the first beat
+        // still comes from the audio.
+        if (tempoFromFile)
+        {
+            if (! tempo.has_value())
+                tempo = TempoEstimate { source.fileBpm, 0, 0.0, 1.0 };
+
+            tempo->bpm = source.fileBpm;
+            tempo->confidence = 1.0;
+            const auto bars = duration() * source.fileBpm / 240.0;
+            tempo->loopBars = std::abs (bars - std::round (bars)) < 0.03 ? (int) std::round (bars) : 0;
+        }
 
         if (analysis.has_value() && ! analysis->keys.empty())
         {
@@ -586,6 +601,8 @@ public:
 
     std::function<void (int)> onNoteClicked;
     std::function<void (double)> onTimeClicked;
+    std::function<void (int note, int shift)> onNoteDragged;   // dragged up / down: its new correction (cents)
+    std::function<void (int)> onNoteDropped;
 
     void setPlayhead (std::optional<double> t)
     {
@@ -607,13 +624,7 @@ public:
     // the playhead (or the clicked place) where it is on screen.
     void zoom (bool in)
     {
-        const auto duration = model.duration();
-
-        if (duration <= 0.0)
-            return;
-
         const auto oldLength = shownLength();
-        const auto newLength = juce::jlimit (std::min (minViewSeconds, duration), duration, in ? oldLength / 2.0 : oldLength * 2.0);
         auto anchor = viewStart + oldLength / 2.0;
 
         if (playhead.has_value() && *playhead >= viewStart && *playhead <= viewStart + oldLength)
@@ -621,6 +632,19 @@ public:
         else if (cursor.has_value() && *cursor >= viewStart && *cursor <= viewStart + oldLength)
             anchor = *cursor;
 
+        zoomAround (anchor, in ? 0.5 : 2.0);
+    }
+
+    // `factor` < 1 shows less (zooms in); `anchor` stays where it is on screen.
+    void zoomAround (double anchor, double factor)
+    {
+        const auto duration = model.duration();
+
+        if (duration <= 0.0)
+            return;
+
+        const auto oldLength = shownLength();
+        const auto newLength = juce::jlimit (std::min (minViewSeconds, duration), duration, oldLength * factor);
         const auto fraction = (anchor - viewStart) / oldLength;
         viewLength = newLength;
         setViewStart (anchor - fraction * newLength);
@@ -650,16 +674,26 @@ public:
         scrollBar.setBounds ((int) left, getHeight() - scrollBarHeight, getWidth() - (int) left, scrollBarHeight);
     }
 
+    // The wheel zooms around the mouse; Shift + wheel (or sideways) scrolls.
     void mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
     {
-        if (! zoomed())
+        if (model.duration() <= 0.0)
+            return;
+
+        const auto sideways = std::abs (wheel.deltaX) > std::abs (wheel.deltaY);
+
+        if (sideways || e.mods.isShiftDown())
         {
-            juce::Component::mouseWheelMove (e, wheel);
+            if (zoomed())
+            {
+                const auto delta = sideways ? -wheel.deltaX : -wheel.deltaY;
+                setViewStart (viewStart + delta * shownLength() * 0.5);
+            }
             return;
         }
 
-        const auto delta = wheel.deltaX != 0.0f ? -wheel.deltaX : -wheel.deltaY;
-        setViewStart (viewStart + delta * shownLength() * 0.5);
+        if (wheel.deltaY != 0.0f)
+            zoomAround (timeAt (e.x), std::pow (2.0, (double) -wheel.deltaY * 2.0));
     }
 
     void paint (juce::Graphics& g) override
@@ -678,8 +712,9 @@ public:
         if (state.track.has_value())
             for (auto& n : state.track->notes)
             {
-                lo = std::min (lo, n.note);
-                hi = std::max (hi, n.note);
+                const auto moved = n.corrected().first;
+                lo = std::min ({ lo, n.note, moved });
+                hi = std::max ({ hi, n.note, moved });
             }
 
         if (lo > hi)
@@ -697,6 +732,16 @@ public:
             lo = (int) std::floor (c - 5);
             hi = (int) std::ceil (c + 5);
         }
+
+        // While a note is dragged the rows stay put under the mouse.
+        if (dragged >= 0)
+        {
+            lo = dragLo;
+            hi = dragHi;
+        }
+
+        shownLo = lo;
+        shownHi = hi;
 
         const auto rows = hi - lo + 1;
         const auto h = bounds.getHeight() - (zoomed() ? (float) scrollBarHeight : 0.0f), w = bounds.getWidth();
@@ -727,7 +772,7 @@ public:
         }
 
         g.setColour (colours::muted.withAlpha (0.7f));
-        g.drawText (juce::CharPointer_UTF8 ("Up / Down: zoom   Space: play / stop"),
+        g.drawText (juce::CharPointer_UTF8 ("Wheel, Up / Down: zoom   Drag a note up / down: move it (Shift: in cents)   Space: play / stop"),
                     juce::Rectangle<float> (left, h - 15.0f, w - left - 6.0f, 13.0f), juce::Justification::centredRight);
 
         // Everything below is drawn right of the note names only.
@@ -871,8 +916,23 @@ public:
                 }
             }
 
+        dragged = -1;
+        dragMoved = false;
+
         if (best >= 0 && bestDistance < 0.25)
         {
+            // Pressed on the note itself (in time, near its row): it can be dragged.
+            const auto& s = state.track->notes[(size_t) best];
+            const auto [note, cents] = s.corrected();
+
+            if (bestDistance == 0.0 && std::abs (e.y - pitchToY (note + cents / 100.0)) < std::max (8.0f, rowHeightShown() * 0.8f))
+            {
+                dragged = best;
+                dragLo = shownLo;
+                dragHi = shownHi;
+                dragStartY = e.y;
+            }
+
             if (onNoteClicked != nullptr)
                 onNoteClicked (best);
         }
@@ -882,7 +942,49 @@ public:
         }
     }
 
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (dragged < 0 || ! state.track.has_value() || dragged >= (int) state.track->notes.size())
+            return;
+
+        if (! dragMoved && std::abs (e.y - dragStartY) < 4)
+            return;
+
+        dragMoved = true;
+        const auto& s = state.track->notes[(size_t) dragged];
+        const auto measured = s.note + s.cents / 100.0;
+        const auto target = yToPitch ((float) e.y);
+        // Whole notes, exactly in tune; Shift: any number of cents.
+        const auto shift = e.mods.isShiftDown() ? (int) std::lround ((target - measured) * 100.0)
+                                                : (int) std::lround ((std::round (target) - measured) * 100.0);
+
+        if (onNoteDragged != nullptr)
+            onNoteDragged (dragged, juce::jlimit (-maxShiftCents, maxShiftCents, shift));
+    }
+
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        const auto note = dragged;
+        const auto moved = dragMoved;
+        dragged = -1;
+        dragMoved = false;
+
+        if (moved && onNoteDropped != nullptr)
+            onNoteDropped (note);
+
+        repaint();
+    }
+
+    static constexpr int maxShiftCents = 1200;
+
 private:
+    double timeAt (int x) const   { return viewStart + std::max (0.0f, x - left) / (getWidth() - left) * shownLength(); }
+
+    float pitchAreaHeight() const { return (float) getHeight() - (zoomed() ? (float) scrollBarHeight : 0.0f); }
+    float rowHeightShown() const  { return pitchAreaHeight() / (float) (shownHi - shownLo + 1); }
+    float pitchToY (double m) const { return (float) (pitchAreaHeight() - (m - shownLo + 0.5) * rowHeightShown()); }
+    double yToPitch (float y) const { return (pitchAreaHeight() - y) / rowHeightShown() + shownLo - 0.5; }
+
     double shownLength() const
     {
         const auto duration = model.duration();
@@ -913,6 +1015,9 @@ private:
     Model& model;
     DetectorState& state;
     std::optional<double> playhead, cursor;   // cursor = last clicked place
+    int shownLo = 36, shownHi = 48;            // the rows drawn last
+    int dragged = -1, dragLo = 0, dragHi = 0, dragStartY = 0;   // the note being dragged up / down
+    bool dragMoved = false;
     double viewStart = 0.0, viewLength = 0.0;   // seconds; length 0 = the whole audio
     juce::ScrollBar scrollBar { false };
 };
@@ -1027,7 +1132,8 @@ public:
         help.setJustificationType (juce::Justification::topLeft);
         help.setText (juce::CharPointer_UTF8 ("Cents against the song's own tuning (a recording tuned to A = 432 Hz is in tune with itself), "
                                               "or against standard A = 440 Hz (100 cents = one semitone). Green is within the tolerance, "
-                                              "yellow up to \xc2\xb1" "25\xc2\xa2, red beyond. Click a note to hear and correct it. With "
+                                              "yellow up to \xc2\xb1" "25\xc2\xa2, red beyond. Click a note to hear and correct it; drag it up or down to "
+                                              "move it to another note (Shift: in cents). With "
                                               "\"Bass\" only the low band (below ~450 Hz) is moved and the rest of the mix stays untouched; "
                                               "with \"Melody\" the whole signal moves for the length of the note. Timing and length never change. "
                                               "\"Apply to file\" writes the corrections into the file (Ctrl+Z undoes it)."),
@@ -1091,6 +1197,13 @@ public:
         autoGo.setColour (juce::TextButton::buttonColourId, colours::accent.withAlpha (0.15f));
 
         graph.onNoteClicked = [this] (int i) { playNote (i, state.listenCorrected); };
+        graph.onNoteDragged = [this] (int i, int cents)
+        {
+            if (state.selected != i)
+                return;
+            setShift (cents);
+        };
+        graph.onNoteDropped = [this] (int i) { playNote (i, true); };
         graph.onTimeClicked = [this] (double t) { playFrom (t); };
         addAndMakeVisible (graph);
         addAndMakeVisible (tuner);
@@ -1128,6 +1241,23 @@ public:
         if (key == juce::KeyPress::upKey || key == juce::KeyPress::downKey)
         {
             graph.zoom (key == juce::KeyPress::upKey);
+            return true;
+        }
+
+        // Left / Right: the note before / after the chosen one, played like a
+        // click on it (the first arrow starts at either end).
+        if (key == juce::KeyPress::leftKey || key == juce::KeyPress::rightKey)
+        {
+            const auto count = state.track.has_value() ? (int) state.track->notes.size() : 0;
+
+            if (count > 0)
+            {
+                const auto step = key == juce::KeyPress::rightKey ? 1 : -1;
+                const auto next = juce::isPositiveAndBelow (state.selected, count) ? juce::jlimit (0, count - 1, state.selected + step)
+                                                                                   : (step > 0 ? 0 : count - 1);
+                playNote (next, state.listenCorrected);
+            }
+
             return true;
         }
 
@@ -1516,7 +1646,10 @@ private:
         const auto [note, cents] = n->corrected();
         editInfo.setText (formatTime (n->start) + "  -  " + midiNoteName (n->note, flats) + "  -  measured " + formatCents (n->cents),
                           juce::dontSendNotification);
-        slider.setValue (juce::jlimit (-100, 100, n->shift), juce::dontSendNotification);
+        // Fine (one semitone each way) unless the note was dragged further.
+        const auto reach = std::abs (n->shift) > 100 ? (double) PitchGraph::maxShiftCents : 100.0;
+        slider.setRange (-reach, reach, 1.0);
+        slider.setValue (n->shift, juce::dontSendNotification);
         editResult.setText ("after correction: " + midiNoteName (note, flats) + " " + formatCents (cents), juce::dontSendNotification);
         editResult.setColour (juce::Label::textColourId, statusColour (tuneStatus (cents, state.tolerance)));
         exact.setButtonText (n->cents != 0 ? "Exactly on the note (" + formatCents (-n->cents) + ")" : juce::String ("Exactly on the note"));
@@ -1545,7 +1678,7 @@ private:
         if (n == nullptr)
             return;
 
-        cents = juce::jlimit (-200, 200, cents);
+        cents = juce::jlimit (-PitchGraph::maxShiftCents, PitchGraph::maxShiftCents, cents);
 
         if (cents == n->shift)
         {
@@ -1772,6 +1905,15 @@ public:
         repaint();
     }
 
+    void setCurrent (int index)
+    {
+        if (index != current)
+        {
+            current = index;
+            repaint();
+        }
+    }
+
     void setPlayhead (std::optional<double> fraction)
     {
         if (fraction != playhead)
@@ -1842,6 +1984,12 @@ public:
             g.setColour (colours::bass.withAlpha (0.35f + 0.65f * (float) n.velocity / 127.0f));
             g.fillRoundedRectangle (x, y, ww, hh, std::min (3.0f, hh / 2.0f));
 
+            if ((int) i == current)
+            {
+                g.setColour (colours::ink);
+                g.drawRoundedRectangle (x - 1.5f, y - 1.5f, ww + 3.0f, hh + 3.0f, std::min (4.0f, hh / 2.0f + 1.5f), 2.0f);
+            }
+
             if (n.glide && i > 0 && big)
             {
                 g.setColour (colours::bass.withAlpha (0.8f));
@@ -1861,6 +2009,7 @@ private:
     bool big;
     std::vector<bass::Note> notes;
     int bars = 8;
+    int current = -1;   // the note chosen with the arrows
     std::optional<double> playhead;
 };
 
@@ -2003,7 +2152,7 @@ public:
             b->setRadioGroupId (101);
             b->setColour (juce::TextButton::buttonOnColourId, colours::accent.withAlpha (0.18f));
             b->setColour (juce::TextButton::textColourOnId, colours::accent);
-            b->onClick = [this, i] { if (styleButtons[(int) i]->getToggleState()) { settings.style = (int) i; regenerate(); } };
+            b->onClick = [this, i] { if (styleButtons[(int) i]->getToggleState()) { settings.style = (int) i; clearImports(); regenerate(); } };
             addAndMakeVisible (b);
         }
 
@@ -2031,6 +2180,10 @@ public:
 
         bpmField.setInputRestrictions (7, "0123456789.,");
         bpmField.setJustification (juce::Justification::centred);
+        // Its own colours: the MIDI tab is built before it gets the dark look,
+        // so the tempo found was written in black on the dark box.
+        bpmField.setColour (juce::TextEditor::backgroundColourId, colours::bg);
+        bpmField.setColour (juce::TextEditor::textColourId, colours::ink);
         bpmField.onReturnKey = [this] { bpmTyped(); };
         bpmField.onFocusLost = [this] { bpmTyped(); };
         half.onClick = [this] { manualTempo(); setBpm (settings.bpm / 2.0); };
@@ -2106,13 +2259,14 @@ public:
             for (auto& s : settings.seeds)
                 s = (juce::uint32) juce::Random::getSystemRandom().nextInt (1000000000);
 
+            clearImports();
             regenerate (false);
         };
 
         for (int i = 0; i < 3; ++i)
         {
             auto* v = variantButtons.add (new VariantButton (model));
-            v->onClick = [this, i] { selected = i; refreshVariants(); restartPreviewIfPlaying(); };
+            v->onClick = [this, i] { selected = i; currentNote = -1; refreshVariants(); restartPreviewIfPlaying(); };
             addAndMakeVisible (v);
         }
 
@@ -2130,12 +2284,14 @@ public:
             addAndMakeVisible (slider);
         }
 
+        importMidi.setTooltip ("A MIDI file into the chosen variant (A, B or C), played at the sample's tempo");
+        importMidi.onClick = [this] { chooseMidiToImport(); };
         saveOne.onClick = [this] { saveMidi (false); };
         saveAll.onClick = [this] { saveMidi (true); };
         bassToNew.onClick = [this] { renderToNewFile (false); };
         mixToNew.onClick = [this] { renderToNewFile (true); };
 
-        for (auto* b : { &autoTempoButton, &tapButton, &half, &twice, &beatBack, &msBack, &msZero, &msForward, &beatForward, &fromPlayhead, &fromStart, &reroll,
+        for (auto* b : { &autoTempoButton, &tapButton, &half, &twice, &beatBack, &msBack, &msZero, &msForward, &beatForward, &fromPlayhead, &fromStart, &reroll, &importMidi,
                          &previewButton, &saveOne, &saveAll, &bassToNew, &mixToNew })
             addAndMakeVisible (b);
 
@@ -2146,6 +2302,38 @@ public:
 
         loadFromModel();
         startTimerHz (30);
+
+        // Left / Right go from note to note, so the buttons don't take the keyboard.
+        setWantsKeyboardFocus (true);
+        keepKeysHere (*this);
+    }
+
+    void takeKeyboard()
+    {
+        if (isShowing())
+            grabKeyboardFocus();
+    }
+
+    void mouseDown (const juce::MouseEvent&) override   { grabKeyboardFocus(); }
+
+    // Left / Right: the note before / after the chosen one, played with the
+    // sample under it (the first arrow starts at either end).
+    bool keyPressed (const juce::KeyPress& key) override
+    {
+        if (key != juce::KeyPress::leftKey && key != juce::KeyPress::rightKey)
+            return false;
+
+        const auto& notes = variants[(size_t) selected];
+
+        if (notes.empty())
+            return true;
+
+        const auto step = key == juce::KeyPress::rightKey ? 1 : -1;
+        currentNote = currentNote < 0 ? (step > 0 ? 0 : (int) notes.size() - 1)
+                                      : juce::jlimit (0, (int) notes.size() - 1, currentNote + step);
+        roll.setCurrent (currentNote);
+        playNote (notes[(size_t) currentNote]);
+        return true;
     }
 
     // After the analysis: tempo, first beat and key from the audio.
@@ -2267,6 +2455,7 @@ public:
         chipsTitle.setBounds (top.removeFromLeft (360));
         loopInfo.setBounds (top);
         auto chipRow = r.removeFromTop (40);
+        importMidi.setBounds (chipRow.removeFromRight (110).reduced (2, 6));
         reroll.setBounds (chipRow.removeFromRight (130).reduced (2, 6));
         fromStart.setBounds (chipRow.removeFromRight (90).reduced (2, 6));
         fromPlayhead.setBounds (chipRow.removeFromRight (150).reduced (2, 6));
@@ -2399,7 +2588,7 @@ private:
         else
         {
             const auto c = model.tempo->confidence;
-            tempoTitle.setText (juce::String ("Tempo (BPM)  -  ") + (c >= 0.55 ? "found, sure" : c >= 0.4 ? "found, probably right"
+            tempoTitle.setText (juce::String ("Tempo (BPM)  -  ") + (model.tempoFromFile ? "the file's tempo" : c >= 0.55 ? "found, sure" : c >= 0.4 ? "found, probably right"
                                                                                  : "a guess: check it (type it or tap)"),
                                 juce::dontSendNotification);
         }
@@ -2436,6 +2625,12 @@ private:
         settings.keyTonic = model.keyTonic;
         settings.minor = model.minor;
         variants = bass::generate (settings, roots, thirds);
+        currentNote = -1;
+
+        for (size_t i = 0; i < variants.size(); ++i)   // an imported line stays
+            if (importedName[i].isNotEmpty())
+                variants[i] = imported[i];
+
         chips.roots = roots;
         chips.thirds = thirds;
         chips.repaint();
@@ -2451,12 +2646,14 @@ private:
         for (int i = 0; i < 3; ++i)
         {
             auto* v = variantButtons[i];
-            v->set (juce::String (letters[i]) + "  -  " + bass::characterName (i) + "   " + juce::String ((int) variants[(size_t) i].size()) + " notes",
+            const auto name = importedName[(size_t) i].isNotEmpty() ? "Imported: " + importedName[(size_t) i] : juce::String (bass::characterName (i));
+            v->set (juce::String (letters[i]) + "  -  " + name + "   " + juce::String ((int) variants[(size_t) i].size()) + " notes",
                     i == selected);
             v->roll.setNotes (variants[(size_t) i], settings.bars);
         }
 
         roll.setNotes (variants[(size_t) selected], settings.bars);
+        roll.setCurrent (currentNote);
         saveOne.setButtonText (juce::String ("Save MIDI (variant ") + letters[selected] + ")");
     }
 
@@ -2469,6 +2666,40 @@ private:
     {
         return bass::renderBass (variants[(size_t) selected], bass::resolvedTone (settings), settings.bpm, settings.bars,
                                  model.source.sampleRate, settings.tuningCents);
+    }
+
+    // One note with the sample under it, at the volumes of the two sliders.
+    void playNote (const bass::Note& n)
+    {
+        stopPreview();
+        const auto sixteenth = 15.0 / settings.bpm * model.source.sampleRate;
+        auto sample = sampleAudio();
+        auto bassLine = bassAudio();
+        const auto total = std::min (sample.getNumSamples(), bassLine.getNumSamples());
+        const auto from = juce::jlimit (0, total, (int) std::lround (n.start * sixteenth));
+        const auto to = juce::jlimit (from, total, (int) std::lround ((n.start + n.length) * sixteenth + 0.08 * model.source.sampleRate));
+        juce::AudioBuffer<float> sampleCut (sample.getNumChannels(), to - from), bassCut (bassLine.getNumChannels(), to - from);
+
+        for (int ch = 0; ch < sample.getNumChannels(); ++ch)
+            sampleCut.copyFrom (ch, 0, sample, ch, from, to - from);
+
+        for (int ch = 0; ch < bassLine.getNumChannels(); ++ch)
+            bassCut.copyFrom (ch, 0, bassLine, ch, from, to - from);
+
+        LayeredPlayer* created = nullptr;
+        model.play (std::move (sampleCut), std::move (bassCut), false, Model::Playing::tone, 0.0, &created);
+
+        if (created != nullptr)
+        {
+            created->mainGain = (float) sampleVol.getValue();
+            created->layerGain = (float) bassVol.getValue();
+        }
+
+        const auto flats = keyUsesFlats (model.keyTonic, model.minor);
+        exportStatus.setText ("Note " + juce::String (currentNote + 1) + " of " + juce::String ((int) variants[(size_t) selected].size()) + ": "
+                                  + midiNoteName (n.pitch, flats) + ", bar " + juce::String (n.start / 16 + 1) + " beat "
+                                  + juce::String ((n.start % 16) / 4 + 1),
+                              juce::dontSendNotification);
     }
 
     void togglePreview()
@@ -2537,6 +2768,55 @@ private:
 
         for (int i = 0; i < 3; ++i)
             variantButtons[i]->roll.setPlayhead (i == selected ? std::optional<double> (fraction) : std::nullopt);
+    }
+
+    void clearImports()
+    {
+        for (auto& n : importedName)
+            n.clear();
+    }
+
+    // Import MIDI: the notes go into the chosen variant and play at the
+    // sample's tempo (the file's own tempo is ignored); the length becomes
+    // 4, 8 or 16 bars, enough for the notes.
+    void chooseMidiToImport()
+    {
+        if (model.host.chooseOpenFile == nullptr)
+            return;
+
+        juce::Component::SafePointer<GeneratorPanel> safeThis (this);
+        model.host.chooseOpenFile ("Import MIDI", juce::File::getSpecialLocation (juce::File::userMusicDirectory), "*.mid;*.midi",
+                                   [safeThis] (juce::File file)
+        {
+            if (auto* p = safeThis.getComponent(); p != nullptr && file != juce::File())
+                p->importMidiFile (file);
+        });
+    }
+
+    void importMidiFile (const juce::File& file)
+    {
+        juce::FileInputStream in (file);
+        juce::MidiFile midi;
+        int bars = 0;
+        std::vector<bass::Note> notes;
+
+        if (in.openedOk() && midi.readFrom (in))
+            notes = bass::notesFromMidi (midi, bars);
+
+        if (notes.empty())
+        {
+            exportStatus.setText ("No notes found in " + file.getFileName(), juce::dontSendNotification);
+            return;
+        }
+
+        imported[(size_t) selected] = std::move (notes);
+        importedName[(size_t) selected] = file.getFileNameWithoutExtension();
+        settings.bars = bars <= 4 ? 4 : bars <= 8 ? 8 : 16;
+        length.setSelected (settings.bars == 4 ? 0 : settings.bars == 8 ? 1 : 2);
+        recomputeRoots();
+        exportStatus.setText ("Imported " + file.getFileName() + ": " + juce::String (bars) + " bars at " + formatNumber (settings.bpm, 2) + " BPM"
+                                  + (bars > 16 ? juce::String (" (only the first 16 play)") : juce::String()),
+                              juce::dontSendNotification);
     }
 
     void saveMidi (bool all)
@@ -2636,8 +2916,10 @@ private:
     Model& model;
     bass::Settings settings;
     std::vector<int> roots, thirds;
-    std::array<std::vector<bass::Note>, 3> variants;
+    std::array<std::vector<bass::Note>, 3> variants, imported;
+    std::array<juce::String, 3> importedName;   // empty: the generated line
     int selected = 0;
+    int currentNote = -1;   // chosen with Left / Right; -1 = none
     LayeredPlayer* previewPlayer = nullptr;   // owned by the transport while it plays
 
     juce::Label title, styleTitle, keyTitle, tempoTitle, downbeatTitle, downbeatValue, downbeatHelp, lengthTitle, complexityTitle,
@@ -2656,7 +2938,7 @@ private:
     Segmented harmony { { "Follow the chords", "Tonic only" } };
     BarChips chips;
     juce::TextButton fromPlayhead { "Start at the cursor" }, fromStart { "From bar 1" },
-                     reroll { juce::CharPointer_UTF8 ("\xe2\x86\xbb Other variants") };
+                     reroll { juce::CharPointer_UTF8 ("\xe2\x86\xbb Other variants") }, importMidi { "Import MIDI" };
     juce::OwnedArray<VariantButton> variantButtons;
     RollView roll;
     juce::TextButton previewButton;
@@ -2736,6 +3018,8 @@ public:
         {
             if (index == 1)
                 detectorPanel->ensureRun();
+            else if (index == 2)
+                generatorPanel->takeKeyboard();
         };
         addAndMakeVisible (tabs);
 

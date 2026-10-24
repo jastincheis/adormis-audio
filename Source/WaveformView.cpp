@@ -462,6 +462,45 @@ void WaveformView::nudgeCursor (int direction, bool extend)
     notifyChanged();
 }
 
+void WaveformView::moveSelection (int direction)
+{
+    if (! hasAudio() || selection.isEmpty())
+        return;
+
+    const auto length = selection.getLength();
+    const auto start = juce::jlimit ((juce::int64) 0, totalSamples() - length, selection.getStart() + direction * arrowStep());
+    const auto shift = start - selection.getStart();
+    if (shift == 0)
+        return;
+
+    cursor += shift;
+    dragAnchor += shift;
+    setSelection ({ start, start + length }, selectedChannel);
+    ensureVisible (direction < 0 ? start : start + length);
+}
+
+void WaveformView::moveEdge (int direction)
+{
+    const auto side = getPickedEdge();
+    if (! hasAudio() || side == 0)
+        return;
+
+    // The end moves; it never crosses the other one.
+    auto range = selection;
+    const auto step = direction * arrowStep();
+    if (side < 0)
+        range.setStart (juce::jlimit ((juce::int64) 0, range.getEnd() - 1, range.getStart() + step));
+    else
+        range.setEnd (juce::jlimit (range.getStart() + 1, totalSamples(), range.getEnd() + step));
+
+    const auto edge = side < 0 ? range.getStart() : range.getEnd();
+    cursor = edge;
+    dragAnchor = side < 0 ? range.getEnd() : range.getStart();
+    setSelection (range, selectedChannel);
+    pickedFor = selection;
+    ensureVisible (edge);
+}
+
 int WaveformView::channelZoneAt (juce::Point<int> position) const
 {
     if (! hasAudio() || buffer->getNumChannels() < 2)
@@ -476,6 +515,36 @@ int WaveformView::channelZoneAt (juce::Point<int> position) const
 
     if (position.y >= last.getBottom() - last.getHeight() / 4)
         return lastChannel;
+
+    return -1;
+}
+
+juce::Range<juce::int64> WaveformView::markerSpanAt (juce::int64 sample) const
+{
+    juce::int64 start = 0, end = totalSamples();
+
+    if (markers != nullptr)
+        for (auto m : *markers)
+        {
+            if (m <= sample) start = juce::jmax (start, m);
+            else             end = juce::jmin (end, m);
+        }
+
+    return { start, end };
+}
+
+int WaveformView::laneAt (juce::Point<int> position) const
+{
+    if (! hasAudio() || buffer->getNumChannels() < 2)
+        return -1;
+
+    for (int ch = 0; ch < buffer->getNumChannels(); ++ch)
+    {
+        const auto lane = laneBounds (ch);
+
+        if (position.y >= lane.getY() && position.y < lane.getBottom())
+            return ch;
+    }
 
     return -1;
 }
@@ -732,6 +801,21 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
 
     const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
 
+    // The second press of a double-click between markers selects that span on
+    // the lane clicked at once, so dragging before letting go adds the spans
+    // to the left or right.
+    if (e.getNumberOfClicks() == 2 && e.mods.isLeftButtonDown() && ! e.mods.isShiftDown() && markers != nullptr && ! markers->empty())
+    {
+        spanDrag = spanDragDone = true;
+        pressedInSelection = false;
+        spanAnchor = markerSpanAt (sample);
+        spanLane = laneAt (e.getPosition());
+        dragAnchor = spanAnchor.getStart();
+        cursor = spanAnchor.getStart();
+        setSelection (spanAnchor, spanLane);
+        return;
+    }
+
     // Pressing on an edge of the selection moves that edge (the other one
     // stays), on the same channel(s).
     if (const auto edge = selectionEdgeAt (e.getPosition()); edge >= 0 && ! e.mods.isShiftDown())
@@ -809,6 +893,20 @@ void WaveformView::mouseDrag (const juce::MouseEvent& e)
     if (! hasAudio() || pressedOnMarker)
         return;
 
+    if (spanDrag)
+    {
+        // Whole spans from the double-clicked one to the one under the mouse;
+        // moving onto the other channel takes both.
+        const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
+        const auto range = spanAnchor.getUnionWith (markerSpanAt (sample));
+        const auto lane = laneAt (e.getPosition());
+        const auto channel = spanLane >= 0 && lane >= 0 && lane != spanLane ? -1 : spanLane;
+        dragAnchor = sample < spanAnchor.getStart() ? spanAnchor.getEnd() : spanAnchor.getStart();
+        cursor = sample < spanAnchor.getStart() ? range.getStart() : range.getEnd();
+        setSelection (range, channel);
+        return;
+    }
+
     if (pressedInSelection)
     {
         if (! draggingOut && e.getDistanceFromDragStart() > 6)
@@ -834,6 +932,8 @@ void WaveformView::mouseDrag (const juce::MouseEvent& e)
 
 void WaveformView::mouseUp (const juce::MouseEvent& e)
 {
+    spanDrag = false;
+
     if (scrubbing)
     {
         scrubbing = false;
@@ -953,6 +1053,15 @@ void WaveformView::mouseDoubleClick (const juce::MouseEvent& e)
         return;
     }
 
+    // Already done on the press (see mouseDown).
+    if (spanDragDone && e.getNumberOfClicks() == 2)
+    {
+        spanDragDone = false;
+        return;
+    }
+
+    spanDragDone = false;
+
     // In the "L" / "R" zone the double-click selects only that channel.
     const auto channel = waveArea().contains (e.getPosition()) ? channelZoneAt (e.getPosition()) : -1;
 
@@ -967,18 +1076,10 @@ void WaveformView::mouseDoubleClick (const juce::MouseEvent& e)
 
     // Sound Forge: double-click selects the span between the surrounding
     // markers (or the file start/end).
-    const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
-    juce::int64 start = 0, end = totalSamples();
-
-    for (auto m : *markers)
-    {
-        if (m <= sample) start = juce::jmax (start, m);
-        else             end = juce::jmin (end, m);
-    }
-
-    dragAnchor = start;
-    cursor = start;
-    setSelection ({ start, end }, channel);
+    const auto span = markerSpanAt (juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x)));
+    dragAnchor = span.getStart();
+    cursor = span.getStart();
+    setSelection (span, channel);
 }
 
 void WaveformView::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)

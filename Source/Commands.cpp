@@ -172,8 +172,10 @@ std::vector<CommandDef> makeCommands()
         { optGoRightEdge,    "Go to Right Edge",              "Transport", { key ('e') } },
         { optCursorLeft,     "Move Cursor Left",              "Transport", { key (KeyPress::leftKey) } },
         { optCursorRight,    "Move Cursor Right",             "Transport", { key (KeyPress::rightKey) } },
-        { optExtendLeft,     "Extend Selection Left",         "Transport", { key (KeyPress::leftKey, shift) } },
-        { optExtendRight,    "Extend Selection Right",        "Transport", { key (KeyPress::rightKey, shift) } },
+        { optExtendLeft,     "Extend Selection Left",         "Transport", { key (KeyPress::leftKey, ctrl | shift) } },
+        { optExtendRight,    "Extend Selection Right",        "Transport", { key (KeyPress::rightKey, ctrl | shift) } },
+        { optMoveSelectionLeft,  "Move Selection Left",       "Transport", { key (KeyPress::leftKey, shift) } },
+        { optMoveSelectionRight, "Move Selection Right",      "Transport", { key (KeyPress::rightKey, shift) } },
         { optPreferences,    "Preferences...",                "Options", {} },
         { optAudioDevice,    "Audio Device...",               "Options", {} },
         { optKeyboard,       "Customize Keyboard...",         "Options", {} },
@@ -264,7 +266,8 @@ const std::vector<TopMenu>& menuBar()
                                            C (optRecord), C (optRecordComputer), C (optArm), sep(),
                                            C (optLoop), C (optSwitchPlayMode), sep(),
                                            C (optGoStart), C (optGoEnd), C (optGoLeftEdge), C (optGoRightEdge), sep(),
-                                           C (optCursorLeft), C (optCursorRight), C (optExtendLeft), C (optExtendRight) }),
+                                           C (optCursorLeft), C (optCursorRight), C (optMoveSelectionLeft), C (optMoveSelectionRight),
+                                           C (optExtendLeft), C (optExtendRight) }),
                        sep(), C (optAudioDevice), C (optKeyboard), C (optPreferences) } },
 
         { "Window", { C (winCascade), C (winTile), C (winMaximizeAll), sep(), C (winNext), C (winPrev) } },
@@ -330,7 +333,7 @@ const std::vector<CommandDef>& allCommands()
         winCascade, winTile, winNext, winPrev,
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,
         optPlay, optPlayAll, optPlayPause, optStop, optGoStart, optGoEnd, optGoLeftEdge, optGoRightEdge, optAudioDevice,
-        optCursorLeft, optCursorRight, optExtendLeft, optExtendRight, optPlayFromCursor,
+        optCursorLeft, optCursorRight, optExtendLeft, optExtendRight, optPlayFromCursor, optMoveSelectionLeft, optMoveSelectionRight,
         helpShortcuts, helpAbout, helpCheckUpdates, helpUpdatesAtStart
     };
 

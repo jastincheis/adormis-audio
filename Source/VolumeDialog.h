@@ -8,8 +8,10 @@ namespace wf
 // dot), like Sound Forge's Process > Volume. `target` says what it applies to
 // ("Selection, left channel"...). `onApply` gets the value when OK is pressed;
 // `onClose` means the window can go. Floating and non-modal like Mix/Save As.
+// The Mute button calls `onMute` instead (silence, like Process > Mute).
 std::unique_ptr<juce::DocumentWindow> createVolumeWindow (const juce::String& target, float initialDecibels,
                                                           std::function<void (float decibels)> onApply,
+                                                          std::function<void()> onMute,
                                                           std::function<void()> onClose);
 
 // Parses "0,1", "-0.1", "+3 dB"... Empty when it isn't a number in the allowed range.

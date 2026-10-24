@@ -32,6 +32,10 @@ struct BassFinderSource
     // from the start of the audio; negative hides it).
     std::function<void (double seconds)> showPlayhead;
 
+    // The file's own tempo: the one it was made with (New from Template), or
+    // the one the main window detected for the whole file; 0 = not known.
+    double fileBpm = 0.0;
+
     // Where the analysed audio starts in its file, and how long the file is (seconds).
     double startInFile = 0.0, fileDuration = 0.0;
 
@@ -59,6 +63,10 @@ struct BassFinderHost
     // Asks where to save (the suggested file gives the folder and name).
     std::function<void (const juce::String& title, const juce::File& suggested, const juce::String& pattern,
                         std::function<void (juce::File)> onChosen)> chooseSaveFile;
+
+    // Asks for a file to open (the suggested file gives the folder).
+    std::function<void (const juce::String& title, const juce::File& suggested, const juce::String& pattern,
+                        std::function<void (juce::File)> onChosen)> chooseOpenFile;
 
     // Runs `work` (which reports 0..1 and returns false when cancelled) behind a
     // progress bar, then calls `done` on the message thread (true = finished).

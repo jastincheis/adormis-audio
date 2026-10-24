@@ -11,7 +11,7 @@ namespace wf
 struct DrumRebuilderHost
 {
     juce::AudioDeviceManager* devices = nullptr;
-    std::function<void (const juce::String& title, juce::AudioBuffer<float>, double sampleRate)> openAsNewFile;
+    std::function<void (const juce::String& title, juce::AudioBuffer<float>, double sampleRate, std::vector<juce::int64> markers)> openAsNewFile;
     std::function<void()> onClose;
 
     // The files open in Adormis Audio (each stem tab too), for Drum

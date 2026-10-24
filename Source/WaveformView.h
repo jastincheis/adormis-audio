@@ -106,6 +106,12 @@ public:
     // the step follows the zoom (fine when zoomed in, coarse when zoomed out);
     // `extend` grows the selection instead (Shift).
     void nudgeCursor (int direction, bool extend);
+    void moveSelection (int direction);   // by the arrow step, keeping its length
+    // W / E pick the selection's left / right end; Shift + arrows then move
+    // only that end. Any other change to the selection forgets the pick.
+    void pickEdge (int side)   { pickedEdge = side; pickedFor = selection; }
+    int getPickedEdge() const  { return ! selection.isEmpty() && selection == pickedFor ? pickedEdge : 0; }
+    void moveEdge (int direction);
 
     // Edit > Auto Snap to Zero Crossings (for every window): selection edges
     // made with the mouse move to the nearest point where the wave crosses
@@ -198,12 +204,23 @@ private:
     void showStripMenu();
     juce::Range<juce::int64> selection;
     int selectedChannel = -1;   // -1: all channels
+    int pickedEdge = 0;          // -1 left end, 1 right end (see pickEdge)
+    juce::Range<juce::int64> pickedFor;
     int dragChannel = -1;       // channel the current drag-select started in
 
     // Sound Forge rule for stereo: the top quarter of the first channel picks
     // only it, the bottom quarter of the last channel picks only it, anywhere
     // else picks all channels.
     int channelZoneAt (juce::Point<int> position) const;
+
+    // Double-click between markers: the span between the markers round
+    // `sample` (or the file start / end), on the channel lane clicked (-1: all).
+    juce::Range<juce::int64> markerSpanAt (juce::int64 sample) const;
+    int laneAt (juce::Point<int> position) const;
+    bool spanDrag = false;                  // held after a double-click: the drag adds whole spans
+    bool spanDragDone = false;              // the double-click itself has been handled on the press
+    juce::Range<juce::int64> spanAnchor;    // the span double-clicked
+    int spanLane = -1;
     juce::Rectangle<int> laneBounds (int channel) const;
     juce::int64 playhead = -1;
     juce::Range<juce::int64> dropPreview;

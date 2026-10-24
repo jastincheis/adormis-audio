@@ -1343,6 +1343,46 @@ juce::MemoryBlock midiFile (const std::vector<Note>& notes, double bpm, const ju
     return file.getMemoryBlock();
 }
 
+std::vector<Note> notesFromMidi (const juce::MidiFile& midi, int& bars)
+{
+    std::vector<Note> notes;
+    bars = 0;
+    const auto ticksPerBeat = (double) midi.getTimeFormat();
+
+    if (ticksPerBeat <= 0.0)   // SMPTE time: no beats to count in
+        return notes;
+
+    const auto toSixteenths = [ticksPerBeat] (double tick) { return (int) std::lround (tick / ticksPerBeat * 4.0); };
+    int end = 0;
+
+    for (int t = 0; t < midi.getNumTracks(); ++t)
+    {
+        juce::MidiMessageSequence track (*midi.getTrack (t));
+        track.updateMatchedPairs();
+
+        for (int i = 0; i < track.getNumEvents(); ++i)
+        {
+            const auto* e = track.getEventPointer (i);
+
+            if (! e->message.isNoteOn() || e->message.getChannel() == 10)
+                continue;
+
+            Note n;
+            n.start = toSixteenths (e->message.getTimeStamp());
+            const auto off = e->noteOffObject != nullptr ? toSixteenths (e->noteOffObject->message.getTimeStamp()) : n.start + 1;
+            n.length = std::max (1, off - n.start);
+            n.pitch = e->message.getNoteNumber();
+            n.velocity = std::max (1, (int) e->message.getVelocity());
+            notes.push_back (n);
+            end = std::max (end, n.start + n.length);
+        }
+    }
+
+    std::stable_sort (notes.begin(), notes.end(), [] (const Note& a, const Note& b) { return a.start < b.start; });
+    bars = (end + 15) / 16;
+    return notes;
+}
+
 juce::AudioBuffer<float> renderBass (const std::vector<Note>& notes, Tone tone, double bpm, int bars, double rate,
                                      int tuningCents)
 {

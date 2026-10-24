@@ -16,10 +16,14 @@ public:
         : juce::DocumentWindow ("Drum Rebuilder", juce::Colours::black, juce::DocumentWindow::closeButton), host (std::move (h))
     {
         processor.hostName = "Adormis Audio";
-        processor.sendToHost = [this] (juce::AudioBuffer<float> beat, double rate)
+        processor.sendToHost = [this] (juce::AudioBuffer<float> beat, double rate, std::vector<std::pair<juce::String, double>> named)
         {
+            // Bar 1 and the end of the last bar, as markers.
+            std::vector<juce::int64> markers;
+            for (const auto& m : named)
+                markers.push_back (std::min ((juce::int64) std::llround (m.second * rate), (juce::int64) beat.getNumSamples()));
             if (host.openAsNewFile != nullptr)
-                host.openAsNewFile (nameOfLoaded() + " rebuilt", std::move (beat), rate);
+                host.openAsNewFile (nameOfLoaded() + " rebuilt", std::move (beat), rate, std::move (markers));
         };
         if (host.openBeats != nullptr)
             processor.hostBeats = [this]
