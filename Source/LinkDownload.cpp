@@ -372,10 +372,13 @@ juce::File attempt (const juce::File& ytDlp, const juce::File& ffmpeg, const juc
     // The best audio-only stream (or the best with video, for sites without
     // one), decoded by ffmpeg into 24-bit PCM at the stream's own rate.
     juce::ChildProcess process;
-    const juce::StringArray args { ytDlp.getFullPathName(), "--ignore-config", "--no-playlist", "--newline",
+    // UTF-8 output: on Windows yt-dlp otherwise prints in the console's code
+    // page, and a title with diacritics gave a path that doesn't exist.
+    const juce::StringArray args { ytDlp.getFullPathName(), "--ignore-config", "--encoding", "utf-8", "--no-playlist", "--newline",
                                    "--no-simulate", "--progress", "--windows-filenames",
                                    "--progress-template", "download:ADORMIS-PROGRESS %(progress._percent_str)s",
                                    "--print", "after_move:ADORMIS-FILE %(filepath)s",
+                                   "--print", "after_move:ADORMIS-ID %(id)s",
                                    "-f", "bestaudio/best", "-x", "--audio-format", "wav",
                                    "--postprocessor-args", "ExtractAudio:-c:a pcm_s24le",
                                    "--ffmpeg-location", ffmpeg.getFullPathName(),
@@ -389,9 +392,9 @@ juce::File attempt (const juce::File& ytDlp, const juce::File& ffmpeg, const juc
         return {};
     }
 
-    juce::String pending, result;
+    juce::String pending, result, id;
     float shown = 0.0f;
-    juce::StringArray errors;
+    juce::StringArray errors, lastLines;
     char buffer[4096];
 
     for (;;)
@@ -417,6 +420,17 @@ juce::File attempt (const juce::File& ytDlp, const juce::File& ffmpeg, const juc
             {
                 result = line.fromFirstOccurrenceOf (" ", false, false);
             }
+            else if (line.startsWith ("ADORMIS-ID "))
+            {
+                id = line.fromFirstOccurrenceOf (" ", false, false).trim();
+            }
+            else if (line.isNotEmpty())
+            {
+                lastLines.add (line);
+
+                if (lastLines.size() > 6)
+                    lastLines.remove (0);
+            }
             else if (line.startsWith ("ERROR:"))
             {
                 errors.add (line.fromFirstOccurrenceOf ("ERROR:", false, false).trim());
@@ -432,12 +446,25 @@ juce::File attempt (const juce::File& ytDlp, const juce::File& ffmpeg, const juc
     }
 
     process.waitForProcessToFinish (10000);
-    const juce::File file (juce::File::isAbsolutePath (result) ? result : juce::String());
+    juce::File file (juce::File::isAbsolutePath (result) ? result : juce::String());
+
+    // The path printed may not match the name on disk (an odd character in
+    // the title): the newest WAV ending in "[id]" is the one.
+    if ((file == juce::File() || ! file.existsAsFile()) && id.isNotEmpty())
+    {
+        file = juce::File();
+
+        for (const auto& f : folder.findChildFiles (juce::File::findFiles, false, "*.wav"))
+            if (f.getFileNameWithoutExtension().endsWith ("[" + id + "]")
+                && (file == juce::File() || f.getLastModificationTime() > file.getLastModificationTime()))
+                file = f;
+    }
 
     if (file == juce::File() || ! file.existsAsFile())
     {
         error = errors.isEmpty() ? "yt-dlp found nothing to save at this link." : errors.joinIntoString ("\n");
-        startup::log ("Link download failed: " + link + " / " + error);
+        startup::log ("Link download failed: " + link + " / " + error + " / file: " + result + " / id: " + id
+                      + " / last output: " + lastLines.joinIntoString (" | "));
         return {};
     }
 
