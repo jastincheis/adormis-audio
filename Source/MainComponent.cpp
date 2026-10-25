@@ -841,7 +841,6 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
         return;
 
     auto* raw = doc.get();
-    raw->getView().onScrub = [this, raw] (WaveformView::Scrub phase, juce::int64 sample) { scrub (raw, phase, sample); };
     raw->getView().onCursorClicked = [this, raw] (juce::int64 sample) { jumpPlayback (raw, sample); };
     raw->getView().onContextMenu = [this, raw] { showWaveMenu (raw); };
     raw->onGetStems = [this, raw] { getStems (raw); };
@@ -2367,7 +2366,7 @@ void MainComponent::showWaveMenu (DataWindow* doc)
     menu.addCommandItem (&commandManager, wf::optPlayFromCursor);
     menu.addSeparator();
 
-    for (auto id : { wf::editCut, wf::editCopy, wf::editPaste, wf::editPasteToNew, wf::editDelete, wf::editTrim, wf::editSelectAll })
+    for (auto id : { wf::editCut, wf::editCopy, wf::editPaste, wf::editOverwrite, wf::editPasteToNew, wf::editDelete, wf::editTrim, wf::editSelectAll })
         menu.addCommandItem (&commandManager, id);
 
     menu.addSeparator();
@@ -3758,7 +3757,6 @@ void MainComponent::releasePlaybackSource()
     // The memory source points straight at a document's samples, so detach it
     // (under the audio callback lock) before any buffer is modified or reallocated.
     stopPlayback (false);
-    scrubTo = nullptr;
     transport.setSource (nullptr);
     memorySource.reset();
     playingDocument = nullptr;
@@ -3840,62 +3838,6 @@ juce::int64 MainComponent::playPosition() const
 
 namespace
 {
-// Scrubbing: the read position follows the mouse like a record under the
-// hand. It glides towards where the mouse is (about 50 ms behind), so the
-// speed and direction of the hand become the playback speed (up to 8x either
-// way); when the hand stops, the sound fades out instead of holding a click.
-class ScrubSource final : public juce::PositionableAudioSource
-{
-public:
-    ScrubSource (const juce::AudioBuffer<float>& audioIn, juce::int64 start, double rateIn)
-        : audio (audioIn), rate (rateIn), position ((double) start), target ((double) start) {}
-
-    void setTarget (juce::int64 sample)   { target = (double) sample; }
-
-    void prepareToPlay (int, double) override {}
-    void releaseResources() override {}
-
-    void getNextAudioBlock (const juce::AudioSourceChannelInfo& info) override
-    {
-        const auto length = audio.getNumSamples();
-        const auto channels = audio.getNumChannels();
-        const auto lag = 0.05 * rate;                        // how far behind the mouse it glides
-        const auto smooth = 1.0 - std::exp (-1.0 / (0.01 * rate));
-        const auto fade = 1.0 - std::exp (-1.0 / (0.005 * rate));
-        const auto goal = target.load();
-
-        for (int i = 0; i < info.numSamples; ++i)
-        {
-            const auto wanted = juce::jlimit (-8.0, 8.0, (goal - position) / lag);
-            speed += (wanted - speed) * smooth;
-            position = juce::jlimit (0.0, (double) std::max (0, length - 1), position + speed);
-            gain += (std::min (1.0, std::abs (speed) / 0.15) - gain) * fade;
-
-            const auto index = (int) position;
-            const auto frac = (float) (position - index);
-            const auto next = std::min (index + 1, length - 1);
-
-            for (int ch = 0; ch < info.buffer->getNumChannels(); ++ch)
-            {
-                const auto* in = audio.getReadPointer (std::min (ch, channels - 1));
-                const auto v = in[index] + (in[next] - in[index]) * frac;
-                info.buffer->setSample (ch, info.startSample + i, (float) (v * gain));
-            }
-        }
-    }
-
-    void setNextReadPosition (juce::int64) override {}
-    juce::int64 getNextReadPosition() const override  { return (juce::int64) position; }
-    juce::int64 getTotalLength() const override       { return audio.getNumSamples(); }
-    bool isLooping() const override                   { return false; }
-
-private:
-    const juce::AudioBuffer<float>& audio;
-    const double rate;
-    double position, speed = 0.0, gain = 0.0;
-    std::atomic<double> target;
-};
-
 // Plays a document through MemoryAudioSource, optionally with only one
 // channel audible (the others silenced), for single-channel selections.
 class SoloPlaybackSource final : public juce::PositionableAudioSource
@@ -4128,48 +4070,10 @@ void MainComponent::setLooping (bool shouldLoop)
     commandManager.commandStatusChanged();
 }
 
-void MainComponent::scrub (DataWindow* doc, WaveformView::Scrub phase, juce::int64 sample)
-{
-    if (phase == WaveformView::Scrub::start)
-    {
-        if (isRecording())
-            return;
-
-        releasePlaybackSource();
-        auto source = std::make_unique<ScrubSource> (doc->getBuffer(), sample, doc->getSampleRate());
-        auto* raw = source.get();
-        memorySource = std::move (source);
-        transport.setSource (memorySource.get(), 0, nullptr, doc->getSampleRate(), juce::jmax (2, doc->getBuffer().getNumChannels()));
-        playingDocument = doc;
-        scrubTo = [raw] (juce::int64 s) { raw->setTarget (s); };
-        transport.start();
-        return;
-    }
-
-    if (scrubTo == nullptr || playingDocument.getComponent() != doc)
-        return;
-
-    if (phase == WaveformView::Scrub::move)
-    {
-        scrubTo (sample);
-        statusBar.setText ("  Scrubbing " + doc->getTitle() + "   " + WaveformView::formatTime ((double) sample / doc->getSampleRate()),
-                           juce::dontSendNotification);
-        return;
-    }
-
-    scrubTo = nullptr;
-    transport.stop();
-    transport.setSource (nullptr);
-    memorySource.reset();
-    playingDocument = nullptr;
-    updateStatus();
-    commandManager.commandStatusChanged();
-}
-
 // A click while the file plays: playback goes on from there (to the end).
 void MainComponent::jumpPlayback (DataWindow* doc, juce::int64 sample)
 {
-    if (! isPlaying() || scrubTo != nullptr || mixPreview != nullptr || playingDocument.getComponent() != doc)
+    if (! isPlaying() || mixPreview != nullptr || playingDocument.getComponent() != doc)
         return;
 
     auto* solo = dynamic_cast<SoloPlaybackSource*> (memorySource.get());
@@ -4420,6 +4324,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             break;
 
         case wf::editPaste:      available = available && doc != nullptr && hasClipboard(); break;
+        case wf::editOverwrite:  available = available && doc != nullptr && hasClipboard(); break;
         case wf::editPasteToNew:
         {
             const bool selected = doc != nullptr && ! doc->getView().getSelection().isEmpty();
@@ -4666,6 +4571,14 @@ bool MainComponent::perform (const InvocationInfo& info)
             }
             return true;
 
+        case wf::editOverwrite:
+            if (hasClipboard())
+            {
+                releasePlaybackSource();
+                doc->overwriteAudio (clipboard.audio, clipboard.sampleRate, &clipboard.marks);
+            }
+            return true;
+
         case wf::editTrim:
             releasePlaybackSource();
             doc->trimToSelection();
@@ -4854,7 +4767,7 @@ bool MainComponent::perform (const InvocationInfo& info)
             // While it plays: playback jumps back / ahead (held down, it winds
             // through the audio like a CD player), then plays on at normal speed.
             // A jump is the arrow step, but at least a fifth of a second.
-            if (isPlaying() && playingDocument.getComponent() == doc && scrubTo == nullptr && mixPreview == nullptr)
+            if (isPlaying() && playingDocument.getComponent() == doc && mixPreview == nullptr)
             {
                 const auto step = std::max (view.arrowStep(), (juce::int64) (0.2 * doc->getSampleRate()));
                 const auto to = juce::jlimit ((juce::int64) 0, total - 1, playPosition() + direction * step);

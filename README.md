@@ -14,7 +14,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 - Open WAV / FLAC / AIFF / OGG / MP3; save WAV / FLAC / AIFF / OGG and MP3, with sample-rate conversion
 - The Open window plays the file you click on (format, length, waveform, Play / Stop, Auto play)
 - Several files in overlapping windows; drag audio files in from Explorer / Finder / a file manager
-- Cut / copy / paste (also to a new file), trim / crop, Mix (Ctrl+M); undo / redo
+- Cut / copy / paste (also to a new file), Overwrite (Paste Special or right-click: fills the gap between two markers with the clipboard, in place), trim / crop, Mix (Ctrl+M); undo / redo
 - Selection on both channels or one (L / R); drag a selection's edges to change it; drag it out into a new file, or onto another file to mix it in (volumes, live preview, snapping to markers)
 - Markers (drag them left / right to move them) and regions (R): a region strip under the ruler, View > Regions List, Tools > Auto Region (split at silences), Tools > Extract Regions (one file per region); WAV files keep both, as cue points with labels
 - Markers and regions travel with the audio when you drag a selection out, mix it into another file, or copy and paste
@@ -30,7 +30,6 @@ menu structure and default shortcuts so the workflow feels familiar.
 **Playback and meters**
 - Loop button on the toolbar; Q loops the selection, and a new selection while looping becomes the loop
 - A click in the waveform while playing goes on from there; the toolbar's Play starts again from the cursor
-- Drag strip between the channels: slides the audio past the cursor like tape, with or without sound
 - Smooth Playback Scrolling (Shift+F6): the playhead stays in the middle and the audio flows under it
 - Left / Right arrows move the cursor by a step that follows the zoom (Shift grows the selection); while playing they jump back / ahead
 - Channel Meters (Alt+5): peak, RMS, peak hold, clip lights
@@ -40,7 +39,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 
 **Processes**
 - Fade in / out, mute, normalize (to a peak or a LUFS target, with a true-peak ceiling), volume, reverse, invert, DC offset
-- Volume Envelope / Graphic Fade (V): a volume line over the waveform, drawn like a path in a drawing program (points with Bezier handles: smooth curves, corners, bells)
+- Volume Envelope / Graphic Fade: a volume line over the waveform, drawn like a path in a drawing program (points with Bezier handles: smooth curves, corners, bells)
 - Insert Silence, Resample, Bit-Depth Converter (with dither), Channel Converter, Auto Trim / Crop
 - Time Stretch and Pitch Shift (Rubber Band)
 

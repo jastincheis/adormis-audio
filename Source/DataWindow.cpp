@@ -989,6 +989,57 @@ void DataWindow::pasteAudio (const juce::AudioBuffer<float>& source, double sour
     audioChanged();
 }
 
+void DataWindow::overwriteAudio (const juce::AudioBuffer<float>& source, double sourceRate, const Marks*)
+{
+    // An empty file takes the format of what comes in (but there is nothing
+    // to overwrite in it, so we stop).
+    setEmptyFormat (sourceRate, source.getNumChannels());
+    const auto channels = buffer.getNumChannels();
+    const auto src = prepareForMix (source, sourceRate, sampleRate, channels);
+    const auto clipLength = src.getNumSamples();
+    const auto total = (juce::int64) buffer.getNumSamples();
+
+    if (clipLength == 0 || total == 0)
+        return;
+
+    // Where the cursor is (its selection start, if any) decides which gap.
+    const auto selection = view.getSelection();
+    const auto here = juce::jlimit ((juce::int64) 0, total,
+                                    selection.isEmpty() ? view.getCursor() : selection.getStart());
+
+    // Start at the last marker at or before the cursor, end at the next marker
+    // after it. Markers are kept sorted, so one pass finds both; with no marker
+    // on a side, the file's edge stands in for it.
+    juce::int64 start = here;
+    juce::int64 end = total;
+    bool haveStart = false;
+
+    for (auto m : markers)
+    {
+        if (m <= here)   { start = m; haveStart = true; }
+        else             { end = m; break; }
+    }
+
+    if (! haveStart)
+        start = here;
+
+    const auto gap = end - start;
+    const auto writeLength = (int) juce::jmin ((juce::int64) clipLength, gap);
+
+    if (writeLength <= 0)
+        return;
+
+    pushUndo ("Overwrite");
+
+    // In place: the length, the markers and everything outside [start, end)
+    // stay exactly as they were; a shorter clipboard leaves the rest of the gap.
+    for (int ch = 0; ch < channels; ++ch)
+        buffer.copyFrom (ch, (int) start, src, ch, 0, writeLength);
+
+    view.setSelection ({ start, start + writeLength });
+    audioChanged();
+}
+
 bool DataWindow::trimToSelection()
 {
     const auto selection = view.getSelection();

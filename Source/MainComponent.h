@@ -186,7 +186,6 @@ private:
     void startPlayback (juce::Range<juce::int64> range, int soloChannel = -1);
     void stopPlayback (bool returnToStart);
     void releasePlaybackSource();   // before a document's buffer is changed
-    void scrub (DataWindow* doc, WaveformView::Scrub phase, juce::int64 sample);
     void jumpPlayback (DataWindow* doc, juce::int64 sample);
 
     // View > Playback Scrolling (the view follows playback, a page at a time)
@@ -294,7 +293,6 @@ private:
     std::unique_ptr<wf::MeterTap> meterTap;     // the device plays through this (for the meters)
     std::unique_ptr<wf::MeterPanel> meters;
     std::unique_ptr<juce::PositionableAudioSource> memorySource;
-    std::function<void (juce::int64)> scrubTo;   // while scrubbing: where the mouse is
     juce::Component::SafePointer<DataWindow> playingDocument;
     juce::Range<juce::int64> playRange;
     juce::int64 playStartCursor = 0;

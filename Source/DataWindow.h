@@ -179,6 +179,12 @@ public:
 
     void pasteAudio (const juce::AudioBuffer<float>& source, double sourceRate, const Marks* marks = nullptr);
 
+    // Overwrite (Paste Special > Overwrite): writes the clipboard in place,
+    // from the marker at/before the cursor, bounded by the next marker. The
+    // file length does not change: a clipboard longer than that gap is cut at
+    // the second marker, a shorter one leaves the rest of the gap as it was.
+    void overwriteAudio (const juce::AudioBuffer<float>& source, double sourceRate, const Marks* marks = nullptr);
+
     // Trim/Crop: keeps only the selection (markers inside it move along).
     // False when nothing, or only one channel, is selected.
     bool trimToSelection();

@@ -43,6 +43,7 @@ std::vector<CommandDef> makeCommands()
         { editCopy,         "Copy",                           "Edit", { key ('c', ctrl) } },
         { editPaste,        "Paste",                          "Edit", { key ('v', ctrl) } },
         { editPasteToNew,   "Paste to New",                   "Edit", { key ('e', ctrl) } },
+        { editOverwrite,    "Overwrite",                      "Edit", {} },
         { editMix,          "Mix...",                         "Edit", { key ('m', ctrl) } },
         // Backspace too: the "delete" key on Mac keyboards sends Backspace.
         { editDelete,       "Delete (Clear)",                 "Edit", { key (KeyPress::deleteKey), key (KeyPress::backspaceKey) } },
@@ -89,7 +90,7 @@ std::vector<CommandDef> makeCommands()
         { insertRegion,        "Region",                      "Insert", { key ('r') } },
         { insertCommandMarker, "Command Marker",              "Insert", { key ('c') } },
         { insertSilence,       "Silence...",                  "Insert", {} },
-        { insertVolumeEnv,     "Volume Envelope",             "Insert", { key ('v') } },
+        { insertVolumeEnv,     "Volume Envelope",             "Insert", {} },
         { insertPanEnv,        "Pan Envelope",                "Insert", { key ('p') } },
         { insertLoop,          "Sample Loop",                 "Insert", { key ('l', alt) } },
 
@@ -223,7 +224,7 @@ const std::vector<TopMenu>& menuBar()
 
         { "Edit", { C (editUndo), C (editRedo), C (editRepeat), sep(),
                     C (editCut), C (editCopy), C (editPaste),
-                    sub ("Paste Special", { C (editPasteToNew), C (editMix) }),
+                    sub ("Paste Special", { C (editPasteToNew), C (editOverwrite), C (editMix) }),
                     C (editDelete), C (editTrim), sep(),
                     C (editSelectAll), C (editSetSelection), C (editHalveSelection), C (editDoubleSelection), C (editMarkIn), C (editMarkOut), sep(),
                     C (editGoTo), sep(),
@@ -321,7 +322,7 @@ const std::vector<CommandDef>& allCommands()
     // Commands that work so far; everything else stays greyed out in the menus.
     static const juce::CommandID implemented[] {
         fileNew, fileOpen, fileClose, fileSave, fileSaveAs, fileExit, editUndo, editRedo, editCut, editCopy, editPaste, editPasteToNew, editDelete, editTrim, editSelectAll,
-        fileNewNoDialog, fileSaveAll, editRepeat, editMix, editSetSelection, editMarkIn, editMarkOut, editGoTo, editSnapZero, editHalveSelection, editDoubleSelection, viewPlaybackScroll, viewSmoothScroll,
+        fileNewNoDialog, fileSaveAll, editRepeat, editMix, editOverwrite, editSetSelection, editMarkIn, editMarkOut, editGoTo, editSnapZero, editHalveSelection, editDoubleSelection, viewPlaybackScroll, viewSmoothScroll,
         viewLevelIn, viewLevelOut, insertSilence, procAutoTrim, procBitDepth, procChannelConv, procResample,
         toolsClipDetect, toolsRepairCopyChannel, optLoop, insertMarker,
         viewChannelMeters, viewLoudnessMeters, viewSpectrum, viewUndoHistory, toolsStatistics, optKeyboard,

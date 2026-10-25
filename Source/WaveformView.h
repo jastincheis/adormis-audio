@@ -88,13 +88,6 @@ public:
     // A marker dragged to `position` (sent once, when the mouse is let go).
     std::function<void (int markerIndex, juce::int64 position)> onMoveMarker;
 
-    // The drag strip (the band between the channels, or under a mono
-    // waveform): dragging it slides the audio past the cursor line like tape,
-    // with or without sound (right-click the strip for the options). The
-    // cursor stays at the line; scrubbing reports where it is.
-    enum class Scrub { start, move, end };
-    std::function<void (Scrub, juce::int64 sample)> onScrub;
-
     // A plain click in the waveform (no drag): the cursor is now at `sample`.
     // While the file plays, playback goes on from there.
     std::function<void (juce::int64 sample)> onCursorClicked;
@@ -128,8 +121,6 @@ public:
 
     struct DragOptions
     {
-        bool sound = true;          // hear the audio while dragging the strip
-        bool audioFollowsHand = true;   // false: the view moves the way you drag
         int arrowPixels = 10;       // the arrow-key step, in screen pixels
     };
     static DragOptions dragOptions();
@@ -197,11 +188,6 @@ private:
     bool markerDragged = false;
     std::vector<juce::int64> selectedMarkers;
     bool draggingOut = false;
-    bool scrubbing = false;            // dragging the strip
-    int grabX = 0;                     // where on the screen the strip was taken
-    double grabViewStart = 0.0;
-    juce::Rectangle<int> scrubStripAt (juce::Point<int> position) const;   // empty when not on a strip
-    void showStripMenu();
     juce::Range<juce::int64> selection;
     int selectedChannel = -1;   // -1: all channels
     int pickedEdge = 0;          // -1 left end, 1 right end (see pickEdge)

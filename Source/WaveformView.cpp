@@ -295,64 +295,19 @@ juce::Rectangle<int> WaveformView::laneBounds (int channel) const
 {
     const auto area = waveArea();
     const auto channels = hasAudio() ? buffer->getNumChannels() : 1;
-    const auto gaps = channels > 1 ? channels - 1 : 1;   // a mono file has its strip underneath
+    const auto gaps = juce::jmax (0, channels - 1);   // gaps only between stereo channels; mono fills the lane
     const auto laneHeight = (area.getHeight() - laneGap * gaps) / juce::jmax (1, channels);
     return { area.getX(), area.getY() + channel * (laneHeight + laneGap), area.getWidth(), laneHeight };
-}
-
-juce::Rectangle<int> WaveformView::scrubStripAt (juce::Point<int> position) const
-{
-    if (! hasAudio() || ! waveArea().contains (position))
-        return {};
-
-    const auto channels = buffer->getNumChannels();
-
-    for (int ch = 0; ch < channels; ++ch)
-    {
-        if (ch == channels - 1 && channels > 1)
-            break;
-
-        const auto lane = laneBounds (ch);
-        const juce::Rectangle<int> strip (lane.getX(), lane.getBottom(), lane.getWidth(), laneGap);
-
-        if (strip.contains (position))
-            return strip;
-    }
-
-    return {};
 }
 
 WaveformView::DragOptions WaveformView::dragOptions()
 {
     DragOptions o;
-    const auto sound = wf::settings::get ("drag.sound"), follow = wf::settings::get ("drag.audioFollowsHand"),
-               step = wf::settings::get ("drag.arrowPixels");
+    const auto step = wf::settings::get ("drag.arrowPixels");
 
-    if (! sound.isVoid())   o.sound = (bool) sound;
-    if (! follow.isVoid())  o.audioFollowsHand = (bool) follow;
     if (! step.isVoid())    o.arrowPixels = juce::jlimit (1, 200, (int) step);
 
     return o;
-}
-
-void WaveformView::showStripMenu()
-{
-    const auto o = dragOptions();
-    juce::PopupMenu menu;
-    menu.addSectionHeader ("Dragging this strip");
-    menu.addItem ("Hear the audio while dragging", true, o.sound, [] { wf::settings::set ("drag.sound", ! dragOptions().sound); });
-    menu.addSeparator();
-    menu.addItem ("The audio moves with the hand (like tape)", true, o.audioFollowsHand, [] { wf::settings::set ("drag.audioFollowsHand", true); });
-    menu.addItem ("The view moves the way you drag", true, ! o.audioFollowsHand, [] { wf::settings::set ("drag.audioFollowsHand", false); });
-    menu.addSectionHeader ("Left / Right arrow keys move the cursor by");
-
-    for (auto [pixels, name] : { std::pair<int, const char*> { 1, "1 pixel (finest, follows the zoom)" },
-                                 { 10, "10 pixels (follows the zoom)" }, { 50, "50 pixels (follows the zoom)" } })
-        menu.addItem (name, true, o.arrowPixels == pixels, [p = pixels] { wf::settings::set ("drag.arrowPixels", p); });
-
-    menu.addSeparator();
-    menu.addItem ("Shift + arrow grows the selection. Up / Down zoom.", false, false, nullptr);
-    menu.showMenuAsync (juce::PopupMenu::Options().withParentComponent (getTopLevelComponent()).withMousePosition());
 }
 
 bool WaveformView::snapToZeroCrossings = false;
@@ -580,13 +535,6 @@ void WaveformView::mouseMove (const juce::MouseEvent& e)
         return;
     }
 
-    // The drag strip: a hand that slides the audio along.
-    if (hasAudio() && ! scrubStripAt (e.getPosition()).isEmpty() && markerAt (e.getPosition()) < 0)
-    {
-        setMouseCursor (juce::MouseCursor::DraggingHandCursor);
-        return;
-    }
-
     const auto zone = waveArea().contains (e.getPosition()) && markerAt (e.getPosition()) < 0
                           ? channelZoneAt (e.getPosition()) : -1;
     setMouseCursor (zone == 0 ? leftCursor : zone > 0 ? rightCursor : juce::MouseCursor::NormalCursor);
@@ -711,9 +659,8 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     if (! hasAudio())
         return;
 
-    // Right-click on a marker removes it (the drag strip has its own menu);
-    // anywhere else it opens the window's menu.
-    if (e.mods.isPopupMenu() && ! regionLane().contains (e.getPosition()) && scrubStripAt (e.getPosition()).isEmpty())
+    // Right-click on a marker removes it; anywhere else it opens the window's menu.
+    if (e.mods.isPopupMenu() && ! regionLane().contains (e.getPosition()))
     {
         if (const auto index = markerNear ((float) e.x); index >= 0 && onRemoveMarker != nullptr)
             onRemoveMarker (index);
@@ -744,35 +691,6 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     {
         selectedMarkers.clear();
         repaint();
-    }
-
-    // The drag strip: slide the audio past the cursor line (right-click: options).
-    if (! scrubStripAt (e.getPosition()).isEmpty())
-    {
-        pressedOnMarker = true;   // no drag-select
-
-        if (e.mods.isPopupMenu())
-        {
-            showStripMenu();
-            return;
-        }
-
-        const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
-        scrubbing = true;
-        grabX = e.x;
-        grabViewStart = viewStart;
-        dragAnchor = sample;
-        cursor = sample;
-        setSelection ({});
-
-        if (dragOptions().sound && onScrub != nullptr)
-        {
-            setPlayhead (sample);
-            onScrub (Scrub::start, sample);
-        }
-
-        repaint();
-        return;
     }
 
     // The region strip: a click selects the region, a right-click offers a menu.
@@ -851,30 +769,6 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
 
 void WaveformView::mouseDrag (const juce::MouseEvent& e)
 {
-    if (scrubbing)
-    {
-        // The audio slides with the hand (or the view moves the way you drag);
-        // the cursor stays at the line where the strip was taken.
-        const auto options = dragOptions();
-        const auto direction = options.audioFollowsHand ? -1.0 : 1.0;
-        viewStart = grabViewStart + direction * (e.x - grabX) * samplesPerPixel;
-        clampView();
-        updateScrollBar();
-
-        const auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) grabX));
-        cursor = sample;
-
-        if (options.sound && onScrub != nullptr)
-        {
-            setPlayhead (sample);
-            onScrub (Scrub::move, sample);
-        }
-
-        repaint();
-        notifyChanged();
-        return;
-    }
-
     // Dragging a marker (its flag or its line) moves it left / right.
     if (hasAudio() && pressedOnMarker && markerDragIndex >= 0)
     {
@@ -933,21 +827,6 @@ void WaveformView::mouseDrag (const juce::MouseEvent& e)
 void WaveformView::mouseUp (const juce::MouseEvent& e)
 {
     spanDrag = false;
-
-    if (scrubbing)
-    {
-        scrubbing = false;
-        pressedOnMarker = false;
-        setPlayhead (-1);
-
-        if (dragOptions().sound && onScrub != nullptr)
-            onScrub (Scrub::end, cursor);
-
-        dragAnchor = cursor;
-        repaint();
-        notifyChanged();
-        return;
-    }
 
     // A plain click inside the selection (no drag) just places the cursor.
     if (pressedInSelection && ! draggingOut && hasAudio())
@@ -1163,19 +1042,11 @@ void WaveformView::paint (juce::Graphics& g)
         const auto lane = laneBounds (ch);
         paintChannel (g, ch, lane, clip.getIntersection (lane));
 
-        // The drag strip under it (between the channels; under a mono one).
-        if (ch < channels - 1 || channels == 1)
+        // A thin line between the channels (e.g. left / right), in the gap.
+        if (ch < channels - 1)
         {
-            const juce::Rectangle<int> strip (area.getX(), lane.getBottom(), area.getWidth(), laneGap);
-            g.setColour (juce::Colours::black.withAlpha (scrubbing ? 0.6f : 0.45f));
-            g.fillRect (strip);
-            g.setColour (juce::Colours::white.withAlpha (0.18f));
-
-            // grip ridges every 6 px, like the edge of a tape reel
-            const auto offset = (int) std::fmod (viewStart / samplesPerPixel, 6.0);
-
-            for (int x = strip.getX() + 6 - offset; x < strip.getRight(); x += 6)
-                g.fillRect (x, strip.getY() + 4, 1, strip.getHeight() - 8);
+            g.setColour (juce::Colours::white.withAlpha (0.22f));
+            g.fillRect (area.getX(), lane.getBottom() + laneGap / 2, area.getWidth(), 1);
         }
     }
 

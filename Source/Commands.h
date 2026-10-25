@@ -17,7 +17,7 @@ enum CommandIDs : juce::CommandID
     editUndo = 0x1100, editRedo, editRepeat, editCut, editCopy, editPaste, editPasteToNew,
     editMix, editDelete, editTrim, editSelectAll, editSetSelection, editMarkIn, editMarkOut,
     editGoTo, editSnapEnable, editSnapGrid, editSnapMarkers, editSnapZero, editNormalTool,
-    editPrevTool, editNextTool, editHalveSelection, editDoubleSelection,
+    editPrevTool, editNextTool, editHalveSelection, editDoubleSelection, editOverwrite,
 
     // View
     viewZoomIn = 0x1200, viewZoomOut, viewZoomSelection, viewZoomNormal, viewLevelIn,
