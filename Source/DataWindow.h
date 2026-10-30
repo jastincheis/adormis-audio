@@ -167,6 +167,7 @@ public:
     struct Marks
     {
         std::vector<juce::int64> markers, barStarts;
+        MarkerNames markerNames;
         std::vector<AudioRegion> regions;
         double sampleRate = 44100.0;
         bool empty() const   { return markers.empty() && regions.empty(); }
@@ -248,10 +249,20 @@ public:
     // The region strip asks to rename (false) or offers a menu (true).
     std::function<void (int regionIndex, bool menu)> onRegionAction;
 
+    // A right-click on a marker's flag asks for its menu (rename / delete).
+    std::function<void (int markerIndex)> onMarkerAction;
+
     // Markers are kept sorted; adding one at an existing position does nothing.
+    const std::vector<juce::int64>& getMarkers() const   { return markers; }
+    const MarkerNames& getMarkerNames() const             { return markerNames; }
     void addMarker (juce::int64 position);
     void removeMarker (int index);
     void moveMarker (int index, juce::int64 position);   // dragged in the view (undoable)
+
+    // A marker's name ("" = none, only its number shows). Renaming is undoable
+    // and saved in WAV files as the marker's label.
+    juce::String getMarkerName (int index) const;
+    void renameMarker (int index, const juce::String& name);
 
     bool canUndo() const  { return ! undoStack.empty(); }
     bool canRedo() const  { return ! redoStack.empty(); }
@@ -330,12 +341,13 @@ private:
 
     std::vector<juce::int64> markers;
     std::vector<juce::int64> barStarts;   // sorted; the markers that begin a bar
+    MarkerNames markerNames;              // by marker position; only named markers
     std::vector<AudioRegion> regions;     // sorted by start
 
     // Moves (or, for an empty result, removes) every marker, bar starts included.
     void remapMarkers (const std::function<std::optional<juce::int64> (juce::int64)>& fn);
 
-    // Bar starts whose marker has gone are forgotten.
+    // Bar starts and names whose marker has gone are forgotten.
     void pruneBarStarts();
 
     // Undo keeps whole snapshots of the samples, markers and sample rate
@@ -349,6 +361,7 @@ private:
         int bitDepth = 0, resolutionBits = 0;
         bool floatingPoint = false;
         juce::String name;   // the step it undoes (or redoes)
+        MarkerNames markerNames;
     };
 
 

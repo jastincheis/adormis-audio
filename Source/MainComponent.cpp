@@ -874,6 +874,8 @@ void MainComponent::addDocument (std::unique_ptr<DataWindow> doc, std::optional<
         else      renameRegion (raw, index);
     };
 
+    raw->onMarkerAction = [this, raw] (int index) { markerMenu (raw, index); };
+
     raw->onChanged = [this, raw]
     {
         followSelectionLoop (raw);
@@ -1854,6 +1856,66 @@ void MainComponent::renameRegion (DataWindow* doc, int index)
     formWindow->toFront (true);
 }
 
+void MainComponent::renameMarker (DataWindow* doc, int index)
+{
+    if (doc == nullptr || ! juce::isPositiveAndBelow (index, (int) doc->getMarkers().size()))
+        return;
+
+    // The marker is found again by its position: the list may change while
+    // the box is open.
+    const auto position = doc->getMarkers()[(size_t) index];
+    const juce::Component::SafePointer<DataWindow> safeDoc (doc);
+    auto apply = [safeDoc, position] (const juce::StringArray& v)
+    {
+        if (auto* d = safeDoc.getComponent())
+        {
+            const auto& m = d->getMarkers();
+
+            if (const auto it = std::lower_bound (m.begin(), m.end(), position); it != m.end() && *it == position)
+                d->renameMarker ((int) (it - m.begin()), v[0]);
+        }
+    };
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->formWindow.reset();
+        });
+    };
+
+    // An empty name takes the name away (only the number shows).
+    formWindow = wf::createFormWindow ("Rename Marker", "Marker " + juce::String (index + 1) + " of " + doc->getTitle(),
+                                       { { "Name:", doc->getMarkerName (index), {}, {},
+                                           [] (const juce::String& t) { return t.length() <= 200; } } },
+                                       {}, std::move (apply), std::move (onClose));
+    formWindow->setVisible (true);
+    formWindow->toFront (true);
+}
+
+void MainComponent::markerMenu (DataWindow* doc, int index)
+{
+    juce::PopupMenu menu;
+    menu.addItem (1, "Rename...");
+    menu.addItem (2, "Delete marker");
+
+    const juce::Component::SafePointer<DataWindow> safeDoc (doc);
+    const juce::Component::SafePointer<MainComponent> safeThis (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition().withParentComponent (getTopLevelComponent()),
+                        [safeThis, safeDoc, index] (int result)
+                        {
+                            auto* main = safeThis.getComponent();
+                            auto* d = safeDoc.getComponent();
+
+                            if (main == nullptr || d == nullptr)
+                                return;
+
+                            if (result == 1) main->renameMarker (d, index);
+                            if (result == 2) d->removeMarker (index);
+                        });
+}
+
 void MainComponent::playRegion (DataWindow* doc, int index)
 {
     if (doc == nullptr || ! juce::isPositiveAndBelow (index, (int) doc->getRegions().size()))
@@ -1900,18 +1962,53 @@ void MainComponent::toggleRegionsList()
     }
 
     wf::RegionsCallbacks callbacks;
-    callbacks.select = [this] (int i)
+
+    // A marker row puts the cursor on the marker, a region row selects the region.
+    callbacks.select = [this] (wf::ListEntry e)
     {
-        if (auto* d = activeDocument(); d != nullptr && juce::isPositiveAndBelow (i, (int) d->getRegions().size()))
+        auto* d = activeDocument();
+
+        if (d == nullptr)
+            return;
+
+        auto& view = d->getView();
+
+        if (e.region && juce::isPositiveAndBelow (e.index, (int) d->getRegions().size()))
         {
-            const auto& r = d->getRegions()[(size_t) i];
-            d->getView().setSelection ({ r.start, r.end });
-            d->getView().ensureVisible (r.start);
+            const auto& r = d->getRegions()[(size_t) e.index];
+            view.setSelection ({ r.start, r.end });
+            view.ensureVisible (r.start);
+        }
+        else if (! e.region && juce::isPositiveAndBelow (e.index, (int) d->getMarkers().size()))
+        {
+            const auto at = d->getMarkers()[(size_t) e.index];
+            view.setSelection ({});
+            view.setCursor (at);
+            view.centreOn ((double) at);
         }
     };
-    callbacks.play = [this] (int i)   { playRegion (activeDocument(), i); };
-    callbacks.rename = [this] (int i) { renameRegion (activeDocument(), i); };
-    callbacks.remove = [this] (int i) { if (auto* d = activeDocument()) d->removeRegion (i); };
+    callbacks.play = [this] (wf::ListEntry e)
+    {
+        auto* d = activeDocument();
+
+        if (e.region)
+            playRegion (d, e.index);
+        else if (d != nullptr && juce::isPositiveAndBelow (e.index, (int) d->getMarkers().size()))
+            startPlayback ({ d->getMarkers()[(size_t) e.index], (juce::int64) d->getBuffer().getNumSamples() });
+    };
+    callbacks.rename = [this] (wf::ListEntry e)
+    {
+        if (e.region) renameRegion (activeDocument(), e.index);
+        else          renameMarker (activeDocument(), e.index);
+    };
+    callbacks.remove = [this] (wf::ListEntry e)
+    {
+        if (auto* d = activeDocument())
+        {
+            if (e.region) d->removeRegion (e.index);
+            else          d->removeMarker (e.index);
+        }
+    };
     callbacks.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
     {
         juce::MessageManager::callAsync ([safeThis]
@@ -2032,9 +2129,9 @@ void MainComponent::refreshRegionsList()
         return;
 
     if (auto* doc = activeDocument())
-        regionsWindow->refresh (doc->getTitle(), doc->getRegions(), doc->getSampleRate());
+        regionsWindow->refresh (doc->getTitle(), doc->getMarkers(), doc->getMarkerNames(), doc->getRegions(), doc->getSampleRate());
     else
-        regionsWindow->refresh ({}, {}, 44100.0);
+        regionsWindow->refresh ({}, {}, {}, {}, 44100.0);
 }
 
 namespace
@@ -4610,7 +4707,8 @@ bool MainComponent::perform (const InvocationInfo& info)
             return true;
 
         case wf::editSelectAll:     view.selectAll(); return true;
-        case wf::insertMarker:      doc->addMarker (view.getCursor()); return true;
+        // With a selection the marker goes where it ends.
+        case wf::insertMarker:      doc->addMarker (view.getSelection().isEmpty() ? view.getCursor() : view.getSelection().getEnd()); return true;
 
         case wf::viewZoomIn:        view.zoomIn(); return true;
         case wf::viewZoomOut:       view.zoomOut(); return true;
@@ -4755,6 +4853,7 @@ bool MainComponent::perform (const InvocationInfo& info)
                 end = view.nearestZeroCrossing (end, view.getSelectedChannel());
 
             view.setSelection ({ selection.getStart(), std::max (selection.getStart() + 1, end) }, view.getSelectedChannel());
+            view.setCursor (view.getSelection().getEnd());   // M then marks where it ends
             view.ensureVisible (end);
             return true;
         }
@@ -4777,6 +4876,17 @@ bool MainComponent::perform (const InvocationInfo& info)
                 return true;
             }
 
+            // With a selection the arrow goes to that end of it and picks it;
+            // Shift + arrows then move that end.
+            if (const auto selection = view.getSelection(); ! selection.isEmpty())
+            {
+                const auto edge = direction < 0 ? selection.getStart() : selection.getEnd();
+                view.setCursor (edge);
+                view.pickEdge (direction);
+                view.ensureVisible (edge);
+                return true;
+            }
+
             view.nudgeCursor (direction, false);
             return true;
         }
@@ -4784,20 +4894,23 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::optExtendLeft:     view.nudgeCursor (-1, true);  return true;
         case wf::optExtendRight:    view.nudgeCursor (1, true);   return true;
 
-        // Shift + arrows: the selection moves (same length) by the arrow
-        // step, or only its end picked with W / E; with nothing selected
+        // Shift + arrows: the selection grows / shrinks by the arrow step at
+        // its right end (or the end picked with W / E); with nothing selected
         // they start one, as Extend does.
         case wf::optMoveSelectionLeft: case wf::optMoveSelectionRight:
         {
             const auto direction = info.commandID == wf::optMoveSelectionLeft ? -1 : 1;
             if (view.getSelection().isEmpty())
                 view.nudgeCursor (direction, true);
-            else if (view.getPickedEdge() != 0)
-                view.moveEdge (direction);   // the end picked with W / E
             else
-                view.moveSelection (direction);
+                view.moveEdge (direction);   // the right end, or the one picked
             return true;
         }
+
+        // Alt + Shift + arrows: the whole selection moves (same length).
+        case wf::optSlideSelectionLeft: case wf::optSlideSelectionRight:
+            view.moveSelection (info.commandID == wf::optSlideSelectionLeft ? -1 : 1);
+            return true;
         default: break;
     }
 

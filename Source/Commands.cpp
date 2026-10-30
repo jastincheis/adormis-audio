@@ -82,7 +82,7 @@ std::vector<CommandDef> makeCommands()
         { viewLoudnessMeters, "Loudness Meters",              "View", { key ('6', alt) } },
         { viewUndoHistory,    "Undo/Redo History",            "View", { key ('8', alt) } },
         { viewSpectrum,       "Spectrum Analysis",            "View", { key ('9', alt) } },
-        { viewRegionsList,    "Regions List",                 "View", {} },
+        { viewRegionsList,    "Markers & Regions List",       "View", {} },
         { viewPlaylist,       "Playlist/Cutlist",             "View", {} },
 
         // Insert
@@ -175,8 +175,10 @@ std::vector<CommandDef> makeCommands()
         { optCursorRight,    "Move Cursor Right",             "Transport", { key (KeyPress::rightKey) } },
         { optExtendLeft,     "Extend Selection Left",         "Transport", { key (KeyPress::leftKey, ctrl | shift) } },
         { optExtendRight,    "Extend Selection Right",        "Transport", { key (KeyPress::rightKey, ctrl | shift) } },
-        { optMoveSelectionLeft,  "Move Selection Left",       "Transport", { key (KeyPress::leftKey, shift) } },
-        { optMoveSelectionRight, "Move Selection Right",      "Transport", { key (KeyPress::rightKey, shift) } },
+        { optMoveSelectionLeft,  "Selection End Left",        "Transport", { key (KeyPress::leftKey, shift) } },
+        { optMoveSelectionRight, "Selection End Right",       "Transport", { key (KeyPress::rightKey, shift) } },
+        { optSlideSelectionLeft,  "Move Selection Left",      "Transport", { key (KeyPress::leftKey, alt | shift) } },
+        { optSlideSelectionRight, "Move Selection Right",     "Transport", { key (KeyPress::rightKey, alt | shift) } },
         { optPreferences,    "Preferences...",                "Options", {} },
         { optAudioDevice,    "Audio Device...",               "Options", {} },
         { optKeyboard,       "Customize Keyboard...",         "Options", {} },
@@ -267,7 +269,7 @@ const std::vector<TopMenu>& menuBar()
                                            C (optRecord), C (optRecordComputer), C (optArm), sep(),
                                            C (optLoop), C (optSwitchPlayMode), sep(),
                                            C (optGoStart), C (optGoEnd), C (optGoLeftEdge), C (optGoRightEdge), sep(),
-                                           C (optCursorLeft), C (optCursorRight), C (optMoveSelectionLeft), C (optMoveSelectionRight),
+                                           C (optCursorLeft), C (optCursorRight), C (optMoveSelectionLeft), C (optMoveSelectionRight), C (optSlideSelectionLeft), C (optSlideSelectionRight),
                                            C (optExtendLeft), C (optExtendRight) }),
                        sep(), C (optAudioDevice), C (optKeyboard), C (optPreferences) } },
 
@@ -334,7 +336,7 @@ const std::vector<CommandDef>& allCommands()
         winCascade, winTile, winNext, winPrev,
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,
         optPlay, optPlayAll, optPlayPause, optStop, optGoStart, optGoEnd, optGoLeftEdge, optGoRightEdge, optAudioDevice,
-        optCursorLeft, optCursorRight, optExtendLeft, optExtendRight, optPlayFromCursor, optMoveSelectionLeft, optMoveSelectionRight,
+        optCursorLeft, optCursorRight, optExtendLeft, optExtendRight, optPlayFromCursor, optMoveSelectionLeft, optMoveSelectionRight, optSlideSelectionLeft, optSlideSelectionRight,
         helpShortcuts, helpAbout, helpCheckUpdates, helpUpdatesAtStart
     };
 

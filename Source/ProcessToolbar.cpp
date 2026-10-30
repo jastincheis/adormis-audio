@@ -342,6 +342,29 @@ void iconNew (juce::Graphics& g, juce::Rectangle<float> a)
     strokeIcon (g, grid, a, 1.4f);
 }
 
+// Markers list: a numbered flag on its pole beside the lines of a list.
+void iconMarkerList (juce::Graphics& g, juce::Rectangle<float> a)
+{
+    juce::Path pole;
+    pole.startNewSubPath (5.0f, 4.0f);
+    pole.lineTo (5.0f, 20.0f);
+    strokeIcon (g, pole, a, 1.8f);
+
+    juce::Path flag;
+    flag.addRoundedRectangle (5.0f, 4.0f, 7.0f, 6.0f, 1.2f);
+    fillIcon (g, flag, a);
+
+    juce::Path lines;
+
+    for (auto y : { 7.0f, 12.0f, 17.0f })
+    {
+        lines.startNewSubPath (y < 10.0f ? 14.5f : 9.5f, y);
+        lines.lineTo (20.0f, y);
+    }
+
+    strokeIcon (g, lines, a, 1.8f);
+}
+
 // Group tints.
 const juce::Colour fileTint      (0xff5d7682);
 const juce::Colour transportTint (0xff3f7f5f);
@@ -351,6 +374,7 @@ const juce::Colour levelTint     (0xff4a6fa5);
 const juce::Colour shapeTint     (0xff7a5a8c);
 const juce::Colour timeTint      (0xff2f7f86);
 const juce::Colour bassTint      (0xffc0640f);
+const juce::Colour markerTint    (0xffd0702a);
 } // namespace
 
 //==============================================================================
@@ -477,6 +501,8 @@ ProcessToolbar::ProcessToolbar (juce::ApplicationCommandManager& manager)
     addButton (wf::procFadeOut,    fadeTint,      iconFadeOut);
     addButton (wf::procMute,       fadeTint,      iconMute);
     addButton (wf::insertVolumeEnv, fadeTint,     iconEnvelope);
+    addGap();
+    addButton (wf::viewRegionsList, markerTint,   iconMarkerList);
     addGap();
     addButton (wf::procNormalize,  levelTint,     iconNormalize);
     addButton (wf::procVolume,     levelTint,     iconVolume);

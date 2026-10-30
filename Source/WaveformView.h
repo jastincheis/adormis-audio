@@ -1,5 +1,7 @@
 #pragma once
 
+#include <map>
+
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -9,6 +11,9 @@ struct AudioRegion
     juce::int64 start = 0, end = 0;
     juce::String name;
 };
+
+// Marker names by marker position (a marker without one shows only its number).
+using MarkerNames = std::map<juce::int64, juce::String>;
 
 // The data window: time ruler, one lane per channel, cursor, selection and
 // playhead, drawn over the textured background.
@@ -38,10 +43,13 @@ public:
 
     // Sorted marker positions owned by the document (may be nullptr).
     // `bars` (sorted, may be null) are the markers that begin a bar: drawn in another colour.
-    void setMarkers (const std::vector<juce::int64>* newMarkers, const std::vector<juce::int64>* bars = nullptr)
+    // `names` (may be null) are shown on the flags after the numbers.
+    void setMarkers (const std::vector<juce::int64>* newMarkers, const std::vector<juce::int64>* bars = nullptr,
+                     const MarkerNames* names = nullptr)
     {
         markers = newMarkers;
         barStarts = bars;
+        markerNames = names;
         repaint();
     }
 
@@ -84,7 +92,8 @@ public:
 
     std::function<void()> onCursorOrSelectionChanged;
     std::function<void()> onPlayheadMoved;
-    std::function<void (int markerIndex)> onRemoveMarker;
+    // Right-click on a marker's flag (rename / delete).
+    std::function<void (int markerIndex)> onMarkerMenu;
     // A marker dragged to `position` (sent once, when the mouse is let go).
     std::function<void (int markerIndex, juce::int64 position)> onMoveMarker;
 
@@ -102,8 +111,10 @@ public:
     void moveSelection (int direction);   // by the arrow step, keeping its length
     // W / E pick the selection's left / right end; Shift + arrows then move
     // only that end. Any other change to the selection forgets the pick.
-    void pickEdge (int side)   { pickedEdge = side; pickedFor = selection; }
-    int getPickedEdge() const  { return ! selection.isEmpty() && selection == pickedFor ? pickedEdge : 0; }
+    void pickEdge (int side)   { pickedEdge = side; pickedFor = selection; repaint(); }
+    // The end Shift + arrows move: the one picked last, else the right one
+    // (0 with nothing selected).
+    int getPickedEdge() const  { return selection.isEmpty() ? 0 : selection == pickedFor ? pickedEdge : 1; }
     void moveEdge (int direction);
 
     // Edit > Auto Snap to Zero Crossings (for every window): selection edges
@@ -162,8 +173,8 @@ private:
     int regionAt (juce::Point<int> position) const;
     void paintMarkers (juce::Graphics&, juce::Rectangle<int> rulerArea, juce::Rectangle<int> waveArea);
     void paintDropPreview (juce::Graphics&, juce::Rectangle<int> waveArea);
-    int markerNear (float x) const;  // index of a marker within a few pixels, or -1
-    int markerAt (juce::Point<int> position) const;  // its flag or line under the mouse, or -1
+    int markerAt (juce::Point<int> position) const;  // the marker whose flag is under the mouse, or -1
+    juce::Rectangle<float> markerFlag (int index, float x) const;  // its numbered flag in the ruler
     int selectionEdgeAt (juce::Point<int> position) const;  // 0 = start, 1 = end of the selection under the mouse, or -1
     bool isMarkerSelected (juce::int64 position) const;
     juce::Image makeDragImage() const;
@@ -173,6 +184,8 @@ private:
     const std::vector<juce::int64>* markers = nullptr;
     const std::vector<AudioRegion>* regions = nullptr;
     const std::vector<juce::int64>* barStarts = nullptr;
+    const MarkerNames* markerNames = nullptr;
+    juce::int64 knownLength = 0;       // the length when the view last saw the audio
     juce::String emptyText { "No file open" };
     double sampleRate = 44100.0;
     double samplesPerPixel = 1.0;
@@ -183,6 +196,7 @@ private:
     juce::int64 dragAnchor = 0;
     bool pressedInSelection = false;   // a drag from here moves the selection out
     bool pressedOnMarker = false;      // a click picked a marker; no drag-select
+    bool pressedOnEdge = false;        // a click on an end of the selection picks that end
     int markerDragIndex = -1;          // the marker under the press (it can be dragged)
     juce::int64 markerDragPos = 0;
     bool markerDragged = false;

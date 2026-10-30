@@ -51,7 +51,7 @@ enum CommandIDs : juce::CommandID
     optPlay = 0x1800, optPlayAll, optPlayPause, optStop, optRecord, optArm, optLoop,
     optSwitchPlayMode, optGoStart, optGoEnd, optPreferences, optAudioDevice, optKeyboard,
     optGoLeftEdge, optGoRightEdge, optRecordComputer, optCursorLeft, optCursorRight, optExtendLeft, optExtendRight, optPlayFromCursor,
-    optMoveSelectionLeft, optMoveSelectionRight,
+    optMoveSelectionLeft, optMoveSelectionRight, optSlideSelectionLeft, optSlideSelectionRight,
 
     // Window
     winCascade = 0x1900, winTile, winNext, winPrev, winMaximizeAll,

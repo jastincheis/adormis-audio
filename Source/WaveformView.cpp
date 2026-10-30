@@ -9,6 +9,7 @@ constexpr int rulerHeight     = 22;
 constexpr int scrollBarHeight = 14;
 constexpr int regionLaneHeight = 17;
 constexpr int laneGap         = 14;   // the drag strip between channels (and under a mono one)
+constexpr int minSelectPixels = 4;    // a press must move this far before it selects
 
 const juce::Colour waveSelected    (0xffffffff);
 const juce::Colour selectionShade  = juce::Colours::black.withAlpha (0.38f);
@@ -34,15 +35,26 @@ void WaveformView::setAudio (const juce::AudioBuffer<float>* newBuffer, double n
     cursor = 0;
     selection = {};
     playhead = -1;
+    knownLength = totalSamples();
     zoomToFit();
     notifyChanged();
 }
 
 void WaveformView::audioChanged()
 {
+    // Was the whole file on screen? Then it still is (with what was pasted or
+    // added at the start or the end); else the view keeps its zoom.
+    const auto shownEnd = viewStart + (double) waveArea().getWidth() * samplesPerPixel;
+    const auto wasWhole = viewStart <= 0.5 && shownEnd >= (double) knownLength - samplesPerPixel;
+    knownLength = totalSamples();
+
     cursor = juce::jmin (cursor, totalSamples());
     selection = selection.getIntersectionWith ({ 0, totalSamples() });
-    setZoom (samplesPerPixel, viewStart, (float) waveArea().getX());
+
+    if (wasWhole)
+        zoomToFit();
+    else
+        setZoom (samplesPerPixel, viewStart, (float) waveArea().getX());
 }
 
 juce::String WaveformView::formatTime (double seconds)
@@ -465,10 +477,12 @@ int WaveformView::channelZoneAt (juce::Point<int> position) const
     const auto lastChannel = buffer->getNumChannels() - 1;
     const auto last = laneBounds (lastChannel);
 
-    if (position.y < first.getY() + first.getHeight() / 4)
+    // Above the middle of the top lane = left only, below the middle of the
+    // bottom lane = right only; between the two middles = both channels.
+    if (position.y < first.getCentreY())
         return 0;
 
-    if (position.y >= last.getBottom() - last.getHeight() / 4)
+    if (position.y >= last.getCentreY())
         return lastChannel;
 
     return -1;
@@ -600,40 +614,38 @@ void WaveformView::notifyChanged()
 }
 
 //==============================================================================
-int WaveformView::markerNear (float x) const
+juce::Rectangle<float> WaveformView::markerFlag (int index, float x) const
 {
-    if (markers == nullptr)
-        return -1;
+    // The number, then the name if it has one (long names are cut short).
+    auto width = 16.0f;
 
-    for (int i = 0; i < (int) markers->size(); ++i)
-        if (std::abs (sampleToX ((double) (*markers)[(size_t) i]) - x) <= 4.0f)
-            return i;
+    if (markerNames != nullptr)
+        if (const auto it = markerNames->find ((*markers)[(size_t) index]); it != markerNames->end() && it->second.isNotEmpty())
+        {
+            const juce::Font font (juce::FontOptions (10.5f, juce::Font::bold));
+            const auto text = juce::String (index + 1) + " " + it->second;
+            width = juce::jlimit (16.0f, 160.0f, (float) juce::GlyphArrangement::getStringWidthInt (font, text) + 8.0f);
+        }
 
-    return -1;
+    // Flags hang to the right of the line, or to the left at the far edge.
+    const auto flipped = x + width > (float) waveArea().getRight();
+    return { flipped ? x - width : x, 2.0f, width, 13.0f };
 }
 
 int WaveformView::markerAt (juce::Point<int> position) const
 {
-    if (markers == nullptr || regionLane().contains (position))
+    // Only the numbered flag in the ruler picks a marker; its line through
+    // the waveform is clicked like any other spot.
+    if (markers == nullptr || position.y >= rulerHeight)
         return -1;
 
-    // The numbered flag in the ruler hangs right of its line (left at the far edge).
-    if (position.y < rulerHeight)
-    {
-        const auto wave = waveArea();
+    // The last one drawn is on top.
+    for (int i = (int) markers->size() - 1; i >= 0; --i)
+        if (const auto flag = markerFlag (i, sampleToX ((double) (*markers)[(size_t) i]));
+            (float) position.x >= flag.getX() - 2.0f && (float) position.x <= flag.getRight() + 2.0f)
+            return i;
 
-        for (int i = 0; i < (int) markers->size(); ++i)
-        {
-            const auto x = sampleToX ((double) (*markers)[(size_t) i]);
-            const auto flipped = x + 16.0f > (float) wave.getRight();
-            const auto left = flipped ? x - 16.0f : x;
-
-            if ((float) position.x >= left - 2.0f && (float) position.x <= left + 18.0f)
-                return i;
-        }
-    }
-
-    return markerNear ((float) position.x);
+    return -1;
 }
 
 bool WaveformView::isMarkerSelected (juce::int64 position) const
@@ -659,11 +671,12 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     if (! hasAudio())
         return;
 
-    // Right-click on a marker removes it; anywhere else it opens the window's menu.
+    // Right-click on a marker's flag offers rename / delete; anywhere else it
+    // opens the window's menu.
     if (e.mods.isPopupMenu() && ! regionLane().contains (e.getPosition()))
     {
-        if (const auto index = markerNear ((float) e.x); index >= 0 && onRemoveMarker != nullptr)
-            onRemoveMarker (index);
+        if (const auto index = markerAt (e.getPosition()); index >= 0 && onMarkerMenu != nullptr)
+            onMarkerMenu (index);
         else if (onContextMenu != nullptr)
             onContextMenu();
 
@@ -727,19 +740,29 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
         spanDrag = spanDragDone = true;
         pressedInSelection = false;
         spanAnchor = markerSpanAt (sample);
-        spanLane = laneAt (e.getPosition());
+        spanLane = channelZoneAt (e.getPosition());
         dragAnchor = spanAnchor.getStart();
         cursor = spanAnchor.getStart();
         setSelection (spanAnchor, spanLane);
         return;
     }
 
-    // Pressing on an edge of the selection moves that edge (the other one
-    // stays), on the same channel(s).
-    if (const auto edge = selectionEdgeAt (e.getPosition()); edge >= 0 && ! e.mods.isShiftDown())
+    // Pressing on an edge of the selection picks it for Shift + arrows and
+    // drags it (the other one stays), on the same channel(s); with Shift it
+    // is only picked.
+    if (const auto edge = selectionEdgeAt (e.getPosition()); edge >= 0)
     {
+        pickEdge (edge == 0 ? -1 : 1);
         pressedInSelection = false;
         draggingOut = false;
+
+        if (e.mods.isShiftDown())
+        {
+            pressedOnMarker = true;   // no drag-select
+            return;
+        }
+
+        pressedOnEdge = true;
         dragAnchor = edge == 0 ? selection.getEnd() : selection.getStart();
         dragChannel = selectedChannel;
         return;
@@ -815,6 +838,11 @@ void WaveformView::mouseDrag (const juce::MouseEvent& e)
         return;
     }
 
+    // A press that moved only a few pixels (a trackpad tap, a hand resting
+    // on the mouse) is a click, not a tiny selection.
+    if (selection.isEmpty() && std::abs (e.getDistanceFromDragStartX()) < minSelectPixels)
+        return;
+
     auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
 
     if (snapToZeroCrossings)
@@ -827,6 +855,15 @@ void WaveformView::mouseDrag (const juce::MouseEvent& e)
 void WaveformView::mouseUp (const juce::MouseEvent& e)
 {
     spanDrag = false;
+
+    // The dragged end stays picked (the side it ended on, if it crossed over).
+    if (pressedOnEdge)
+    {
+        pressedOnEdge = false;
+
+        if (! selection.isEmpty())
+            pickEdge (cursor <= selection.getStart() ? -1 : 1);
+    }
 
     // A plain click inside the selection (no drag) just places the cursor.
     if (pressedInSelection && ! draggingOut && hasAudio())
@@ -1071,6 +1108,17 @@ void WaveformView::paint (juce::Graphics& g)
         }
     }
 
+    // The end picked for Shift + arrows: a brighter, thicker line.
+    if (const auto side = getPickedEdge(); side != 0)
+    {
+        const auto x = sampleToX ((double) (side < 0 ? selection.getStart() : selection.getEnd()));
+        const auto band = selectedChannel >= 0 ? laneBounds (selectedChannel) : area;
+        g.setColour (juce::Colours::black.withAlpha (0.5f));
+        g.fillRect (juce::Rectangle<float> (x - 2.0f, (float) band.getY(), 4.0f, (float) band.getHeight()));
+        g.setColour (juce::Colour (0xffffd54a));
+        g.fillRect (juce::Rectangle<float> (x - 1.0f, (float) band.getY(), 2.0f, (float) band.getHeight()));
+    }
+
     // Cursor (only when there is no selection, like Sound Forge).
     if (selection.isEmpty())
     {
@@ -1188,9 +1236,8 @@ void WaveformView::paintMarkers (juce::Graphics& g, juce::Rectangle<int> rulerAr
             g.drawDashedLine ({ x, (float) wave.getY(), x, (float) wave.getBottom() }, dashes, 2, 1.2f);
 
         // Numbered tag hanging from the ruler, like a little flag.
-        // Flags hang to the right of the line, or to the left at the far edge.
-        const auto flipped = x + 16.0f > (float) wave.getRight();
-        const juce::Rectangle<float> tag (flipped ? x - 16.0f : x, (float) rulerArea.getY() + 2.0f, 16.0f, 13.0f);
+        const auto tag = markerFlag (i, x).translated (0.0f, (float) rulerArea.getY());
+        const auto flipped = tag.getX() < x;
         juce::Path flag;
         flag.addRoundedRectangle (tag.getX(), tag.getY(), tag.getWidth(), tag.getHeight(), 3.0f, 3.0f,
                                   flipped, ! flipped, flipped, ! flipped);
@@ -1205,7 +1252,13 @@ void WaveformView::paintMarkers (juce::Graphics& g, juce::Rectangle<int> rulerAr
         }
 
         g.setColour (picked ? colour : juce::Colours::white);
-        g.drawText (juce::String (i + 1), tag, juce::Justification::centred);
+        auto label = juce::String (i + 1);
+
+        if (markerNames != nullptr)
+            if (const auto it = markerNames->find ((*markers)[(size_t) i]); it != markerNames->end() && it->second.isNotEmpty())
+                label << " " << it->second;
+
+        g.drawFittedText (label, tag.toNearestInt().reduced (2, 0), juce::Justification::centred, 1, 1.0f);
 
         // While dragging: where it is now.
         if (dragged)

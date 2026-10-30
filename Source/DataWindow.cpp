@@ -190,6 +190,7 @@ std::unique_ptr<DataWindow> DataWindow::fromSelection (const DataWindow& source,
     const auto marks = source.selectionMarks();
     doc->markers = marks.markers;
     doc->barStarts = marks.barStarts;
+    doc->markerNames = marks.markerNames;
     doc->regions = marks.regions;
 
     doc->modified = true;
@@ -204,9 +205,9 @@ void DataWindow::initialise (const juce::String& newTitle)
     view.setAudio (&buffer, sampleRate);
     view.onCursorOrSelectionChanged = [this] { updateInfo(); if (onChanged) onChanged(); };
     view.onPlayheadMoved = [this] { updateInfo(); };
-    view.onRemoveMarker = [this] (int index) { removeMarker (index); };
+    view.onMarkerMenu = [this] (int index) { if (onMarkerAction) onMarkerAction (index); };
     view.onMoveMarker = [this] (int index, juce::int64 position) { moveMarker (index, position); };
-    view.setMarkers (&markers, &barStarts);
+    view.setMarkers (&markers, &barStarts, &markerNames);
     view.setRegions (&regions);
     view.onRenameRegion = [this] (int index) { if (onRegionAction) onRegionAction (index, false); };
     view.onRegionMenu = [this] (int index) { if (onRegionAction) onRegionAction (index, true); };
@@ -876,6 +877,10 @@ DataWindow::Marks DataWindow::selectionMarks() const
         if (x >= s && x <= e)
             m.barStarts.push_back (x - s);
 
+    for (const auto& [x, name] : markerNames)
+        if (x >= s && x <= e)
+            m.markerNames[x - s] = name;
+
     for (const auto& r : regions)
     {
         const auto a = std::max (r.start, s), b = std::min (r.end, e);
@@ -900,6 +905,10 @@ void DataWindow::addMarks (const Marks& marks, juce::int64 offset)
     for (auto x : marks.barStarts)
         if (const auto p = at (x); ! std::binary_search (barStarts.begin(), barStarts.end(), p))
             barStarts.insert (std::lower_bound (barStarts.begin(), barStarts.end(), p), p);
+
+    // A marker already there keeps its own name.
+    for (const auto& [x, name] : marks.markerNames)
+        markerNames.emplace (at (x), name);
 
     for (const auto& r : marks.regions)
         if (const auto a = at (r.start), b = at (r.end); b > a)
@@ -942,6 +951,10 @@ void DataWindow::mixIn (const juce::AudioBuffer<float>& source, double sourceRat
 
     view.setSelection ({ start, start + length });
     audioChanged();
+
+    // What came in is on screen (its start, when it's longer than the view).
+    view.ensureVisible (start + length);
+    view.ensureVisible (start);
 }
 
 void DataWindow::pasteAudio (const juce::AudioBuffer<float>& source, double sourceRate, const Marks* marks)
@@ -987,6 +1000,10 @@ void DataWindow::pasteAudio (const juce::AudioBuffer<float>& source, double sour
 
     view.setSelection ({ start, start + length });
     audioChanged();
+
+    // What came in is on screen (its start, when it's longer than the view).
+    view.ensureVisible (start + length);
+    view.ensureVisible (start);
 }
 
 void DataWindow::overwriteAudio (const juce::AudioBuffer<float>& source, double sourceRate, const Marks*)
@@ -1285,6 +1302,9 @@ void DataWindow::addMarker (juce::int64 position)
     markers.insert (it, position);
     view.clearMarkerSelection();
     view.repaint();
+
+    if (onChanged)
+        onChanged();
 }
 
 void DataWindow::moveMarker (int index, juce::int64 position)
@@ -1308,6 +1328,15 @@ void DataWindow::moveMarker (int index, juce::int64 position)
         barStarts.insert (std::lower_bound (barStarts.begin(), barStarts.end(), position), position);
     }
 
+    // Its name goes along (dropped onto a named marker without one of its
+    // own, that one's name stays).
+    if (const auto name = markerNames.find (from); name != markerNames.end())
+    {
+        auto text = name->second;
+        markerNames.erase (name);
+        markerNames[position] = std::move (text);
+    }
+
     // Dropped onto another marker: the two become one.
     if (! std::binary_search (markers.begin(), markers.end(), position))
         markers.insert (std::lower_bound (markers.begin(), markers.end(), position), position);
@@ -1324,7 +1353,37 @@ void DataWindow::removeMarker (int index)
         pruneBarStarts();
         view.clearMarkerSelection();
         view.repaint();
+
+        if (onChanged)
+            onChanged();
     }
+}
+
+juce::String DataWindow::getMarkerName (int index) const
+{
+    if (! juce::isPositiveAndBelow (index, (int) markers.size()))
+        return {};
+
+    const auto it = markerNames.find (markers[(size_t) index]);
+    return it != markerNames.end() ? it->second : juce::String();
+}
+
+void DataWindow::renameMarker (int index, const juce::String& name)
+{
+    const auto trimmed = name.trim();
+
+    if (! juce::isPositiveAndBelow (index, (int) markers.size()) || getMarkerName (index) == trimmed)
+        return;
+
+    pushUndo ("Rename Marker");
+
+    if (trimmed.isEmpty())
+        markerNames.erase (markers[(size_t) index]);
+    else
+        markerNames[markers[(size_t) index]] = trimmed;
+
+    regionsChanged();   // marks the file changed (names are saved in WAV)
+    view.repaint();
 }
 
 void DataWindow::remapMarkers (const std::function<std::optional<juce::int64> (juce::int64)>& fn)
@@ -1343,6 +1402,14 @@ void DataWindow::remapMarkers (const std::function<std::optional<juce::int64> (j
 
     remap (markers);
     remap (barStarts);
+
+    MarkerNames movedNames;
+
+    for (const auto& [m, name] : markerNames)
+        if (const auto to = fn (m))
+            movedNames.emplace (*to, name);
+
+    markerNames = std::move (movedNames);
 
     // A region's edge in removed audio moves to the nearest audio kept inside
     // it (the removed part is one stretch, so a binary search finds it).
@@ -1418,7 +1485,10 @@ std::unordered_map<juce::String, juce::String> DataWindow::cueMetadata (double r
     };
 
     for (int i = 0; i < (int) markers.size(); ++i)
-        addCue (i + 1, markers[(size_t) i], "Marker " + juce::String (i + 1));
+    {
+        const auto name = getMarkerName (i);
+        addCue (i + 1, markers[(size_t) i], name.isNotEmpty() ? name : "Marker " + juce::String (i + 1));
+    }
 
     for (int i = 0; i < (int) regions.size(); ++i)
     {
@@ -1481,7 +1551,16 @@ void DataWindow::readCues (const juce::StringPairArray& meta)
 
     for (const auto& [id, position] : offsets)
         if (regionIds.count (id) == 0 && position >= 0 && position <= total)
+        {
             markers.push_back (position);
+
+            // "Marker 3" is what unnamed markers are saved as: no name.
+            const auto label = labels.count (id) != 0 ? labels[id].trim() : juce::String();
+            const auto plain = label.startsWith ("Marker ") && label.substring (7).containsOnly ("0123456789");
+
+            if (label.isNotEmpty() && ! plain)
+                markerNames.emplace (position, label);
+        }
 
     std::sort (markers.begin(), markers.end());
     markers.erase (std::unique (markers.begin(), markers.end()), markers.end());
@@ -1566,13 +1645,16 @@ void DataWindow::pruneBarStarts()
             kept.push_back (b);
 
     barStarts = std::move (kept);
+
+    for (auto it = markerNames.begin(); it != markerNames.end();)
+        it = std::binary_search (markers.begin(), markers.end(), it->first) ? std::next (it) : markerNames.erase (it);
 }
 
 void DataWindow::pushUndo (const juce::String& fallbackName)
 {
     redoStack.clear();
     undoStack.push_back ({ buffer, markers, barStarts, regions, sampleRate, bitDepth, resolutionBits, floatingPoint,
-                           nextUndoName.isNotEmpty() ? nextUndoName : fallbackName });
+                           nextUndoName.isNotEmpty() ? nextUndoName : fallbackName, markerNames });
     nextUndoName.clear();
 
     size_t total = 0;
@@ -1589,11 +1671,12 @@ void DataWindow::pushUndo (const juce::String& fallbackName)
 void DataWindow::restore (Snapshot& from, std::vector<Snapshot>& saveTo)
 {
     saveTo.push_back ({ std::move (buffer), std::move (markers), std::move (barStarts), std::move (regions), sampleRate,
-                        bitDepth, resolutionBits, floatingPoint, from.name });
+                        bitDepth, resolutionBits, floatingPoint, from.name, std::move (markerNames) });
     const auto channelsBefore = saveTo.back().audio.getNumChannels();
     buffer = std::move (from.audio);
     markers = std::move (from.markers);
     barStarts = std::move (from.barStarts);
+    markerNames = std::move (from.markerNames);
     regions = std::move (from.regions);
     bitDepth = from.bitDepth;
     resolutionBits = from.resolutionBits;
@@ -1786,6 +1869,7 @@ struct DataWindow::Page
     juce::String formatName;
     bool modified = false;
     std::vector<juce::int64> markers, barStarts;
+    MarkerNames markerNames;
     std::vector<AudioRegion> regions;
     std::vector<Snapshot> undoStack, redoStack;
     juce::String nextUndoName;
@@ -1815,6 +1899,7 @@ void DataWindow::swapWith (Page& p)
     std::swap (modified, p.modified);
     std::swap (markers, p.markers);
     std::swap (barStarts, p.barStarts);
+    std::swap (markerNames, p.markerNames);
     std::swap (regions, p.regions);
     std::swap (undoStack, p.undoStack);
     std::swap (redoStack, p.redoStack);
@@ -1892,7 +1977,7 @@ void DataWindow::showPage (int index)
     ++editCount;   // measurements cached for the other page don't apply
 
     view.setAudio (&buffer, sampleRate);
-    view.setMarkers (&markers, &barStarts);
+    view.setMarkers (&markers, &barStarts, &markerNames);
     view.setRegions (&regions);
     view.clearMarkerSelection();
     view.audioChanged();

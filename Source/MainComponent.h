@@ -106,6 +106,8 @@ private:
     void renameRegion (DataWindow* doc, int index);
     void regionMenu (DataWindow* doc, int index);
     void playRegion (DataWindow* doc, int index);
+    void renameMarker (DataWindow* doc, int index);
+    void markerMenu (DataWindow* doc, int index);
     void toggleRegionsList();
     void refreshRegionsList();
     void showAutoRegion();
