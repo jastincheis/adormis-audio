@@ -31,6 +31,8 @@ class MainComponent final : public juce::Component,
                             public juce::ApplicationCommandTarget,
                             public juce::MenuBarModel,
                             public juce::DragAndDropContainer,
+                            public juce::FileDragAndDropTarget,
+                            public juce::TextDragAndDropTarget,
                             private juce::Timer
 {
 public:
@@ -45,6 +47,23 @@ public:
     // Opens `doc` in a new workspace window; `position` is its top-left corner
     // in workspace coordinates (or cascaded when not given).
     void addDocument (std::unique_ptr<DataWindow> doc, std::optional<juce::Point<int>> position = {});
+
+    // A selection dragged out of the program (into a DAW, a file manager, a
+    // chat...) arrives there as a WAV written to Music/Adormis Audio Dragged.
+    // Audio files dropped anywhere in the window (toolbar, meters, menu bar)
+    // open like those dropped on the workspace.
+    bool isInterestedInFileDrag (const juce::StringArray& files) override;
+    void fileDragEnter (const juce::StringArray& files, int x, int y) override;
+    void fileDragExit (const juce::StringArray& files) override;
+    void filesDropped (const juce::StringArray& files, int x, int y) override;
+
+    // Some systems (Hyprland with XWayland) hand a dragged file over as text:
+    // file:// links or plain paths, one per line.
+    bool isInterestedInTextDrag (const juce::String& text) override;
+    void textDropped (const juce::String& text, int x, int y) override;
+
+    bool shouldDropFilesWhenDraggedExternally (const juce::DragAndDropTarget::SourceDetails& details,
+                                               juce::StringArray& files, bool& canMoveFiles) override;
 
     // ApplicationCommandTarget
     juce::ApplicationCommandTarget* getNextCommandTarget() override  { return nullptr; }
@@ -374,7 +393,16 @@ private:
     TempoKey currentTempoKey() const;
     std::optional<double> cachedTempo (const TempoKey&) const;
     juce::ThreadPool tempoPool { juce::ThreadPoolOptions{}.withNumberOfThreads (1).withThreadName ("Tempo") };
-    wf::StretchRequest lastStretch;   // the new tempo / pitch choices carry over
+    wf::StretchRequest lastStretch;   // the new tempo / pitch choices carry over (also between starts)
+
+    // Preview of the Time Stretch and Volume windows: the audio is prepared on
+    // this thread, then played as a tool preview.
+    juce::ThreadPool previewPool { juce::ThreadPoolOptions{}.withNumberOfThreads (1).withThreadName ("Preview") };
+    std::shared_ptr<std::atomic<bool>> previewCancel;   // the render under way; set = forget it
+    bool previewPreparing = false;
+    std::shared_ptr<std::atomic<float>> volumePreviewGain;   // live while the Volume preview plays
+    int toolPreviewState() const;                             // 0 off, 1 preparing, 2 playing
+    void stopDialogPreview();
     wf::TemplateSettings lastTemplate;   // File > New starts from the last settings used
     float lastVolumeDecibels = 0.0f;   // the Volume window starts from the last value used
     std::unique_ptr<wf::MixPreviewSource> mixPreview;

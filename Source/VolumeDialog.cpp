@@ -1,4 +1,5 @@
 #include "VolumeDialog.h"
+#include "SpaceKey.h"
 
 namespace wf
 {
@@ -36,12 +37,15 @@ juce::String formatDecibels (float value)
     return value > 0.0f ? "+" + text : text;
 }
 
-class VolumePanel final : public juce::Component
+class VolumePanel final : public juce::Component,
+                          public SpaceTarget,
+                          private juce::Timer
 {
 public:
     VolumePanel (const juce::String& target, float initial, std::function<void (float)> onApplyIn,
-                 std::function<void()> onMuteIn, std::function<void()> onCloseIn)
-        : onApply (std::move (onApplyIn)), onMute (std::move (onMuteIn)), onClose (std::move (onCloseIn))
+                 std::function<void()> onMuteIn, std::function<void()> onCloseIn, VolumePreview previewIn)
+        : onApply (std::move (onApplyIn)), onMute (std::move (onMuteIn)), onClose (std::move (onCloseIn)),
+          preview (std::move (previewIn))
     {
         for (auto* l : { &info, &label, &unit, &hint })
         {
@@ -74,6 +78,13 @@ public:
                 onMute();
         };
         addAndMakeVisible (muteButton);
+
+        previewButton.setTooltip ("Plays it with this volume; type another value to hear it change (Space)");
+        previewButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2f6fbf));
+        previewButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+        previewButton.onClick = [this] { togglePreview(); };
+        previewButton.setVisible (preview.play != nullptr);
+        addChildComponent (previewButton);
         okButton.addShortcut (juce::KeyPress (juce::KeyPress::returnKey));
         cancelButton.addShortcut (juce::KeyPress (juce::KeyPress::escapeKey));
         addAndMakeVisible (okButton);
@@ -81,6 +92,7 @@ public:
 
         setSize (420, 170);
         validate();
+        startTimer (100);
     }
 
     void resized() override
@@ -101,6 +113,8 @@ public:
         buttons.removeFromRight (8);
         okButton.setBounds (buttons.removeFromRight (90));
         muteButton.setBounds (buttons.removeFromLeft (90));
+        buttons.removeFromLeft (8);
+        previewButton.setBounds (buttons.removeFromLeft (90));
     }
 
     void focusField()
@@ -111,14 +125,49 @@ public:
 
     void close()
     {
+        stopTimer();
+        stopPreview();
+
         if (onClose != nullptr)
             onClose();
     }
 
+    bool spacePressed() override   { togglePreview(); return true; }
+
 private:
+    bool previewing() const   { return preview.state != nullptr && preview.state() != 0; }
+
+    void togglePreview()
+    {
+        if (previewing())
+        {
+            stopPreview();
+            return;
+        }
+
+        if (const auto value = parseDecibels (field.getText()); value.has_value() && preview.play != nullptr)
+            preview.play (*value);
+    }
+
+    void stopPreview()
+    {
+        if (preview.stop != nullptr)
+            preview.stop();
+    }
+
+    void timerCallback() override
+    {
+        previewButton.setButtonText (previewing() ? "Stop" : "Preview");
+    }
+
     void validate()
     {
         const auto ok = parseDecibels (field.getText()).has_value();
+
+        // Heard at once while the preview plays.
+        if (const auto value = parseDecibels (field.getText()); value.has_value() && previewing() && preview.play != nullptr)
+            preview.play (*value);
+
         okButton.setEnabled (ok);
         field.setColour (juce::TextEditor::outlineColourId, ok ? juce::Colour (0xff808080) : juce::Colours::red);
         field.repaint();
@@ -139,22 +188,24 @@ private:
 
     std::function<void (float)> onApply;
     std::function<void()> onMute, onClose;
+    VolumePreview preview;
 
     juce::Label info, label { {}, "Volume:" }, unit { {}, "dB" }, hint;
     juce::TextEditor field;
-    juce::TextButton okButton { "OK" }, cancelButton { "Cancel" }, muteButton { "Mute" };
+    juce::TextButton okButton { "OK" }, cancelButton { "Cancel" }, muteButton { "Mute" }, previewButton { "Preview" };
 };
 
 class VolumeWindow final : public juce::DocumentWindow
 {
 public:
     VolumeWindow (const juce::String& target, float initial, std::function<void (float)> onApply,
-                  std::function<void()> onMute, std::function<void()> onClose)
+                  std::function<void()> onMute, std::function<void()> onClose, VolumePreview preview)
         : juce::DocumentWindow ("Volume", juce::Colour (0xffd4d0c8), juce::DocumentWindow::closeButton)
     {
         // Own title bar so it can be moved on window managers without decorations.
         setUsingNativeTitleBar (false);
-        auto* panel = new VolumePanel (target, initial, std::move (onApply), std::move (onMute), std::move (onClose));
+        auto* panel = new VolumePanel (target, initial, std::move (onApply), std::move (onMute), std::move (onClose),
+                                       std::move (preview));
         setContentOwned (panel, true);
         setResizable (false, false);
         setAlwaysOnTop (true);
@@ -181,8 +232,10 @@ public:
 std::unique_ptr<juce::DocumentWindow> createVolumeWindow (const juce::String& target, float initialDecibels,
                                                           std::function<void (float)> onApply,
                                                           std::function<void()> onMute,
-                                                          std::function<void()> onClose)
+                                                          std::function<void()> onClose,
+                                                          VolumePreview preview)
 {
-    return std::make_unique<VolumeWindow> (target, initialDecibels, std::move (onApply), std::move (onMute), std::move (onClose));
+    return std::make_unique<VolumeWindow> (target, initialDecibels, std::move (onApply), std::move (onMute), std::move (onClose),
+                                           std::move (preview));
 }
 } // namespace wf

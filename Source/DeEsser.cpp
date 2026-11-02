@@ -1,4 +1,5 @@
 #include "DeEsser.h"
+#include "Settings.h"
 #include "DarkTheme.h"
 #include "Sibilance.h"
 #include "SpaceKey.h"
@@ -1142,13 +1143,34 @@ public:
         setWantsKeyboardFocus (true);
         setSize (1100, 706);
 
+        // Last time's sensitivity, depth and listening span.
+        if (const auto saved = settings::get ("deesser.last"); saved.isObject())
+        {
+            sensitivity.setValue ((double) saved.getProperty ("sensitivity", sensitivity.getValue()), juce::dontSendNotification);
+            depth.setValue ((double) saved.getProperty ("depth", depth.getValue()), juce::dontSendNotification);
+            const auto context = juce::jlimit (0, contextButtons.size() - 1, (int) saved.getProperty ("context", 0));
+            contextButtons[context]->setToggleState (true, juce::dontSendNotification);
+            model.contextMode = context;
+        }
+
+        model.sensitivity = sensitivity.getValue() / 100.0;
+        model.defaultGain = depth.getValue();
         model.detect();
         timeline.computePeaks();
         status.setText (juce::String ((int) model.items.size()) + " sibilants found.", juce::dontSendNotification);
         startTimerHz (30);
     }
 
-    ~DeEsserPanel() override   { model.stop(); }
+    ~DeEsserPanel() override
+    {
+        model.stop();
+
+        auto* saved = new juce::DynamicObject();
+        saved->setProperty ("sensitivity", sensitivity.getValue());
+        saved->setProperty ("depth", depth.getValue());
+        saved->setProperty ("context", model.contextMode);
+        settings::set ("deesser.last", juce::var (saved));
+    }
 
     void close()
     {

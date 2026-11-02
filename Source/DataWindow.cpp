@@ -1,4 +1,5 @@
 #include "DataWindow.h"
+#include "TimeStretch.h"
 #include <map>
 #include <set>
 #include "Mp3Encoder.h"
@@ -131,6 +132,11 @@ size_t bytesOf (const Snapshot& s)
     return bytesOf (s.audio);
 }
 } // namespace
+
+juce::AudioBuffer<float> wf::resampleAudio (const juce::AudioBuffer<float>& audio, double fromRate, double toRate)
+{
+    return resampled (audio, fromRate, toRate);
+}
 
 std::unique_ptr<DataWindow> DataWindow::load (const juce::File& file, juce::AudioFormatManager& formats, juce::String& error)
 {

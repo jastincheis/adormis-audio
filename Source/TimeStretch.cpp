@@ -10,6 +10,37 @@ std::optional<juce::AudioBuffer<float>> stretchAudio (const juce::AudioBuffer<fl
     using RB = RubberBand::RubberBandStretcher;
 
     range = range.getIntersectionWith ({ 0, audio.getNumSamples() });
+
+    // Like tape: the audio is simply played at another speed (read as if it
+    // had been recorded at a higher or lower rate), so pitch and length change together.
+    if (settings.tape)
+    {
+        if (range.isEmpty() || audio.getNumChannels() < 1)
+            return {};
+
+        if (progress != nullptr && ! progress (0.0f))
+            return {};
+
+        juce::AudioBuffer<float> part (audio.getNumChannels(), range.getLength());
+
+        for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+            part.copyFrom (ch, 0, audio, ch, range.getStart(), range.getLength());
+
+        auto out = resampleAudio (part, sampleRate * std::pow (2.0, settings.semitones / 12.0), sampleRate);
+        const auto wanted = (int) std::llround ((double) range.getLength() * settings.lengthRatio());
+
+        if (wanted <= 0)
+            return {};
+
+        if (out.getNumSamples() != wanted)
+            out.setSize (out.getNumChannels(), wanted, true, true);
+
+        if (progress != nullptr)
+            progress (1.0f);
+
+        return out;
+    }
+
     const auto channels = audio.getNumChannels();
     const auto inputLength = range.getLength();
     const auto outputLength = (int) std::llround ((double) inputLength * settings.timeRatio);

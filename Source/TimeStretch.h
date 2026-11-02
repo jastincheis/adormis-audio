@@ -11,6 +11,10 @@ struct StretchSettings
     double timeRatio = 1.0;     // output length / input length: old BPM / new BPM
     double semitones = 0.0;     // pitch change; 0 keeps the pitch
     bool preserveFormants = false;
+    bool tape = false;          // like a tape played faster / slower: pitch and length change together
+
+    // Output length / input length.
+    double lengthRatio() const  { return tape ? std::pow (2.0, -semitones / 12.0) : timeRatio; }
 
     bool changesSomething() const  { return std::abs (timeRatio - 1.0) > 1.0e-9 || std::abs (semitones) > 1.0e-9; }
 };
@@ -18,8 +22,11 @@ struct StretchSettings
 constexpr double minStretchRatio = 0.25, maxStretchRatio = 4.0;
 constexpr double maxPitchSemitones = 24.0;
 
+// Resamples every channel from `fromRate` to `toRate` (libsamplerate's best sinc).
+juce::AudioBuffer<float> resampleAudio (const juce::AudioBuffer<float>& audio, double fromRate, double toRate);
+
 // `progress` gets 0..1 and returns false to cancel (then the result is empty).
-// The result has round(length * timeRatio) samples and the same channels.
+// The result has round(length * lengthRatio()) samples and the same channels.
 std::optional<juce::AudioBuffer<float>> stretchAudio (const juce::AudioBuffer<float>& audio, juce::Range<int> range,
                                                       double sampleRate, const StretchSettings& settings,
                                                       const std::function<bool (float)>& progress);

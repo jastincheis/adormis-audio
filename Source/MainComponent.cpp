@@ -586,6 +586,8 @@ MainComponent::MainComponent()
 
     if (const auto v = wf::settings::get ("volume.db"); ! v.isVoid())
         lastVolumeDecibels = (float) (double) v;
+
+    lastStretch = wf::stretchRequestFromVar (wf::settings::get ("stretch.last"));
     toolbar->onTempoClicked = [this] { showTempoMenu(); };
     wf::setDynamicSubmenus ([this] (const juce::String& title)
     {
@@ -691,6 +693,8 @@ MainComponent::~MainComponent()
     wf::settings::flush();
     tempoTimer.stopTimer();
     tempoPool.removeAllJobs (true, 10000);
+    stopDialogPreview();
+    previewPool.removeAllJobs (true, 10000);
     commandManager.getKeyMappings()->removeChangeListener (&keySaver);
     keyboardWindow.reset();
     mixWindow.reset();
@@ -832,6 +836,105 @@ bool MainComponent::loadFile (const juce::File& file, std::optional<juce::Point<
 
     addDocument (std::move (doc), position);
     addRecentFile (file);
+
+    // File > Open starts next time in the folder this one came from.
+    auto* folder = new juce::DynamicObject();
+    folder->setProperty ("path", file.getParentDirectory().getFullPathName());
+    wf::settings::set ("open.lastFolder", juce::var (folder));
+    return true;
+}
+
+bool MainComponent::isInterestedInFileDrag (const juce::StringArray& files)
+{
+    return workspace->isInterestedInFileDrag (files);
+}
+
+namespace
+{
+juce::StringArray filesInText (const juce::String& text)
+{
+    juce::StringArray files;
+
+    for (auto line : juce::StringArray::fromLines (text))
+    {
+        line = line.trim();
+
+        if (line.startsWithIgnoreCase ("file://"))
+            line = juce::URL::removeEscapeChars (line.substring (7).fromFirstOccurrenceOf ("/", true, false));
+
+        if (juce::File::isAbsolutePath (line) && juce::File (line).existsAsFile())
+            files.add (line);
+    }
+
+    return files;
+}
+} // namespace
+
+bool MainComponent::isInterestedInTextDrag (const juce::String& text)
+{
+    const auto files = filesInText (text);
+    return ! files.isEmpty() && workspace->isInterestedInFileDrag (files);
+}
+
+void MainComponent::textDropped (const juce::String& text, int x, int y)
+{
+    filesDropped (filesInText (text), x, y);
+}
+
+void MainComponent::fileDragEnter (const juce::StringArray& files, int, int)  { workspace->fileDragEnter (files, 0, 0); }
+void MainComponent::fileDragExit (const juce::StringArray& files)             { workspace->fileDragExit (files); }
+
+void MainComponent::filesDropped (const juce::StringArray& files, int x, int y)
+{
+    // Outside the workspace: they open in its top-left corner.
+    auto at = workspace->getLocalPoint (this, juce::Point<int> (x, y));
+    at = { juce::jlimit (0, juce::jmax (0, workspace->getWidth() - 200), at.x),
+           juce::jlimit (0, juce::jmax (0, workspace->getHeight() - 150), at.y) };
+    workspace->filesDropped (files, at.x, at.y);
+}
+
+bool MainComponent::shouldDropFilesWhenDraggedExternally (const juce::DragAndDropTarget::SourceDetails& details,
+                                                          juce::StringArray& files, bool& canMoveFiles)
+{
+    canMoveFiles = false;
+
+    if (details.description != juce::var (WaveformView::selectionDragId) || details.sourceComponent == nullptr)
+        return false;
+
+    auto* source = details.sourceComponent->findParentComponentOfClass<DataWindow>();
+
+    if (source == nullptr)
+        return false;
+
+    auto part = DataWindow::fromSelection (*source, source->getTitle());
+
+    if (part == nullptr)
+        return false;
+
+    // Kept (not a temporary file): a DAW may go on reading it from there.
+    const auto folder = juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Adormis Audio Dragged");
+
+    if (! folder.createDirectory())
+        return false;
+
+    const auto whole = source->getView().getSelection().getLength() >= source->getBuffer().getNumSamples()
+                       && source->getView().getSelectedChannel() < 0;
+    auto name = juce::File::createLegalFileName (juce::File (source->getTitle()).getFileNameWithoutExtension().trim());
+
+    if (name.isEmpty())
+        name = "Audio";
+
+    const auto destination = folder.getNonexistentChildFile (whole ? name : name + " (part)", ".wav", false);
+
+    juce::String error;
+
+    if (! part->saveTo (destination, formatManager, error))
+    {
+        wf::startup::log ("Drag out: " + error);
+        return false;
+    }
+
+    files.add (destination.getFullPathName());
     return true;
 }
 
@@ -1127,10 +1230,16 @@ void MainComponent::showTempoMenu()
 
 void MainComponent::openFileDialog()
 {
+    // The folder the last file was opened from (by Open, Open Recent or a
+    // drop); before any, the active file's folder, else Music.
     auto start = juce::File::getSpecialLocation (juce::File::userMusicDirectory);
 
     if (auto* doc = activeDocument(); doc != nullptr && doc->getFile().existsAsFile())
         start = doc->getFile().getParentDirectory();
+
+    if (const auto last = wf::settings::get ("open.lastFolder").getProperty ("path", {}).toString();
+        last.isNotEmpty() && juce::File::isAbsolutePath (last) && juce::File (last).isDirectory())
+        start = juce::File (last);
 
     // The Open window plays the picked file (read ahead on a thread, so a
     // long MP3 doesn't stutter).
@@ -1377,6 +1486,68 @@ void MainComponent::showNewFileDialog()
     templateWindow->toFront (true);
 }
 
+namespace
+{
+// Plays a buffer it owns once (a mono one in every speaker), optionally with
+// a live gain on one channel or on all of them (Volume preview).
+class BufferPreviewSource final : public juce::PositionableAudioSource
+{
+public:
+    BufferPreviewSource (juce::AudioBuffer<float> audioIn, std::shared_ptr<std::atomic<float>> gainIn, int channelIn)
+        : audio (std::move (audioIn)), gain (std::move (gainIn)), channel (channelIn) {}
+
+    void prepareToPlay (int, double) override {}
+    void releaseResources() override {}
+
+    void getNextAudioBlock (const juce::AudioSourceChannelInfo& info) override
+    {
+        info.clearActiveBufferRegion();
+        const auto n = (int) juce::jlimit ((juce::int64) 0, (juce::int64) info.numSamples, getTotalLength() - position);
+        const auto g = gain != nullptr ? gain->load() : 1.0f;
+
+        for (int ch = 0; ch < info.buffer->getNumChannels() && n > 0; ++ch)
+        {
+            const auto from = juce::jmin (ch, audio.getNumChannels() - 1);
+            const auto chGain = channel < 0 || channel == from ? g : 1.0f;
+            info.buffer->copyFrom (ch, info.startSample, audio, from, (int) position, n);
+            info.buffer->applyGain (ch, info.startSample, n, chGain);
+        }
+
+        position += info.numSamples;
+    }
+
+    void setNextReadPosition (juce::int64 p) override  { position = p; }
+    juce::int64 getNextReadPosition() const override   { return position; }
+    juce::int64 getTotalLength() const override        { return audio.getNumSamples(); }
+    bool isLooping() const override                    { return false; }
+
+private:
+    juce::AudioBuffer<float> audio;
+    std::shared_ptr<std::atomic<float>> gain;
+    int channel;
+    juce::int64 position = 0;
+};
+} // namespace
+
+int MainComponent::toolPreviewState() const
+{
+    if (previewPreparing)
+        return 1;
+
+    return toolPreview != nullptr && transport.isPlaying() ? 2 : 0;
+}
+
+void MainComponent::stopDialogPreview()
+{
+    if (previewCancel != nullptr)
+        previewCancel->store (true);
+
+    previewCancel.reset();
+    previewPreparing = false;
+    volumePreviewGain.reset();
+    stopToolPreview();
+}
+
 void MainComponent::showVolumeDialog()
 {
     auto* doc = activeDocument();
@@ -1386,6 +1557,7 @@ void MainComponent::showVolumeDialog()
 
     auto onApply = [this, safeDoc = juce::Component::SafePointer<DataWindow> (doc)] (float decibels)
     {
+        stopDialogPreview();
         lastVolumeDecibels = decibels;
         wf::settings::set ("volume.db", decibels);
 
@@ -1402,7 +1574,10 @@ void MainComponent::showVolumeDialog()
         juce::MessageManager::callAsync ([safeThis]
         {
             if (auto* main = safeThis.getComponent())
+            {
+                main->stopDialogPreview();
                 main->volumeWindow.reset();
+            }
         });
     };
 
@@ -1420,8 +1595,50 @@ void MainComponent::showVolumeDialog()
         }
     };
 
+    // Preview: what it applies to, played from the cursor (or the start of
+    // the selection) with the typed volume, changed live as it's typed.
+    wf::VolumePreview preview;
+    preview.play = [this, safeDoc = juce::Component::SafePointer<DataWindow> (doc)] (float decibels)
+    {
+        const auto gain = juce::Decibels::decibelsToGain (decibels, wf::minVolumeDecibels - 1.0f);
+
+        if (volumePreviewGain != nullptr && toolPreviewState() == 2)
+        {
+            volumePreviewGain->store (gain);
+            return;
+        }
+
+        stopDialogPreview();
+        auto* d = safeDoc.getComponent();
+
+        if (d == nullptr)
+            return;
+
+        const auto range = d->processRange();
+        const auto cursor = d->getView().getCursor();
+        const auto start = cursor > range.getStart() && cursor < range.getEnd() ? (int) cursor : range.getStart();
+        const auto length = range.getEnd() - start;
+
+        if (length <= 0)
+            return;
+
+        juce::AudioBuffer<float> audio (d->getBuffer().getNumChannels(), length);
+
+        for (int ch = 0; ch < audio.getNumChannels(); ++ch)
+            audio.copyFrom (ch, 0, d->getBuffer(), ch, start, length);
+
+        const auto channel = d->getView().getSelectedChannel();   // as processChannels does
+        const auto channels = audio.getNumChannels();
+        volumePreviewGain = std::make_shared<std::atomic<float>> (gain);
+        startToolPreview (std::make_unique<BufferPreviewSource> (std::move (audio), volumePreviewGain, channel),
+                          d->getSampleRate(), channels);
+    };
+    preview.stop = [this] { stopDialogPreview(); };
+    preview.state = [this] { return toolPreviewState(); };
+
     volumeWindow = wf::createVolumeWindow (doc->getTitle() + " (" + doc->describeProcessTarget() + ")",
-                                           lastVolumeDecibels, std::move (onApply), std::move (onMute), std::move (onClose));
+                                           lastVolumeDecibels, std::move (onApply), std::move (onMute), std::move (onClose),
+                                           std::move (preview));
     volumeWindow->setVisible (true);
     volumeWindow->toFront (true);
 }
@@ -2750,11 +2967,69 @@ void MainComponent::showStretchDialog()
 
     callbacks.onApply = [this, safeDoc, range] (wf::StretchRequest request)
     {
+        stopDialogPreview();
         lastStretch = request;
+        wf::settings::set ("stretch.last", wf::stretchRequestToVar (request));
 
         if (auto* target = safeDoc.getComponent())
             runStretch (target, range, request.settings());
     };
+
+    // Preview: the first 12 seconds from the cursor (or from the start of the
+    // selection), rendered on a thread and then played.
+    callbacks.onPreview = [this, safeDoc, range] (wf::StretchRequest request)
+    {
+        stopDialogPreview();
+        auto* d = safeDoc.getComponent();
+
+        if (d == nullptr)
+            return;
+
+        const auto rate = d->getSampleRate();
+        const auto cursor = d->getView().getCursor();
+        const auto start = cursor > range.getStart() && cursor < range.getEnd() - (juce::int64) (rate * 0.5)
+                               ? (int) cursor : range.getStart();
+        const auto length = juce::jmin (range.getEnd() - start, (int) (rate * 12.0));
+
+        if (length <= 0)
+            return;
+
+        auto audio = std::make_shared<juce::AudioBuffer<float>> (d->getBuffer().getNumChannels(), length);
+
+        for (int ch = 0; ch < audio->getNumChannels(); ++ch)
+            audio->copyFrom (ch, 0, d->getBuffer(), ch, start, length);
+
+        auto cancel = std::make_shared<std::atomic<bool>> (false);
+        previewCancel = cancel;
+        previewPreparing = true;
+
+        previewPool.addJob ([audio, rate, cancel, settings = request.settings(),
+                             safeThis = juce::Component::SafePointer<MainComponent> (this)]
+        {
+            auto result = std::make_shared<std::optional<juce::AudioBuffer<float>>> (
+                wf::stretchAudio (*audio, { 0, audio->getNumSamples() }, rate, settings,
+                                  [cancel] (float) { return ! cancel->load(); }));
+
+            juce::MessageManager::callAsync ([safeThis, cancel, result, rate]
+            {
+                auto* main = safeThis.getComponent();
+
+                if (main == nullptr || cancel->load() || main->previewCancel != cancel)
+                    return;
+
+                main->previewPreparing = false;
+
+                if (result->has_value())
+                {
+                    const auto channels = (*result)->getNumChannels();
+                    main->startToolPreview (std::make_unique<BufferPreviewSource> (std::move (**result), nullptr, -1),
+                                            rate, channels);
+                }
+            });
+        });
+    };
+    callbacks.onStopPreview = [this] { stopDialogPreview(); };
+    callbacks.previewState = [this] { return toolPreviewState(); };
 
     callbacks.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
     {
@@ -2762,6 +3037,7 @@ void MainComponent::showStretchDialog()
         {
             if (auto* main = safeThis.getComponent())
             {
+                main->stopDialogPreview();
                 main->stretchWindow.reset();
                 main->commandManager.commandStatusChanged();
             }

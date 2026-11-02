@@ -1,5 +1,6 @@
 #include "StretchDialog.h"
 #include "TemplateDialog.h"
+#include "SpaceKey.h"
 
 namespace wf
 {
@@ -7,12 +8,44 @@ StretchSettings StretchRequest::settings() const
 {
     StretchSettings s;
 
-    if (fromBpm.has_value() && toBpm.has_value())
+    if (fromBpm.has_value() && toBpm.has_value() && ! tape)
         s.timeRatio = *fromBpm / *toBpm;
 
     s.semitones = changePitch ? semitones : 0.0;
-    s.preserveFormants = preserveFormants;
+    s.preserveFormants = preserveFormants && ! tape;
+    s.tape = tape && changePitch;
     return s;
+}
+
+juce::var stretchRequestToVar (const StretchRequest& r)
+{
+    auto* o = new juce::DynamicObject();
+
+    if (r.toBpm.has_value())
+        o->setProperty ("toBpm", *r.toBpm);
+
+    o->setProperty ("changePitch", r.changePitch);
+    o->setProperty ("tape", r.tape);
+    o->setProperty ("semitones", r.semitones);
+    o->setProperty ("formants", r.preserveFormants);
+    return juce::var (o);
+}
+
+StretchRequest stretchRequestFromVar (const juce::var& v)
+{
+    StretchRequest r;
+
+    if (! v.isObject())
+        return r;
+
+    if (v.hasProperty ("toBpm"))
+        r.toBpm = (double) v.getProperty ("toBpm", 120.0);
+
+    r.changePitch = (bool) v.getProperty ("changePitch", false);
+    r.tape = (bool) v.getProperty ("tape", false);
+    r.semitones = juce::jlimit (-maxPitchSemitones, maxPitchSemitones, (double) v.getProperty ("semitones", 0.0));
+    r.preserveFormants = (bool) v.getProperty ("formants", false);
+    return r;
 }
 
 std::optional<double> parseSemitones (const juce::String& text)
@@ -60,7 +93,9 @@ int shortestShift (int from, int to)
     return d > 6 ? d - 12 : d;
 }
 
-class StretchPanel final : public juce::Component
+class StretchPanel final : public juce::Component,
+                           public SpaceTarget,
+                           private juce::Timer
 {
 public:
     StretchPanel (const juce::String& target, double lengthIn, const StretchRequest& initial, StretchCallbacks cb)
@@ -100,8 +135,9 @@ public:
         shiftField.onTextChange = [this] { shiftEdited(); };
 
         pitchMode.addItem ("Keep the original pitch", 1);
-        pitchMode.addItem ("Change the pitch", 2);
-        pitchMode.setSelectedId (initial.changePitch ? 2 : 1, juce::dontSendNotification);
+        pitchMode.addItem ("Change the pitch, keep the length", 2);
+        pitchMode.addItem ("Like tape: speed and length change too", 3);
+        pitchMode.setSelectedId (! initial.changePitch ? 1 : initial.tape ? 3 : 2, juce::dontSendNotification);
         pitchMode.onChange = [this] { updatePitchEnabled(); validate(); };
         addAndMakeVisible (pitchMode);
 
@@ -128,10 +164,17 @@ public:
         addAndMakeVisible (detectKeyButton);
 
         formants.setToggleState (initial.preserveFormants, juce::dontSendNotification);
+        formants.onClick = [this] { validate(); };
         formants.setColour (juce::ToggleButton::textColourId, juce::Colours::black);
         formants.setColour (juce::ToggleButton::tickColourId, juce::Colours::black);
         formants.setColour (juce::ToggleButton::tickDisabledColourId, juce::Colour (0xff999999));
         addAndMakeVisible (formants);
+
+        previewButton.onClick = [this] { togglePreview(); };
+        previewButton.setTooltip ("Plays the first seconds with these settings (Space)");
+        previewButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff2f6fbf));
+        previewButton.setColour (juce::TextButton::textColourOffId, juce::Colours::white);
+        addAndMakeVisible (previewButton);
 
         okButton.onClick = [this] { apply(); };
         cancelButton.onClick = [this] { close(); };
@@ -140,9 +183,10 @@ public:
         addAndMakeVisible (okButton);
         addAndMakeVisible (cancelButton);
 
-        setSize (560, 382);
+        setSize (580, 382);
         updatePitchEnabled();
         validate();
+        startTimer (100);
 
         // Read the tempo (and the key) right away when they aren't known yet.
         juce::Component::SafePointer<StretchPanel> safeThis (this);
@@ -183,7 +227,7 @@ public:
         area.removeFromTop (10);
         r = row();
         pitchLabel.setBounds (r.removeFromLeft (110));
-        pitchMode.setBounds (r.removeFromLeft (220));
+        pitchMode.setBounds (r.removeFromLeft (300));
 
         r = row();
         keyLabel.setBounds (r.removeFromLeft (110));
@@ -212,6 +256,7 @@ public:
         cancelButton.setBounds (buttons.removeFromRight (90));
         buttons.removeFromRight (8);
         okButton.setBounds (buttons.removeFromRight (90));
+        previewButton.setBounds (buttons.removeFromLeft (110));
     }
 
     void focusField()
@@ -223,11 +268,69 @@ public:
 
     void close()
     {
+        stopTimer();
+        stopPreview();
+
         if (callbacks.onClose != nullptr)
             callbacks.onClose();
     }
 
+    bool spacePressed() override   { togglePreview(); return true; }
+
 private:
+    int previewState() const   { return callbacks.previewState != nullptr ? callbacks.previewState() : 0; }
+
+    void togglePreview()
+    {
+        if (previewState() != 0)
+        {
+            stopPreview();
+            return;
+        }
+
+        startPreview();
+    }
+
+    void startPreview()
+    {
+        restartAt = 0;
+        const auto request = read();
+
+        if (request.has_value() && okButton.isEnabled() && callbacks.onPreview != nullptr)
+            callbacks.onPreview (*request);
+    }
+
+    void stopPreview()
+    {
+        restartAt = 0;
+
+        if (callbacks.onStopPreview != nullptr)
+            callbacks.onStopPreview();
+    }
+
+    // The button follows the preview; a change made while it plays is heard
+    // again shortly after (once the typing stops).
+    void timerCallback() override
+    {
+        const auto state = previewState();
+        previewButton.setButtonText (state == 1 ? "Preparing..." : state == 2 ? "Stop" : "Preview");
+        previewButton.setEnabled (state != 0 || okButton.isEnabled());
+
+        if (restartAt != 0 && juce::Time::getMillisecondCounter() >= restartAt)
+        {
+            restartAt = 0;
+
+            if (state != 0)
+                startPreview();
+        }
+    }
+
+    void valuesChanged()
+    {
+        if (previewState() != 0)
+            restartAt = juce::Time::getMillisecondCounter() + 600;
+    }
+
     void runTempoDetection()
     {
         const auto estimate = callbacks.detectTempo != nullptr ? callbacks.detectTempo() : std::nullopt;
@@ -327,14 +430,26 @@ private:
             toKey.setSelectedId (0, juce::dontSendNotification);   // between two keys
     }
 
+    bool tapeMode() const   { return pitchMode.getSelectedId() == 3; }
+
     void updatePitchEnabled()
     {
-        const auto on = pitchMode.getSelectedId() == 2;
+        const auto on = pitchMode.getSelectedId() >= 2;
 
         for (juce::Component* c : { (juce::Component*) &fromKey, (juce::Component*) &toKey, (juce::Component*) &shiftField,
-                                    (juce::Component*) &formants, (juce::Component*) &newKeyLabel,
-                                    (juce::Component*) &shiftLabel, (juce::Component*) &semitoneUnit })
+                                    (juce::Component*) &newKeyLabel, (juce::Component*) &shiftLabel,
+                                    (juce::Component*) &semitoneUnit })
             c->setEnabled (on);
+
+        // Like tape, the tempo follows the pitch and the voice can't stay natural.
+        formants.setEnabled (on && ! tapeMode());
+
+        for (juce::Component* c : { (juce::Component*) &toField, (juce::Component*) &toLabel, (juce::Component*) &bpm2 })
+            c->setEnabled (! tapeMode());
+
+        hint.setText (tapeMode() ? "Like tape: lower = slower and longer, higher = faster and shorter."
+                                 : "Leave both tempos empty to change only the pitch.",
+                      juce::dontSendNotification);
     }
 
     std::optional<StretchRequest> read() const
@@ -342,7 +457,15 @@ private:
         StretchRequest r;
         const auto fromText = fromField.getText().trim(), toText = toField.getText().trim();
 
-        if (fromText.isNotEmpty() || toText.isNotEmpty())
+        r.tape = tapeMode();
+
+        if (r.tape)
+        {
+            // Only the tempo now is used (to show the new one); the new tempo stays as typed.
+            r.fromBpm = parseBpm (fromText);
+            r.toBpm = parseBpm (toText);
+        }
+        else if (fromText.isNotEmpty() || toText.isNotEmpty())
         {
             r.fromBpm = parseBpm (fromText);
             r.toBpm = parseBpm (toText);
@@ -351,7 +474,7 @@ private:
                 return {};
         }
 
-        r.changePitch = pitchMode.getSelectedId() == 2;
+        r.changePitch = pitchMode.getSelectedId() >= 2;
         r.fromKey = currentFromKey();
         r.preserveFormants = formants.getToggleState();
 
@@ -368,9 +491,9 @@ private:
     {
         const auto fromText = fromField.getText().trim(), toText = toField.getText().trim();
         const auto bothEmpty = fromText.isEmpty() && toText.isEmpty();
-        const auto fromOk = bothEmpty || parseBpm (fromText).has_value();
-        const auto toOk = bothEmpty || parseBpm (toText).has_value();
-        const auto shiftOk = pitchMode.getSelectedId() != 2 || parseSemitones (shiftField.getText()).has_value();
+        const auto fromOk = bothEmpty || parseBpm (fromText).has_value() || (tapeMode() && fromText.isEmpty());
+        const auto toOk = bothEmpty || tapeMode() || parseBpm (toText).has_value();
+        const auto shiftOk = pitchMode.getSelectedId() < 2 || parseSemitones (shiftField.getText()).has_value();
 
         auto outline = [] (juce::TextEditor& f, bool ok)
         {
@@ -390,7 +513,24 @@ private:
         {
             const auto settings = request->settings();
 
-            if (settings.timeRatio < minStretchRatio || settings.timeRatio > maxStretchRatio)
+            if (settings.tape)
+            {
+                const auto ratio = settings.lengthRatio();
+
+                if (! settings.changesSomething())
+                {
+                    ok = false;
+                }
+                else
+                {
+                    lengthText = "Length " + formatSeconds (lengthSeconds) + " -> " + formatSeconds (lengthSeconds * ratio);
+
+                    if (request->fromBpm.has_value())
+                        lengthText << ", " << formatNumber (*request->fromBpm, 1) << " -> "
+                                   << formatNumber (*request->fromBpm / ratio, 1) << " BPM";
+                }
+            }
+            else if (settings.timeRatio < minStretchRatio || settings.timeRatio > maxStretchRatio)
             {
                 lengthText = "Too far: at most 4 times slower or faster";
                 ok = false;
@@ -409,6 +549,7 @@ private:
 
         lengthInfo.setText (lengthText, juce::dontSendNotification);
         okButton.setEnabled (ok);
+        valuesChanged();
     }
 
     void apply()
@@ -436,7 +577,8 @@ private:
     juce::ComboBox pitchMode, fromKey, toKey;
     juce::TextButton detectTempoButton { "Read" }, detectKeyButton { "Read" };
     juce::ToggleButton formants { "Keep the voice natural (formants)" };
-    juce::TextButton okButton { "OK" }, cancelButton { "Cancel" };
+    juce::TextButton okButton { "OK" }, cancelButton { "Cancel" }, previewButton { "Preview" };
+    juce::uint32 restartAt = 0;   // when to play the preview again after a change; 0 = no
 };
 
 class StretchWindow final : public juce::DocumentWindow
