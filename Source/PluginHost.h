@@ -66,4 +66,8 @@ std::unique_ptr<juce::DocumentWindow> createManagerWindow (Library&, ManagerCall
 std::unique_ptr<juce::DocumentWindow> createPluginWindow (Library&, const juce::PluginDescription&, BassFinderSource,
                                                           BassFinderHost, std::function<void()> onClose,
                                                           juce::String& error);
+
+// FX Favorites > Plug-In Chain: several plug-ins one after the other, remembered between starts.
+std::unique_ptr<juce::DocumentWindow> createChainWindow (Library&, BassFinderSource, BassFinderHost,
+                                                         std::function<void()> openManager, std::function<void()> onClose);
 } // namespace wf::plugins

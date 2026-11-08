@@ -89,7 +89,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 
 **Keyboard:** the classic default shortcuts (F1 lists them); change any of them in **Options > Customize Keyboard** (saved).
 
-**VST3 plug-ins (test version 0.1.98, not tested yet):** FX Favorites > Plug-In Manager finds the plug-ins in the standard folders and in folders you add. Each one is opened in a separate process first, so a broken plug-in is reported and left out instead of taking the program down. Run one on the selection or the whole file with its own window, a live Preview (Space) and an undoable Apply; its delay is compensated, its tail rings on, and its settings are remembered. Instruments are listed but can't process audio. Planned: the Plug-In Chainer.
+**VST3 plug-ins (test version 0.1.98, not tested yet):** FX Favorites > Plug-In Manager finds the plug-ins in the standard folders and in folders you add. Each one is opened in a separate process first, so a broken plug-in is reported and left out instead of taking the program down. Run one on the selection or the whole file with its own window, a live Preview (Space) and an undoable Apply; its delay is compensated, its tail rings on, and its settings are remembered. Instruments are listed but can't process audio. In the next version, not yet in 0.1.98: FX Favorites > Plug-In Chain runs several plug-ins one after the other: add, remove, reorder and turn them off one by one; the chain and its settings are remembered.
 
 On macOS, `Ctrl` shortcuts use `Cmd` and `Alt` uses `Option`.
 

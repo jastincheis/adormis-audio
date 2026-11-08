@@ -3773,6 +3773,54 @@ void MainComponent::showPlugin (const juce::PluginDescription& description)
     commandManager.commandStatusChanged();
 }
 
+void MainComponent::showPluginChain()
+{
+    if (effectWindow != nullptr)
+    {
+        effectWindow->toFront (true);
+        return;
+    }
+
+    if (toolWindowOpen())
+        return;
+
+    auto source = bassFinderSource();
+
+    if (! source.has_value())
+        return;
+
+    if (pluginLibrary == nullptr)
+        pluginLibrary = std::make_unique<wf::plugins::Library>();
+
+    if (! pluginLibrary->everScanned())
+        pluginLibrary->startScan();
+
+    const juce::Component::SafePointer<MainComponent> safeThis (this);
+    auto onClose = [safeThis]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->stopToolPreview();
+                main->effectWindow.reset();
+                main->commandManager.commandStatusChanged();
+            }
+        });
+    };
+    auto openManager = [safeThis]
+    {
+        if (auto* main = safeThis.getComponent())
+            main->showPluginManager (false);
+    };
+
+    toolUndoName = lastCommandName;
+    effectWindow = wf::plugins::createChainWindow (*pluginLibrary, std::move (*source), toolHost(), std::move (openManager), std::move (onClose));
+    effectWindow->setVisible (true);
+    effectWindow->toFront (true);
+    commandManager.commandStatusChanged();
+}
+
 wf::BassFinderHost MainComponent::toolHost()
 {
     wf::BassFinderHost host;
@@ -4757,6 +4805,10 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord: case wf::optRecordComputer: case wf::helpCheckUpdates:
             break;
 
+        case wf::favPluginChain:
+            available = available && doc != nullptr && ! doc->isEmpty() && (effectWindow != nullptr || ! toolWindowOpen());
+            break;
+
         case wf::helpUpdatesAtStart:
             info.setTicked (! wf::settings::get ("update.atStart").isBool() || (bool) wf::settings::get ("update.atStart"));
             break;
@@ -5107,6 +5159,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::toolsDeEsser:      showDeEsser(); return true;
         case wf::favPluginManager:  showPluginManager (false); return true;
         case wf::favRescan:         showPluginManager (true); return true;
+        case wf::favPluginChain:    showPluginChain(); return true;
         case wf::procEqParametric:  showEffect (wf::EffectKind::eq); return true;
         case wf::procEqGraphic:     showEffect (wf::EffectKind::graphicEq); return true;
         case wf::procFadeGraphic: case wf::insertVolumeEnv: showEffect (wf::EffectKind::envelope); return true;

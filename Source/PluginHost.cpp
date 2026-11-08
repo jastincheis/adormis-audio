@@ -11,11 +11,35 @@ namespace
 {
 using namespace dark;
 
-constexpr int scanTimeoutMs = 60000;
+int scanSilenceLimitMs = 60000;                  // no plug-in checked for this long: it hangs
+constexpr int scanTotalLimitMs = 30 * 60 * 1000;   // one file (a shell can hold hundreds)
 constexpr int renderBlock = 4096;
 constexpr double longestTailSeconds = 30.0;
 
 juce::File libraryFile()   { return startup::settingsFolder().getChildFile ("plugins.xml"); }
+
+// What a scan's child process has found so far. Rewritten after every plug-in,
+// so the parent sees it moving and keeps what came before a crash or a hang.
+class ScanReport
+{
+public:
+    explicit ScanReport (juce::File fileIn) : file (std::move (fileIn)) {}
+
+    void found (const juce::PluginDescription& d)    { xml.addChildElement (d.createXml().release()); write(); }
+    void failed (const juce::String& name)           { xml.createNewChildElement ("FAILED")->setAttribute ("name", name); write(); }
+    void finish()                                    { xml.setAttribute ("complete", true); write(); }
+
+private:
+    void write()
+    {
+        const auto next = file.getSiblingFile (file.getFileName() + ".next");
+        xml.writeTo (next);
+        next.moveFileTo (file);
+    }
+
+    juce::File file;
+    juce::XmlElement xml { "PLUGINS" };
+};
 
 juce::File stateFile (const juce::PluginDescription& d)
 {
@@ -53,17 +77,67 @@ int setUpChannels (juce::AudioPluginInstance& plugin, int fileChannels)
     return fileChannels == 1 && attempt (2) ? 2 : 0;
 }
 
-// One block through the plug-in. `work` has the plug-in's channels; the block is
-// copied in from `in` at inPos (silence past its end) and left in `work`.
-void fillWork (juce::AudioBuffer<float>& work, const juce::AudioBuffer<float>& in, juce::int64 inPos, int n, bool loop)
+// One plug-in in a chain. A chain of one is the single plug-in window.
+struct Slot
+{
+    juce::PluginDescription description;
+    std::shared_ptr<juce::AudioPluginInstance> plugin;
+    int channels = 0;
+    std::shared_ptr<std::atomic<bool>> on = std::make_shared<std::atomic<bool>> (true);
+};
+
+using Slots = std::vector<Slot>;
+
+std::optional<Slot> openSlot (Library& library, const juce::PluginDescription& description, double rate, int fileChannels, juce::String& error)
+{
+    if (description.isInstrument)
+    {
+        error = description.name + " is an instrument: it makes sound of its own and can't process a file.";
+        return {};
+    }
+
+    auto instance = library.formats().createPluginInstance (description, rate, renderBlock, error);
+
+    if (instance == nullptr)
+    {
+        error = "Could not open " + description.name + ": " + error;
+        return {};
+    }
+
+    const auto channels = setUpChannels (*instance, fileChannels);
+
+    if (channels == 0)
+    {
+        error = description.name + " can't work on " + juce::String (fileChannels) + (fileChannels == 1 ? " channel." : " channels.");
+        return {};
+    }
+
+    Slot slot;
+    slot.description = description;
+    slot.plugin = std::shared_ptr<juce::AudioPluginInstance> (std::move (instance));
+    slot.channels = channels;
+    return slot;
+}
+
+void prepareSlot (const Slot& slot, double rate, int block, bool offline)
+{
+    auto& plugin = *slot.plugin;
+    plugin.releaseResources();
+    plugin.setNonRealtime (offline);
+    plugin.setPlayConfigDetails (plugin.getTotalNumInputChannels(), plugin.getTotalNumOutputChannels(), rate, block);
+    plugin.prepareToPlay (rate, block);
+    plugin.reset();
+}
+
+// A block of the audio into `signal` (one channel per file channel); silence past its end.
+void fillSignal (juce::AudioBuffer<float>& signal, const juce::AudioBuffer<float>& in, juce::int64 inPos, int n, bool loop)
 {
     const auto length = in.getNumSamples();
 
-    for (int ch = 0; ch < work.getNumChannels(); ++ch)
+    for (int ch = 0; ch < signal.getNumChannels(); ++ch)
     {
-        const auto source = std::min (ch, in.getNumChannels() - 1);
-        auto* out = work.getWritePointer (ch);
-        const auto* from = in.getReadPointer (source);
+        auto* out = signal.getWritePointer (ch);
+        const auto* from = in.getReadPointer (ch);
 
         for (int i = 0; i < n; ++i)
         {
@@ -73,91 +147,88 @@ void fillWork (juce::AudioBuffer<float>& work, const juce::AudioBuffer<float>& i
     }
 }
 
-void runPlugin (juce::AudioPluginInstance& plugin, juce::AudioBuffer<float>& work, int n, juce::MidiBuffer& midi)
+// `signal` through one plug-in and back. A mono file through a stereo-only
+// plug-in goes in on both sides and comes back as the average.
+void runSlot (const Slot& slot, juce::AudioBuffer<float>& signal, juce::AudioBuffer<float>& work, int n, juce::MidiBuffer& midi)
 {
-    juce::AudioBuffer<float> block (work.getArrayOfWritePointers(), work.getNumChannels(), n);
+    const auto fileChannels = signal.getNumChannels();
+
+    for (int ch = 0; ch < slot.channels; ++ch)
+        work.copyFrom (ch, 0, signal, std::min (ch, fileChannels - 1), 0, n);
+
+    juce::AudioBuffer<float> block (work.getArrayOfWritePointers(), slot.channels, n);
     midi.clear();
-    const juce::ScopedLock sl (plugin.getCallbackLock());
 
-    if (plugin.isSuspended())
-        block.clear();
-    else
-        plugin.processBlock (block, midi);
-}
-
-// From the plug-in's channels back to the file's.
-void readOut (const juce::AudioBuffer<float>& work, juce::AudioBuffer<float>& out, int outChannels, int outStart, int workStart, int count)
-{
-    if (outChannels == 1 && work.getNumChannels() == 2)
     {
-        out.clear (0, outStart, count);
-        out.addFrom (0, outStart, work, 0, workStart, count, 0.5f);
-        out.addFrom (0, outStart, work, 1, workStart, count, 0.5f);
+        const juce::ScopedLock sl (slot.plugin->getCallbackLock());
+
+        if (slot.plugin->isSuspended())
+            block.clear();
+        else
+            slot.plugin->processBlock (block, midi);
+    }
+
+    if (fileChannels == 1 && slot.channels == 2)
+    {
+        signal.clear (0, 0, n);
+        signal.addFrom (0, 0, work, 0, 0, n, 0.5f);
+        signal.addFrom (0, 0, work, 1, 0, n, 0.5f);
         return;
     }
 
-    for (int ch = 0; ch < outChannels; ++ch)
-        out.copyFrom (ch, outStart, work, ch, workStart, count);
+    for (int ch = 0; ch < fileChannels; ++ch)
+        signal.copyFrom (ch, 0, work, ch, 0, n);
 }
 
 //==============================================================================
-// The selection in a loop through the plug-in.
+// The selection in a loop through the plug-ins that are on.
 class PreviewSource final : public juce::PositionableAudioSource
 {
 public:
-    PreviewSource (std::shared_ptr<const juce::AudioBuffer<float>> a, std::shared_ptr<juce::AudioPluginInstance> p,
-                   int pluginChannelsIn, std::shared_ptr<std::atomic<bool>> b)
-        : audio (std::move (a)), plugin (std::move (p)), bypass (std::move (b)), pluginChannels (pluginChannelsIn) {}
+    PreviewSource (std::shared_ptr<const juce::AudioBuffer<float>> a, Slots s, std::shared_ptr<std::atomic<bool>> b)
+        : audio (std::move (a)), slots (std::move (s)), bypass (std::move (b)) {}
 
     void prepareToPlay (int block, double rate) override
     {
         const auto n = std::max (block, renderBlock);
-        work.setSize (pluginChannels, n);
-        plugin->setNonRealtime (false);
-        plugin->setPlayConfigDetails (plugin->getTotalNumInputChannels(), plugin->getTotalNumOutputChannels(), rate, n);
-        plugin->prepareToPlay (rate, n);
-        plugin->reset();
+        signal.setSize (audio->getNumChannels(), n);
+        work.clear();
+
+        for (const auto& slot : slots)
+        {
+            work.emplace_back (slot.channels, n);
+            prepareSlot (slot, rate, n, false);
+        }
     }
 
-    void releaseResources() override   { plugin->releaseResources(); }
+    void releaseResources() override
+    {
+        for (const auto& slot : slots)
+            slot.plugin->releaseResources();
+    }
 
     void getNextAudioBlock (const juce::AudioSourceChannelInfo& info) override
     {
-        const auto length = audio->getNumSamples();
-
-        if (length == 0)
+        if (audio->getNumSamples() == 0)
         {
             info.clearActiveBufferRegion();
             return;
         }
 
-        const auto fileChannels = audio->getNumChannels();
-
         for (int done = 0; done < info.numSamples;)
         {
-            const auto n = std::min (info.numSamples - done, work.getNumSamples());
+            const auto n = std::min (info.numSamples - done, signal.getNumSamples());
             const auto pos = position.load();
-            fillWork (work, *audio, pos, n, true);
+            fillSignal (signal, *audio, pos, n, true);
             position = pos + n;
 
             if (! bypass->load())
-                runPlugin (*plugin, work, n, midi);
+                for (size_t i = 0; i < slots.size(); ++i)
+                    if (slots[i].on->load())
+                        runSlot (slots[i], signal, work[i], n, midi);
 
             for (int ch = 0; ch < info.buffer->getNumChannels(); ++ch)
-            {
-                const auto from = fileChannels == 1 ? 0 : std::min (ch, pluginChannels - 1);
-
-                if (fileChannels == 1 && pluginChannels == 2)
-                {
-                    info.buffer->clear (ch, info.startSample + done, n);
-                    info.buffer->addFrom (ch, info.startSample + done, work, 0, 0, n, 0.5f);
-                    info.buffer->addFrom (ch, info.startSample + done, work, 1, 0, n, 0.5f);
-                }
-                else
-                {
-                    info.buffer->copyFrom (ch, info.startSample + done, work, from, 0, n);
-                }
-            }
+                info.buffer->copyFrom (ch, info.startSample + done, signal, std::min (ch, signal.getNumChannels() - 1), 0, n);
 
             done += n;
         }
@@ -170,59 +241,80 @@ public:
 
 private:
     std::shared_ptr<const juce::AudioBuffer<float>> audio;
-    std::shared_ptr<juce::AudioPluginInstance> plugin;
+    Slots slots;
     std::shared_ptr<std::atomic<bool>> bypass;
-    int pluginChannels;
-    juce::AudioBuffer<float> work;
+    juce::AudioBuffer<float> signal;
+    std::vector<juce::AudioBuffer<float>> work;
     juce::MidiBuffer midi;
     std::atomic<juce::int64> position { 0 };
 };
 
 //==============================================================================
-// The whole audio through the plug-in, offline. The plug-in's delay is taken
-// out, so the result stays in time with the file; its tail rings on after the
-// end, without the silence that follows it.
-std::optional<juce::AudioBuffer<float>> render (juce::AudioPluginInstance& plugin, const juce::AudioBuffer<float>& audio,
-                                                int pluginChannels, double rate, const std::function<bool (float)>& progress)
+// The whole audio through the plug-ins that are on, offline. Their delays add up
+// and are taken out, so the result stays in time with the file; the tails ring
+// on after the end, without the silence that follows them.
+std::optional<juce::AudioBuffer<float>> render (const Slots& allSlots, const juce::AudioBuffer<float>& audio, double rate,
+                                                const std::function<bool (float)>& progress)
 {
-    plugin.releaseResources();
-    plugin.setNonRealtime (true);
-    plugin.setPlayConfigDetails (plugin.getTotalNumInputChannels(), plugin.getTotalNumOutputChannels(), rate, renderBlock);
-    plugin.prepareToPlay (rate, renderBlock);
-    plugin.reset();
+    Slots slots;
 
-    const auto latency = std::max (0, plugin.getLatencySamples());
-    const auto tailSeconds = plugin.getTailLengthSeconds();
-    const auto tail = (int) std::lround (juce::jlimit (0.0, longestTailSeconds, std::isfinite (tailSeconds) ? tailSeconds : longestTailSeconds) * rate);
+    for (const auto& slot : allSlots)
+        if (slot.on->load())
+            slots.push_back (slot);
+
+    juce::int64 latency = 0;
+    auto tailSeconds = 0.0;
+    std::vector<juce::AudioBuffer<float>> work;
+
+    for (const auto& slot : slots)
+    {
+        prepareSlot (slot, rate, renderBlock, true);
+        latency += std::max (0, slot.plugin->getLatencySamples());
+        const auto t = slot.plugin->getTailLengthSeconds();
+        tailSeconds += std::isfinite (t) ? std::max (0.0, t) : longestTailSeconds;
+        work.emplace_back (slot.channels, renderBlock);
+    }
+
+    auto finish = [&slots]
+    {
+        for (const auto& slot : slots)
+        {
+            slot.plugin->setNonRealtime (false);
+            slot.plugin->releaseResources();
+        }
+    };
+
+    const auto tail = (int) std::lround (std::min (tailSeconds, longestTailSeconds) * rate);
     const auto length = audio.getNumSamples();
     const auto wanted = (juce::int64) length + tail;
 
-    if (wanted > (juce::int64) std::numeric_limits<int>::max() - latency)
+    if (wanted + latency > (juce::int64) std::numeric_limits<int>::max())
+    {
+        finish();
         return {};
+    }
 
     juce::AudioBuffer<float> result (audio.getNumChannels(), (int) wanted);
     result.clear();
-    juce::AudioBuffer<float> work (pluginChannels, renderBlock);
+    juce::AudioBuffer<float> signal (audio.getNumChannels(), renderBlock);
     juce::MidiBuffer midi;
     const auto total = wanted + latency;
-    auto finish = [&plugin]
-    {
-        plugin.setNonRealtime (false);
-        plugin.releaseResources();
-    };
 
     for (juce::int64 pos = 0; pos < total; pos += renderBlock)
     {
         const auto n = (int) std::min ((juce::int64) renderBlock, total - pos);
-        fillWork (work, audio, pos, n, false);
-        runPlugin (plugin, work, n, midi);
+        fillSignal (signal, audio, pos, n, false);
+
+        for (size_t i = 0; i < slots.size(); ++i)
+            runSlot (slots[i], signal, work[i], n, midi);
 
         // What comes out `latency` samples late lands where it belongs.
         const auto outPos = pos - latency;
         const auto skip = (int) std::max ((juce::int64) 0, -outPos);
 
         if (skip < n)
-            readOut (work, result, result.getNumChannels(), (int) std::max ((juce::int64) 0, outPos), skip, n - skip);
+            for (int ch = 0; ch < result.getNumChannels(); ++ch)
+                result.copyFrom (ch, (int) std::max ((juce::int64) 0, outPos), signal, ch, skip, n - skip);
 
         if (progress != nullptr && ! progress ((float) ((double) (pos + n) / (double) total)))
         {
@@ -270,9 +362,8 @@ class PluginPanel final : public juce::Component,
                           private juce::Timer
 {
 public:
-    PluginPanel (std::shared_ptr<juce::AudioPluginInstance> instance, juce::PluginDescription descriptionIn, int channels,
-                 BassFinderSource sourceIn, BassFinderHost hostIn, std::function<void()> onCloseIn)
-        : plugin (std::move (instance)), description (std::move (descriptionIn)), pluginChannels (channels),
+    PluginPanel (Slot slotIn, BassFinderSource sourceIn, BassFinderHost hostIn, std::function<void()> onCloseIn)
+        : slot (std::move (slotIn)), plugin (slot.plugin), description (slot.description),
           source (std::move (sourceIn)), host (std::move (hostIn)), onClose (std::move (onCloseIn))
     {
         audio = std::make_shared<juce::AudioBuffer<float>> (source.audio);
@@ -386,7 +477,7 @@ private:
         if (host.play == nullptr)
             return;
 
-        host.play (std::make_unique<PreviewSource> (audio, plugin, pluginChannels, bypass), source.sampleRate,
+        host.play (std::make_unique<PreviewSource> (audio, Slots { slot }, bypass), source.sampleRate,
                    std::max (1, audio->getNumChannels()));
         previewing = true;
         preview.setButtonText (juce::CharPointer_UTF8 ("\xe2\x96\xa0  Stop preview (Space)"));
@@ -432,17 +523,16 @@ private:
 
         stopPreview();
         saveState();
-        auto instance = plugin;
+        auto slots = Slots { slot };
         auto input = audio;
         const auto rate = source.sampleRate;
-        const auto channels = pluginChannels;
         auto result = std::make_shared<std::optional<juce::AudioBuffer<float>>>();
         juce::Component::SafePointer<PluginPanel> safeThis (this);
 
         host.runJob ("Applying " + description.name + "...",
-                     [instance, input, rate, channels, result] (std::function<bool (float)> progress)
+                     [slots, input, rate, result] (std::function<bool (float)> progress)
                      {
-                         *result = render (*instance, *input, channels, rate, progress);
+                         *result = render (slots, *input, rate, progress);
                          return result->has_value();
                      },
                      [safeThis, write, result] (bool finished)
@@ -472,9 +562,9 @@ private:
 
     static constexpr int barHeight = 76, minWidth = 520;
 
+    Slot slot;
     std::shared_ptr<juce::AudioPluginInstance> plugin;
     juce::PluginDescription description;
-    int pluginChannels;
     BassFinderSource source;
     BassFinderHost host;
     std::function<void()> onClose;
@@ -512,6 +602,531 @@ public:
     void closeButtonPressed() override
     {
         if (auto* p = dynamic_cast<PluginPanel*> (getContentComponent()))
+            p->close();
+    }
+
+private:
+    DarkLook look;
+};
+
+//==============================================================================
+// Plug-In Chain: several plug-ins one after the other. The list on the left
+// (click the box to turn one off), the selected plug-in's own window on the
+// right. The chain and every plug-in's settings are remembered.
+class ChainPanel final : public juce::Component,
+                         public SpaceTarget,
+                         private juce::ListBoxModel,
+                         private juce::Timer
+{
+public:
+    ChainPanel (Library& libraryIn, BassFinderSource sourceIn, BassFinderHost hostIn,
+                std::function<void()> openManagerIn, std::function<void()> onCloseIn)
+        : library (libraryIn), source (std::move (sourceIn)), host (std::move (hostIn)),
+          openManager (std::move (openManagerIn)), onClose (std::move (onCloseIn))
+    {
+        audio = std::make_shared<juce::AudioBuffer<float>> (source.audio);
+
+        styleLabel (title, 13.0f, true);
+        title.setText (source.title, juce::dontSendNotification);
+        addAndMakeVisible (title);
+        styleLabel (status, 12.0f, false, colours::muted);
+        status.setJustificationType (juce::Justification::centredRight);
+        addAndMakeVisible (status);
+        styleLabel (empty, 13.0f, false, colours::muted);
+        empty.setJustificationType (juce::Justification::centred);
+        empty.setText ("Add a plug-in to start the chain.", juce::dontSendNotification);
+        addAndMakeVisible (empty);
+
+        list.setRowHeight (30);
+        list.setModel (this);
+        list.setColour (juce::ListBox::backgroundColourId, colours::surface);
+        addAndMakeVisible (list);
+
+        add.onClick = [this] { showAddMenu(); };
+        remove.onClick = [this] { removeSelected(); };
+        up.onClick = [this] { moveSelected (-1); };
+        down.onClick = [this] { moveSelected (1); };
+        preview.onClick = [this] { togglePreview(); };
+        bypassAll.setClickingTogglesState (true);
+        bypassAll.onClick = [this] { bypass->store (bypassAll.getToggleState()); };
+        apply.onClick = [this] { applyToFile(); };
+        cancel.onClick = [this] { close(); };
+
+        for (auto* b : { &add, &remove, &up, &down, &preview, &bypassAll, &apply, &cancel })
+            addAndMakeVisible (b);
+
+        restore();
+        list.updateContent();
+        list.selectRow (0);
+        showEditorOfSelected();
+        update();
+        startTimerHz (20);
+    }
+
+    ~ChainPanel() override
+    {
+        stopTimer();
+        stopPreview();
+        editor.reset();
+        list.setModel (nullptr);
+    }
+
+    bool spacePressed() override   { togglePreview(); return true; }
+
+    void close()
+    {
+        stopPreview();
+        save();
+
+        if (onClose != nullptr)
+            onClose();
+    }
+
+    // Puts the plug-in at the end of the chain, with the settings it last had.
+    bool addPlugin (const juce::PluginDescription& description, juce::String& error)
+    {
+        auto slot = openSlot (library, description, source.sampleRate, audio->getNumChannels(), error);
+
+        if (! slot.has_value())
+            return false;
+
+        juce::MemoryBlock saved;
+
+        if (stateFile (description).loadFileAsData (saved) && saved.getSize() > 0)
+            slot->plugin->setStateInformation (saved.getData(), (int) saved.getSize());
+
+        restructure ([this, &slot]
+        {
+            slots.push_back (std::move (*slot));
+            selected = (int) slots.size() - 1;
+        });
+        return true;
+    }
+
+    void removeSelected()
+    {
+        if (! juce::isPositiveAndBelow (selected, (int) slots.size()))
+            return;
+
+        restructure ([this]
+        {
+            slots.erase (slots.begin() + selected);
+            selected = std::min (selected, (int) slots.size() - 1);
+        });
+    }
+
+    void moveSelected (int delta)
+    {
+        const auto to = selected + delta;
+
+        if (! juce::isPositiveAndBelow (selected, (int) slots.size()) || ! juce::isPositiveAndBelow (to, (int) slots.size()))
+            return;
+
+        restructure ([this, to]
+        {
+            std::swap (slots[(size_t) selected], slots[(size_t) to]);
+            selected = to;
+        });
+    }
+
+    void paint (juce::Graphics& g) override   { g.fillAll (colours::bg); }
+
+    void childBoundsChanged (juce::Component* child) override
+    {
+        if (child == editor.get())
+            fit();
+    }
+
+    void resized() override
+    {
+        auto area = getLocalBounds();
+        auto bar = area.removeFromBottom (barHeight).reduced (10, 6);
+        auto left = area.removeFromLeft (listWidth).reduced (10);
+        auto buttons = left.removeFromBottom (64);
+        left.removeFromBottom (6);
+        list.setBounds (left);
+        auto first = buttons.removeFromTop (29);
+        add.setBounds (first.removeFromLeft (first.getWidth() / 2 - 2));
+        first.removeFromLeft (4);
+        remove.setBounds (first);
+        buttons.removeFromTop (6);
+        up.setBounds (buttons.removeFromLeft (buttons.getWidth() / 2 - 2));
+        buttons.removeFromLeft (4);
+        down.setBounds (buttons);
+
+        if (editor != nullptr)
+            editor->setTopLeftPosition (listWidth, 0);
+
+        empty.setBounds (area);
+
+        auto top = bar.removeFromTop (22);
+        status.setBounds (top.removeFromRight (top.getWidth() / 2));
+        title.setBounds (top);
+        bar.removeFromTop (6);
+        auto row = bar.removeFromTop (30);
+        cancel.setBounds (row.removeFromRight (70));
+        row.removeFromRight (6);
+        apply.setBounds (row.removeFromRight (70));
+        preview.setBounds (row.removeFromLeft (150));
+        row.removeFromLeft (6);
+        bypassAll.setBounds (row.removeFromLeft (90));
+    }
+
+private:
+    int getNumRows() override   { return (int) slots.size(); }
+
+    void paintListBoxItem (int row, juce::Graphics& g, int width, int height, bool isSelected) override
+    {
+        if (! juce::isPositiveAndBelow (row, (int) slots.size()))
+            return;
+
+        if (isSelected)
+            g.fillAll (colours::accent.withAlpha (0.25f));
+
+        const auto& slot = slots[(size_t) row];
+        const auto on = slot.on->load();
+        const juce::Rectangle<float> box (8.0f, (float) height / 2.0f - 7.0f, 14.0f, 14.0f);
+        g.setColour (on ? colours::ok : colours::muted);
+        g.drawRoundedRectangle (box, 3.0f, 1.5f);
+
+        if (on)
+            g.fillRoundedRectangle (box.reduced (3.5f), 1.5f);
+
+        g.setColour (on ? colours::ink : colours::muted);
+        g.setFont (13.0f);
+        g.drawText (juce::String (row + 1) + ".  " + slot.description.name, 30, 0, width - 34, height, juce::Justification::centredLeft, true);
+    }
+
+    void listBoxItemClicked (int row, const juce::MouseEvent& e) override
+    {
+        if (e.x < 28 && juce::isPositiveAndBelow (row, (int) slots.size()))
+        {
+            const auto& on = slots[(size_t) row].on;
+            on->store (! on->load());
+            list.repaint();
+            update();
+        }
+    }
+
+    void selectedRowsChanged (int row) override
+    {
+        if (row >= 0 && row != selected)
+        {
+            selected = row;
+            showEditorOfSelected();
+            update();
+        }
+    }
+
+    // Changes the chain with the preview stopped; it goes on afterwards.
+    void restructure (const std::function<void()>& change)
+    {
+        const auto wasPlaying = previewing;
+        const auto position = host.playPosition != nullptr ? host.playPosition() : -1;
+        stopPreview();
+        editor.reset();
+        change();
+        list.updateContent();
+        list.selectRow (selected, true, true);
+        list.repaint();
+        showEditorOfSelected();
+        update();
+        save();
+
+        if (wasPlaying && anyOn())
+            startPreview (std::max ((juce::int64) 0, position));
+    }
+
+    void showEditorOfSelected()
+    {
+        editor.reset();
+
+        if (juce::isPositiveAndBelow (selected, (int) slots.size()))
+        {
+            auto& plugin = *slots[(size_t) selected].plugin;
+            editor.reset (plugin.createEditorAndMakeActive());
+
+            if (editor == nullptr)
+                editor = std::make_unique<juce::GenericAudioProcessorEditor> (plugin);
+
+            addAndMakeVisible (*editor);
+        }
+
+        empty.setVisible (editor == nullptr);
+        fit();
+    }
+
+    void fit()
+    {
+        const auto editorWidth = editor != nullptr ? editor->getWidth() : 0;
+        const auto editorHeight = editor != nullptr ? editor->getHeight() : 0;
+        setSize (listWidth + std::max (editorWidth, minEditorWidth), std::max (editorHeight, minEditorHeight) + barHeight);
+
+        if (editor != nullptr)
+            editor->setTopLeftPosition (listWidth, 0);
+    }
+
+    bool anyOn() const
+    {
+        return std::any_of (slots.begin(), slots.end(), [] (const Slot& s) { return s.on->load(); });
+    }
+
+    void update()
+    {
+        const auto has = juce::isPositiveAndBelow (selected, (int) slots.size());
+        remove.setEnabled (has);
+        up.setEnabled (has && selected > 0);
+        down.setEnabled (has && selected < (int) slots.size() - 1);
+        preview.setEnabled (previewing || anyOn());
+        apply.setEnabled (anyOn());
+    }
+
+    void showAddMenu()
+    {
+        juce::PopupMenu menu;
+        const auto plugins = library.plugins();
+        auto id = 1;
+
+        for (const auto& d : plugins)
+        {
+            if (! d.isInstrument)
+                menu.addItem (id, d.name + "  (" + d.manufacturerName + ")");
+
+            ++id;
+        }
+
+        if (menu.getNumItems() == 0)
+            menu.addItem (-2, library.isScanning() ? "Still looking for plug-ins..." : "No plug-ins found", false);
+
+        menu.addSeparator();
+        menu.addItem (-1, "Plug-In Manager...");
+        juce::Component::SafePointer<ChainPanel> safeThis (this);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (add).withParentComponent (getTopLevelComponent()),
+                            [safeThis, plugins] (int chosen)
+                            {
+                                auto* self = safeThis.getComponent();
+
+                                if (self == nullptr || chosen == 0)
+                                    return;
+
+                                if (chosen == -1)
+                                {
+                                    if (self->openManager != nullptr)
+                                        self->openManager();
+
+                                    return;
+                                }
+
+                                juce::String error;
+
+                                if (chosen > 0 && ! self->addPlugin (plugins[chosen - 1], error))
+                                    self->status.setText (error, juce::dontSendNotification);
+                            });
+    }
+
+    void togglePreview()
+    {
+        if (previewing)
+            stopPreview();
+        else if (anyOn())
+            startPreview (0);
+    }
+
+    void startPreview (juce::int64 position)
+    {
+        if (host.play == nullptr)
+            return;
+
+        auto player = std::make_unique<PreviewSource> (audio, slots, bypass);
+        player->setNextReadPosition (position);
+        host.play (std::move (player), source.sampleRate, std::max (1, audio->getNumChannels()));
+        previewing = true;
+        preview.setButtonText (juce::CharPointer_UTF8 ("\xe2\x96\xa0  Stop preview (Space)"));
+        status.setText ("Previewing the chain in a loop.", juce::dontSendNotification);
+        update();
+    }
+
+    void stopPreview()
+    {
+        if (! previewing)
+            return;
+
+        if (host.stop != nullptr)
+            host.stop();
+
+        previewing = false;
+        preview.setButtonText (juce::CharPointer_UTF8 ("\xe2\x96\xb6  Preview (Space)"));
+
+        if (source.showPlayhead != nullptr)
+            source.showPlayhead (-1.0);
+
+        status.setText ({}, juce::dontSendNotification);
+        update();
+    }
+
+    void timerCallback() override
+    {
+        if (! previewing)
+            return;
+
+        const auto p = host.playPosition != nullptr ? host.playPosition() : -1;
+
+        if (p < 0)
+            stopPreview();
+        else if (source.showPlayhead != nullptr)
+            source.showPlayhead ((double) (p % std::max (1, audio->getNumSamples())) / source.sampleRate);
+    }
+
+    void applyToFile()
+    {
+        auto write = source.applyWithTail;
+
+        if (write == nullptr || host.runJob == nullptr || ! anyOn())
+            return;
+
+        stopPreview();
+        save();
+        auto chain = slots;
+        auto input = audio;
+        const auto rate = source.sampleRate;
+        auto result = std::make_shared<std::optional<juce::AudioBuffer<float>>>();
+        juce::Component::SafePointer<ChainPanel> safeThis (this);
+
+        host.runJob ("Applying the plug-in chain...",
+                     [chain, input, rate, result] (std::function<bool (float)> progress)
+                     {
+                         *result = render (chain, *input, rate, progress);
+                         return result->has_value();
+                     },
+                     [safeThis, write, result] (bool finished)
+                     {
+                         auto* self = safeThis.getComponent();
+
+                         if (! finished || ! result->has_value())
+                         {
+                             if (self != nullptr)
+                                 self->status.setText ("Cancelled.", juce::dontSendNotification);
+
+                             return;
+                         }
+
+                         if (! write (**result))
+                         {
+                             if (self != nullptr)
+                                 self->status.setText ("The file is closed: can't apply.", juce::dontSendNotification);
+
+                             return;
+                         }
+
+                         if (self != nullptr)
+                             self->close();
+                     });
+    }
+
+    static juce::File chainFile()   { return startup::settingsFolder().getChildFile ("plugin-chain.xml"); }
+
+    void save()
+    {
+        juce::XmlElement xml ("ADORMIS_CHAIN");
+
+        for (const auto& slot : slots)
+        {
+            juce::MemoryBlock state;
+            slot.plugin->getStateInformation (state);
+            auto* e = xml.createNewChildElement ("SLOT");
+            e->setAttribute ("on", slot.on->load());
+            e->setAttribute ("state", state.toBase64Encoding());
+            e->addChildElement (slot.description.createXml().release());
+        }
+
+        chainFile().getParentDirectory().createDirectory();
+        xml.writeTo (chainFile());
+    }
+
+    // The last chain; a plug-in that can't be opened any more is left out and named.
+    void restore()
+    {
+        const auto xml = juce::parseXML (chainFile());
+
+        if (xml == nullptr || ! xml->hasTagName ("ADORMIS_CHAIN"))
+            return;
+
+        juce::StringArray missing;
+
+        for (auto* e : xml->getChildWithTagNameIterator ("SLOT"))
+        {
+            juce::PluginDescription description;
+            auto* d = e->getChildByName ("PLUGIN");
+
+            if (d == nullptr || ! description.loadFromXml (*d))
+                continue;
+
+            juce::String error;
+            auto slot = openSlot (library, description, source.sampleRate, audio->getNumChannels(), error);
+
+            if (! slot.has_value())
+            {
+                missing.add (description.name);
+                continue;
+            }
+
+            juce::MemoryBlock state;
+
+            if (state.fromBase64Encoding (e->getStringAttribute ("state")) && state.getSize() > 0)
+                slot->plugin->setStateInformation (state.getData(), (int) state.getSize());
+
+            slot->on->store (e->getBoolAttribute ("on", true));
+            slots.push_back (std::move (*slot));
+        }
+
+        selected = slots.empty() ? -1 : 0;
+
+        if (! missing.isEmpty())
+            status.setText ("Left out: " + missing.joinIntoString (", "), juce::dontSendNotification);
+    }
+
+    static constexpr int barHeight = 76, listWidth = 240, minEditorWidth = 420, minEditorHeight = 300;
+
+    Library& library;
+    BassFinderSource source;
+    BassFinderHost host;
+    std::function<void()> openManager, onClose;
+    std::shared_ptr<juce::AudioBuffer<float>> audio;
+    std::shared_ptr<std::atomic<bool>> bypass = std::make_shared<std::atomic<bool>> (false);
+    Slots slots;
+    int selected = -1;
+    std::unique_ptr<juce::AudioProcessorEditor> editor;
+    bool previewing = false;
+    juce::ListBox list;
+    juce::Label title, status, empty;
+    juce::TextButton add { "Add..." }, remove { "Remove" }, up { "Move up" }, down { "Move down" },
+                     preview { juce::CharPointer_UTF8 ("\xe2\x96\xb6  Preview (Space)") }, bypassAll { "Bypass all" },
+                     apply { "Apply" }, cancel { "Close" };
+};
+
+class ChainWindow final : public juce::DocumentWindow
+{
+public:
+    explicit ChainWindow (ChainPanel* panel)
+        : juce::DocumentWindow ("Plug-In Chain", colours::bg, juce::DocumentWindow::closeButton)
+    {
+        setUsingNativeTitleBar (false);
+        setLookAndFeel (&look);
+        setContentOwned (panel, true);
+        setResizable (false, false);
+        setAlwaysOnTop (true);
+        centreWithSize (getWidth(), getHeight());
+    }
+
+    ~ChainWindow() override
+    {
+        clearContentComponent();
+        setLookAndFeel (nullptr);
+    }
+
+    void closeButtonPressed() override
+    {
+        if (auto* p = dynamic_cast<ChainPanel*> (getContentComponent()))
             p->close();
     }
 
@@ -768,7 +1383,7 @@ bool runScanChild (const juce::StringArray& args)
 
     juce::AudioPluginFormatManager manager;
     juce::addDefaultFormatsToManager (manager);
-    juce::XmlElement report ("PLUGINS");
+    ScanReport report { juce::File (args[2].unquoted()) };
 
     for (auto* format : manager.getFormats())
     {
@@ -787,14 +1402,17 @@ bool runScanChild (const juce::StringArray& args)
                 juce::String error;
 
                 if (manager.createPluginInstance (*d, 44100.0, renderBlock, error) == nullptr)
+                {
+                    report.failed (d->name);
                     continue;
+                }
             }
 
-            report.addChildElement (d->createXml().release());
+            report.found (*d);
         }
     }
 
-    report.writeTo (juce::File (args[2].unquoted()));
+    report.finish();
     return true;
 }
 
@@ -808,7 +1426,7 @@ Library::Library() : juce::Thread ("Plug-in scan")
 Library::~Library()
 {
     alive->store (false);
-    stopThread (scanTimeoutMs + 2000);
+    stopThread (5000);
 }
 
 void Library::load()
@@ -979,43 +1597,73 @@ void Library::run()
             else
             {
                 const auto started = juce::Time::getMillisecondCounter();
+                auto lastChange = started;
+                auto lastSize = (juce::int64) -1;
+                auto tooLong = false;
 
-                while (child.isRunning() && ! threadShouldExit()
-                       && juce::Time::getMillisecondCounter() - started < (juce::uint32) scanTimeoutMs)
+                while (child.isRunning() && ! threadShouldExit())
+                {
+                    const auto now = juce::Time::getMillisecondCounter();
+
+                    if (const auto size = report.getSize(); size != lastSize)
+                    {
+                        lastSize = size;
+                        lastChange = now;
+                    }
+
+                    if (now - lastChange > (juce::uint32) scanSilenceLimitMs || now - started > (juce::uint32) scanTotalLimitMs)
+                    {
+                        tooLong = true;
+                        break;
+                    }
+
                     wait (50);
+                }
+
+                const auto stopped = threadShouldExit();
 
                 if (child.isRunning())
-                {
                     child.kill();
-                    problem = threadShouldExit() ? "scan stopped" : "it did not answer for 60 seconds";
-                }
-                else if (const auto xml = juce::parseXML (report); xml == nullptr)
+
+                // What it reported before anything went wrong still counts.
+                const auto xml = juce::parseXML (report);
+                const auto complete = xml != nullptr && xml->getBoolAttribute ("complete");
+                juce::StringArray notOpened;
+                auto kept = 0;
+
+                if (xml != nullptr)
                 {
-                    problem = "it crashed while being opened";
-                }
-                else
-                {
-                    auto any = false;
+                    for (auto* e : xml->getChildWithTagNameIterator ("FAILED"))
+                        notOpened.add (e->getStringAttribute ("name"));
 
                     for (auto* e : xml->getChildIterator())
                     {
                         juce::PluginDescription d;
 
-                        if (d.loadFromXml (*e))
+                        if (! e->hasTagName ("FAILED") && d.loadFromXml (*e))
                         {
-                            d.lastFileModTime = juce::File (file).getLastModificationTime();
+                            // An unfinished file is checked again at the next Rescan.
+                            d.lastFileModTime = complete && notOpened.isEmpty() ? juce::File (file).getLastModificationTime() : juce::Time();
                             d.lastInfoUpdateTime = juce::Time::getCurrentTime();
                             known.addType (d);
-                            any = true;
+                            ++kept;
                         }
                     }
-
-                    if (! any)
-                        problem = "no plug-in could be opened in it";
                 }
+
+                if (stopped)
+                    problem = "scan stopped";
+                else if (! complete)
+                    problem = juce::String (tooLong ? "it stopped answering" : "it crashed while being opened")
+                            + (kept > 0 ? " (" + juce::String (kept) + " of its plug-ins were kept)" : juce::String());
+                else if (kept == 0 && notOpened.isEmpty())
+                    problem = "no plug-in could be opened in it";
+                else if (! notOpened.isEmpty())
+                    problem = "could not open " + notOpened.joinIntoString (", ");
             }
 
             report.deleteFile();
+            report.getSiblingFile (report.getFileName() + ".next").deleteFile();
 
             if (problem.isNotEmpty())
                 nowFailing.add (file + ": " + problem);
@@ -1051,32 +1699,19 @@ std::unique_ptr<juce::DocumentWindow> createPluginWindow (Library& library, cons
                                                           BassFinderSource source, BassFinderHost host,
                                                           std::function<void()> onClose, juce::String& error)
 {
-    if (description.isInstrument)
-    {
-        error = description.name + " is an instrument: it makes sound of its own and can't process a file.";
+    auto slot = openSlot (library, description, source.sampleRate, source.audio.getNumChannels(), error);
+
+    if (! slot.has_value())
         return {};
-    }
 
-    auto instance = library.formats().createPluginInstance (description, source.sampleRate, renderBlock, error);
-
-    if (instance == nullptr)
-    {
-        error = "Could not open " + description.name + ": " + error;
-        return {};
-    }
-
-    const auto fileChannels = source.audio.getNumChannels();
-    const auto channels = setUpChannels (*instance, fileChannels);
-
-    if (channels == 0)
-    {
-        error = description.name + " can't work on " + juce::String (fileChannels)
-              + (fileChannels == 1 ? " channel." : " channels.");
-        return {};
-    }
-
-    std::shared_ptr<juce::AudioPluginInstance> shared (std::move (instance));
-    auto* panel = new PluginPanel (shared, description, channels, std::move (source), std::move (host), std::move (onClose));
+    auto* panel = new PluginPanel (std::move (*slot), std::move (source), std::move (host), std::move (onClose));
     return std::make_unique<PluginWindow> (description.name, panel);
+}
+
+std::unique_ptr<juce::DocumentWindow> createChainWindow (Library& library, BassFinderSource source, BassFinderHost host,
+                                                         std::function<void()> openManager, std::function<void()> onClose)
+{
+    auto* panel = new ChainPanel (library, std::move (source), std::move (host), std::move (openManager), std::move (onClose));
+    return std::make_unique<ChainWindow> (panel);
 }
 } // namespace wf::plugins

@@ -181,6 +181,7 @@ private:
     void showEffect (wf::EffectKind kind);
     void showPluginManager (bool rescan);
     void showPlugin (const juce::PluginDescription&);
+    void showPluginChain();
 
     // Ctrl+R: the first press opens a new empty file and the Record window,
     // the next ones start and stop recording into it.
