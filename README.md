@@ -11,10 +11,12 @@
 
 Preview version, free and open source. The apps are not signed yet, so your system asks you to confirm the first time: see [Install](#install).
 
+**Test version with VST3 plug-ins: [0.1.98, not tested](https://github.com/jastincheis/adormis-audio/releases/tag/v0.1.98).** For everyday work use 0.1.80 above.
+
 ## About
 
 A destructive audio editor running natively on **macOS** (Apple Silicon and Intel),
-**Linux** and **Windows**, with VST3 plug-ins.
+**Linux** and **Windows**, with VST3 plug-ins in the test version 0.1.98.
 
 Adormis Audio (formerly WaveForge) is an independent project. It is not affiliated with, endorsed by or
 derived from Sound Forge or its owners; it only follows the publicly documented
@@ -87,7 +89,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 
 **Keyboard:** the classic default shortcuts (F1 lists them); change any of them in **Options > Customize Keyboard** (saved).
 
-**VST3 plug-ins:** FX Favorites > Plug-In Manager finds the plug-ins in the standard folders and in folders you add. Each one is opened in a separate process first, so a broken plug-in is reported and left out instead of taking the program down. Run one on the selection or the whole file with its own window, a live Preview (Space) and an undoable Apply; its delay is compensated, its tail rings on, and its settings are remembered. Instruments are listed but can't process audio. Planned: the Plug-In Chainer.
+**VST3 plug-ins (test version 0.1.98, not tested yet):** FX Favorites > Plug-In Manager finds the plug-ins in the standard folders and in folders you add. Each one is opened in a separate process first, so a broken plug-in is reported and left out instead of taking the program down. Run one on the selection or the whole file with its own window, a live Preview (Space) and an undoable Apply; its delay is compensated, its tail rings on, and its settings are remembered. Instruments are listed but can't process audio. Planned: the Plug-In Chainer.
 
 On macOS, `Ctrl` shortcuts use `Cmd` and `Alt` uses `Option`.
 
