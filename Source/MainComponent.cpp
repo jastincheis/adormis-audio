@@ -707,6 +707,8 @@ MainComponent::~MainComponent()
     deEsserWindow.reset();
     drumRebuilderWindow.reset();   // takes its player off the audio device
     effectWindow.reset();
+    pluginManagerWindow.reset();
+    pluginLibrary.reset();
     job.reset();
     stopToolPreview();
     stopTimer();
@@ -3676,6 +3678,101 @@ void MainComponent::showEffect (wf::EffectKind kind)
     commandManager.commandStatusChanged();
 }
 
+void MainComponent::showPluginManager (bool rescan)
+{
+    if (pluginLibrary == nullptr)
+        pluginLibrary = std::make_unique<wf::plugins::Library>();
+
+    if (rescan)
+        pluginLibrary->startScan();
+
+    if (pluginManagerWindow != nullptr)
+    {
+        pluginManagerWindow->toFront (true);
+        return;
+    }
+
+    const juce::Component::SafePointer<MainComponent> safeThis (this);
+    wf::plugins::ManagerCallbacks callbacks;
+    callbacks.hasFile = [safeThis]
+    {
+        auto* main = safeThis.getComponent();
+        return main != nullptr && main->activeDocument() != nullptr && ! main->activeDocument()->isEmpty();
+    };
+    callbacks.use = [safeThis] (const juce::PluginDescription& description)
+    {
+        if (auto* main = safeThis.getComponent())
+            main->showPlugin (description);
+    };
+    callbacks.chooseFolder = [safeThis] (std::function<void (juce::File)> chosen)
+    {
+        if (auto* main = safeThis.getComponent())
+            main->filePicker.launch ("Add a folder with VST3 plug-ins", juce::File::getSpecialLocation (juce::File::userHomeDirectory), {},
+                                     juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                                     [chosen] (const juce::Array<juce::File>& files)
+                                     {
+                                         chosen (files.isEmpty() ? juce::File() : files.getFirst());
+                                     });
+    };
+    callbacks.onClose = [safeThis]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->pluginManagerWindow.reset();
+        });
+    };
+
+    pluginManagerWindow = wf::plugins::createManagerWindow (*pluginLibrary, std::move (callbacks));
+    pluginManagerWindow->setVisible (true);
+    pluginManagerWindow->toFront (true);
+}
+
+void MainComponent::showPlugin (const juce::PluginDescription& description)
+{
+    if (effectWindow != nullptr)
+    {
+        effectWindow->toFront (true);
+        return;
+    }
+
+    if (toolWindowOpen() || pluginLibrary == nullptr)
+        return;
+
+    auto source = bassFinderSource();
+
+    if (! source.has_value())
+        return;
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+            {
+                main->stopToolPreview();
+                main->effectWindow.reset();
+                main->commandManager.commandStatusChanged();
+            }
+        });
+    };
+
+    lastCommandName = description.name;
+    toolUndoName = description.name;
+    juce::String error;
+    effectWindow = wf::plugins::createPluginWindow (*pluginLibrary, description, std::move (*source), toolHost(), std::move (onClose), error);
+
+    if (effectWindow == nullptr)
+    {
+        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "VST3 plug-in", error);
+        return;
+    }
+
+    effectWindow->setVisible (true);
+    effectWindow->toFront (true);
+    commandManager.commandStatusChanged();
+}
+
 wf::BassFinderHost MainComponent::toolHost()
 {
     wf::BassFinderHost host;
@@ -4655,6 +4752,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
     switch (id)
     {
+        case wf::favPluginManager: case wf::favRescan:
         case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice: case wf::optKeyboard: case wf::toolsBatch:
         case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord: case wf::optRecordComputer: case wf::helpCheckUpdates:
             break;
@@ -5007,6 +5105,8 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::toolsDrumRebuilder: showDrumRebuilder(); return true;
         case wf::toolsGetStems:     getStems (activeDocument()); return true;
         case wf::toolsDeEsser:      showDeEsser(); return true;
+        case wf::favPluginManager:  showPluginManager (false); return true;
+        case wf::favRescan:         showPluginManager (true); return true;
         case wf::procEqParametric:  showEffect (wf::EffectKind::eq); return true;
         case wf::procEqGraphic:     showEffect (wf::EffectKind::graphicEq); return true;
         case wf::procFadeGraphic: case wf::insertVolumeEnv: showEffect (wf::EffectKind::envelope); return true;

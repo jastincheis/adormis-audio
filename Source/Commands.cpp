@@ -337,6 +337,7 @@ const std::vector<CommandDef>& allCommands()
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,
         optPlay, optPlayAll, optPlayPause, optStop, optGoStart, optGoEnd, optGoLeftEdge, optGoRightEdge, optAudioDevice,
         optCursorLeft, optCursorRight, optExtendLeft, optExtendRight, optPlayFromCursor, optMoveSelectionLeft, optMoveSelectionRight, optSlideSelectionLeft, optSlideSelectionRight,
+        favPluginManager, favRescan,
         helpShortcuts, helpAbout, helpCheckUpdates, helpUpdatesAtStart
     };
 

@@ -24,6 +24,7 @@
 #include "UndoHistoryWindow.h"
 #include "SpaceKey.h"
 #include "UpdateCheck.h"
+#include "PluginHost.h"
 
 class ShortcutsWindow;
 
@@ -178,6 +179,8 @@ private:
     }
 
     void showEffect (wf::EffectKind kind);
+    void showPluginManager (bool rescan);
+    void showPlugin (const juce::PluginDescription&);
 
     // Ctrl+R: the first press opens a new empty file and the Record window,
     // the next ones start and stop recording into it.
@@ -343,7 +346,9 @@ private:
     std::unique_ptr<juce::DocumentWindow> bassFinderWindow;
     std::unique_ptr<juce::DocumentWindow> deEsserWindow;
     std::unique_ptr<juce::DocumentWindow> drumRebuilderWindow;   // not a tool window: it works on its own copy
-    std::unique_ptr<juce::DocumentWindow> effectWindow;   // EQ, compressor, delay or reverb
+    std::unique_ptr<juce::DocumentWindow> effectWindow;   // EQ, compressor, delay, reverb or a VST3 plug-in
+    std::unique_ptr<juce::DocumentWindow> pluginManagerWindow;
+    std::unique_ptr<wf::plugins::Library> pluginLibrary;
     std::unique_ptr<juce::ThreadWithProgressWindow> job;
     std::unique_ptr<juce::PositionableAudioSource> toolPreview;
 

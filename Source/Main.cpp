@@ -1,3 +1,4 @@
+#include "PluginHost.h"
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
 #include "StartupLog.h"
@@ -11,6 +12,13 @@ public:
 
     void initialise (const juce::String& commandLine) override
     {
+        // The child process of a plug-in scan: no window, no log, just the report.
+        if (wf::plugins::runScanChild (getCommandLineParameterArray()))
+        {
+            quit();
+            return;
+        }
+
         wf::startup::beginLog();
         wf::startup::log ("start: " + commandLine);
         juce::LookAndFeel::setDefaultLookAndFeel (&lookAndFeel);

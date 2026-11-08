@@ -133,6 +133,7 @@ target_sources(AdormisAudio PRIVATE
     Source/Effects.cpp
     Source/EffectWindow.cpp
     Source/FilePicker.cpp
+    Source/PluginHost.cpp
     Source/Processes.cpp
     Source/SaveAsDialog.cpp
     Source/VolumeDialog.cpp
@@ -178,6 +179,7 @@ endif()
 
 target_compile_definitions(AdormisAudio PRIVATE
     JUCE_WEB_BROWSER=0
+    JUCE_PLUGINHOST_VST3=1
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:AdormisAudio,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:AdormisAudio,JUCE_VERSION>")
 
