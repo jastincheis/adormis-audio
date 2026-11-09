@@ -243,6 +243,24 @@ void showWaveColourPicker (juce::Component& parent, juce::Rectangle<int> area, s
         area, &parent);
 }
 
+void showSelectionColourPicker (juce::Component& parent, juce::Rectangle<int> area, std::function<void()> onChanged)
+{
+    const std::vector<juce::Colour> presets {
+        juce::Colour (0xff000000), juce::Colour (0xff2a6bd8), juce::Colour (0xff1f9e8f),
+        juce::Colour (0xff8a4bd8), juce::Colour (0xff2e9e46), juce::Colour (0xffe8344a),
+        juce::Colour (0xffff8a3d), juce::Colour (0xff6b6b6b) };
+
+    juce::CallOutBox::launchAsynchronously (
+        std::make_unique<ColourPicker> (appearance::selectionColour(), appearance::defaultSelectionColour(), presets,
+                                        [onChanged = std::move (onChanged)] (juce::Colour c)
+                                        {
+                                            appearance::setSelectionColour (c);
+                                            if (onChanged)
+                                                onChanged();
+                                        }),
+        area, &parent);
+}
+
 void showBackgroundPicker (juce::Component& parent, juce::Rectangle<int> area, std::function<void()> onChanged,
                            std::function<void()> onChoosePhoto)
 {

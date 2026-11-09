@@ -2,6 +2,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
 #include "StartupLog.h"
+#include "Tempo.h"
 
 class AdormisAudioApplication final : public juce::JUCEApplication
 {
@@ -15,6 +16,44 @@ public:
         // The child process of a plug-in scan: no window, no log, just the report.
         if (wf::plugins::runScanChild (getCommandLineParameterArray()))
         {
+            quit();
+            return;
+        }
+
+        // The child process of a plug-in preview: opens one plug-in, saves a
+        // picture of its editor, then quits. A crash takes only this process.
+        if (wf::plugins::runThumbnailChild (getCommandLineParameterArray()))
+        {
+            quit();
+            return;
+        }
+
+        // Self-test: Adormis Audio --measure-tempo <report.txt> <audio files...>
+        // writes the detected BPM of each file, then quits. No window.
+        if (const auto a = getCommandLineParameterArray(); a.size() >= 2 && a[0] == "--measure-tempo")
+        {
+            juce::AudioFormatManager fm;
+            fm.registerBasicFormats();
+            juce::String out;
+
+            for (int i = 2; i < a.size(); ++i)
+            {
+                const auto f = juce::File::getCurrentWorkingDirectory().getChildFile (a[i].unquoted());
+                std::unique_ptr<juce::AudioFormatReader> r (fm.createReaderFor (f));
+
+                if (r == nullptr)
+                {
+                    out << f.getFileName() << ": cannot read\n";
+                    continue;
+                }
+
+                juce::AudioBuffer<float> buf ((int) r->numChannels, (int) r->lengthInSamples);
+                r->read (&buf, 0, (int) r->lengthInSamples, 0, true, true);
+                const auto bpm = wf::measureTempo (buf, { 0, (int) r->lengthInSamples }, r->sampleRate);
+                out << f.getFileName() << ": " << (bpm ? juce::String (*bpm, 1) : juce::String ("none")) << "\n";
+            }
+
+            juce::File::getCurrentWorkingDirectory().getChildFile (a[1].unquoted()).replaceWithText (out);
             quit();
             return;
         }

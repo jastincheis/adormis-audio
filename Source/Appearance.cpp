@@ -8,6 +8,7 @@ namespace wf::appearance
 namespace
 {
 const juce::Colour defaultWave (0xffd8ecff);
+const juce::Colour defaultSelection (0xff000000);   // black, drawn over the selection at a fixed alpha
 constexpr int smallTile = 96;           // the simple textures repeat every 96 px
 constexpr int maxPhotoSide = 2560;      // bigger photos are made smaller once
 constexpr float photoDim = 0.32f;       // black over a photo, so the waves read
@@ -23,6 +24,7 @@ juce::Colour readColour (const juce::String& key, juce::Colour fallback)
 struct State
 {
     juce::Colour wave = readColour ("look.waveColour", defaultWave);
+    juce::Colour selection = readColour ("look.selectionColour", defaultSelection);
     Background background = []
     {
         auto b = defaultBackground();
@@ -232,6 +234,17 @@ void setWaveColour (juce::Colour c)
     auto* obj = new juce::DynamicObject();
     obj->setProperty ("colour", c.toString());
     wf::settings::set ("look.waveColour", c == defaultWave ? juce::var() : juce::var (obj));
+}
+
+juce::Colour defaultSelectionColour()   { return defaultSelection; }
+juce::Colour selectionColour()          { return state().selection; }
+
+void setSelectionColour (juce::Colour c)
+{
+    state().selection = c;
+    auto* obj = new juce::DynamicObject();
+    obj->setProperty ("colour", c.toString());
+    wf::settings::set ("look.selectionColour", c == defaultSelection ? juce::var() : juce::var (obj));
 }
 
 juce::String textureName (int texture)

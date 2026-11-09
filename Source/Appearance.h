@@ -11,6 +11,11 @@ juce::Colour defaultWaveColour();
 juce::Colour waveColour();
 void setWaveColour (juce::Colour);
 
+// The tint over the selected part of a waveform (right-click > Selection Colour...).
+juce::Colour defaultSelectionColour();
+juce::Colour selectionColour();
+void setSelectionColour (juce::Colour);
+
 // Ready textures, drawn in the background colour.
 enum Texture { teddyBears = 0, grain, plain, stripes, dots, grid, diamonds, waves, numTextures };
 juce::String textureName (int texture);

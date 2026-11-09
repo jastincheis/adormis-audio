@@ -2657,6 +2657,11 @@ void MainComponent::addLookItems (juce::PopupMenu& menu)
         if (auto* main = safeThis.getComponent())
             wf::showWaveColourPicker (*main, at, repaintAll);
     });
+    menu.addItem ("Selection Colour...", [safeThis, at, repaintAll]
+    {
+        if (auto* main = safeThis.getComponent())
+            wf::showSelectionColourPicker (*main, at, repaintAll);
+    });
     menu.addItem ("Background...", [safeThis, at, repaintAll]
     {
         if (auto* main = safeThis.getComponent())

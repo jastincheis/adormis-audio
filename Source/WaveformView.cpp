@@ -12,7 +12,7 @@ constexpr int laneGap         = 14;   // the drag strip between channels (and un
 constexpr int minSelectPixels = 4;    // a press must move this far before it selects
 
 const juce::Colour waveSelected    (0xffffffff);
-const juce::Colour selectionShade  = juce::Colours::black.withAlpha (0.38f);
+constexpr float selectionAlpha     = 0.38f;        // how strongly the selection colour tints the selected part
 const juce::Colour cursorColour    (0xffffffff);
 const juce::Colour playheadColour  (0xffffc23a);
 const juce::Colour markerColour    (0xffff8a3d);
@@ -1067,7 +1067,7 @@ void WaveformView::paint (juce::Graphics& g)
         {
             // Only the selected channel's lane when one channel is picked.
             const auto band = selectedChannel >= 0 ? laneBounds (selectedChannel) : area;
-            g.setColour (selectionShade);
+            g.setColour (wf::appearance::selectionColour().withAlpha (selectionAlpha));
             g.fillRect (juce::Rectangle<float> (x1, (float) band.getY(), x2 - x1, (float) band.getHeight()));
         }
     }

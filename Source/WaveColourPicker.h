@@ -60,6 +60,7 @@ private:
 // Open in a call-out next to `area` (in `parent`'s coordinates); `onChanged`
 // runs after every pick (repaint the windows).
 void showWaveColourPicker (juce::Component& parent, juce::Rectangle<int> area, std::function<void()> onChanged);
+void showSelectionColourPicker (juce::Component& parent, juce::Rectangle<int> area, std::function<void()> onChanged);
 void showBackgroundPicker (juce::Component& parent, juce::Rectangle<int> area, std::function<void()> onChanged,
                            std::function<void()> onChoosePhoto);
 } // namespace wf

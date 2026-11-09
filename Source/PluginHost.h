@@ -13,6 +13,11 @@ namespace wf::plugins
 // scan. Writes what it finds and returns true when these are its arguments.
 bool runScanChild (const juce::StringArray& args);
 
+// Adormis Audio --thumbnail-plugin <plug-in> <out.png> [name]: the child process
+// of a preview. Opens the plug-in, saves a picture of its editor, returns true
+// when these are its arguments (so a crash takes only this process).
+bool runThumbnailChild (const juce::StringArray& args);
+
 // The known plug-ins and the folders searched for them, remembered between starts.
 class Library final : public juce::ChangeBroadcaster,
                       private juce::Thread

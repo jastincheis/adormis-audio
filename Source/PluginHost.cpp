@@ -13,10 +13,43 @@ using namespace dark;
 
 int scanSilenceLimitMs = 60000;                  // no plug-in checked for this long: it hangs
 constexpr int scanTotalLimitMs = 30 * 60 * 1000;   // one file (a shell can hold hundreds)
+constexpr int thumbnailLimitMs = 20000;            // one plug-in's preview render: kill if slower
 constexpr int renderBlock = 4096;
 constexpr double longestTailSeconds = 30.0;
 
 juce::File libraryFile()   { return startup::settingsFolder().getChildFile ("plugins.xml"); }
+
+// Where a plug-in's editor snapshot is cached, one PNG per plug-in identity.
+juce::File thumbnailFolder()
+{
+    auto dir = startup::settingsFolder().getChildFile ("plugin-thumbs");
+    dir.createDirectory();
+    return dir;
+}
+
+juce::File thumbnailFileFor (const juce::PluginDescription& d)
+{
+    return thumbnailFolder().getChildFile (juce::String::toHexString (d.createIdentifierString().hashCode64()) + ".png");
+}
+
+// A snapshot that is one flat colour (a plug-in whose native editor never drew
+// into our off-screen image) is worse than none, so we don't keep it.
+bool imageHasContent (const juce::Image& img)
+{
+    if (! img.isValid() || img.getWidth() < 2 || img.getHeight() < 2)
+        return false;
+
+    const auto first = img.getPixelAt (0, 0);
+    const int stepX = juce::jmax (1, img.getWidth()  / 24);
+    const int stepY = juce::jmax (1, img.getHeight() / 24);
+
+    for (int y = 0; y < img.getHeight(); y += stepY)
+        for (int x = 0; x < img.getWidth(); x += stepX)
+            if (img.getPixelAt (x, y) != first)
+                return true;
+
+    return false;
+}
 
 // What a scan's child process has found so far. Rewritten after every plug-in,
 // so the parent sees it moving and keeps what came before a crash or a hang.
@@ -503,6 +536,16 @@ private:
 
     void timerCallback() override
     {
+        // Safety net for the Manager's previews: once the real editor has been on
+        // screen for a moment, save a snapshot of it to the same cache. Works for
+        // any editor drawn with JUCE; a native-toolkit editor may still come up
+        // blank and is dropped by imageHasContent.
+        if (! thumbSaved && ++thumbTicks >= 24)
+        {
+            thumbSaved = true;
+            saveEditorThumbnail();
+        }
+
         if (! previewing)
             return;
 
@@ -512,6 +555,34 @@ private:
             stopPreview();
         else if (source.showPlayhead != nullptr)
             source.showPlayhead ((double) (p % std::max (1, audio->getNumSamples())) / source.sampleRate);
+    }
+
+    void saveEditorThumbnail()
+    {
+        if (editor == nullptr)
+            return;
+
+        auto image = editor->createComponentSnapshot (editor->getLocalBounds(), false);
+
+        if (! imageHasContent (image))
+            return;
+
+        constexpr int maxW = 240;
+
+        if (image.getWidth() > maxW)
+        {
+            const auto h = juce::roundToInt ((double) image.getHeight() * maxW / image.getWidth());
+            image = image.rescaled (maxW, juce::jmax (1, h), juce::Graphics::highResamplingQuality);
+        }
+
+        const auto out = thumbnailFileFor (description);
+        out.deleteFile();
+
+        if (auto stream = out.createOutputStream())
+        {
+            juce::PNGImageFormat png;
+            png.writeImageToStream (image, *stream);
+        }
     }
 
     void applyToFile()
@@ -573,6 +644,8 @@ private:
     std::unique_ptr<juce::AudioProcessorEditor> editor;
     juce::MemoryBlock defaults;
     bool previewing = false;
+    bool thumbSaved = false;
+    int thumbTicks = 0;
     juce::Label title, status;
     juce::TextButton preview { juce::CharPointer_UTF8 ("\xe2\x96\xb6  Preview (Space)") }, bypassButton { "Bypass" },
                      defaultsButton { "Defaults" }, apply { "Apply" }, cancel { "Close" };
@@ -1152,7 +1225,7 @@ public:
         addAndMakeVisible (foldersLabel);
         addAndMakeVisible (status);
 
-        plugins.setRowHeight (36);
+        plugins.setRowHeight (54);
         plugins.setModel (this);
         plugins.setColour (juce::ListBox::backgroundColourId, colours::surface);
         addAndMakeVisible (plugins);
@@ -1195,10 +1268,14 @@ public:
                 library.startScan();
             }
         };
+        makeThumbs.setButtonText ("Generate previews");
+        makeThumbs.setTooltip ("Open each plug-in once in a separate process and save a picture of its interface. "
+                               "A broken plug-in only loses its own preview.");
+        makeThumbs.onClick = [this] { startThumbs(); };
         close.setButtonText ("Close");
         close.onClick = [this] { if (callbacks.onClose != nullptr) callbacks.onClose(); };
 
-        for (auto* b : { &use, &rescan, &addFolder, &removeFolder, &close })
+        for (auto* b : { &use, &rescan, &addFolder, &removeFolder, &makeThumbs, &close })
             addAndMakeVisible (b);
 
         library.addChangeListener (this);
@@ -1211,6 +1288,13 @@ public:
 
     ~ManagerPanel() override
     {
+        if (thumbJob != nullptr)
+        {
+            thumbJob->signalThreadShouldExit();
+            thumbJob->stopThread (4000);
+            thumbJob.reset();
+        }
+
         library.removeChangeListener (this);
         plugins.setModel (nullptr);
         folders.setModel (nullptr);
@@ -1231,6 +1315,8 @@ public:
         addFolder.setBounds (buttons.removeFromLeft (100));
         buttons.removeFromLeft (6);
         removeFolder.setBounds (buttons.removeFromLeft (110));
+        buttons.removeFromLeft (6);
+        makeThumbs.setBounds (buttons.removeFromLeft (130));
         area.removeFromBottom (8);
         status.setBounds (area.removeFromBottom (22));
         area.removeFromBottom (4);
@@ -1274,12 +1360,34 @@ private:
         if (isPluginRow (row))
         {
             const auto& d = descriptions.getReference (row);
+
+            const int pad = 5;
+            juce::Rectangle<int> box (pad, pad, 84, height - pad * 2);
+            g.setColour (colours::surface.darker (0.35f));
+            g.fillRoundedRectangle (box.toFloat(), 3.0f);
+
+            if (const auto img = getThumb (d); img.isValid())
+            {
+                const auto inner = box.reduced (2).toFloat();
+                const auto placed = juce::RectanglePlacement (juce::RectanglePlacement::centred | juce::RectanglePlacement::onlyReduceInSize)
+                                        .appliedTo (juce::Rectangle<float> ((float) img.getWidth(), (float) img.getHeight()), inner);
+                g.drawImage (img, placed);
+            }
+            else
+            {
+                g.setColour (colours::muted);
+                g.setFont (9.0f);
+                g.drawText ("no preview", box, juce::Justification::centred, false);
+            }
+
+            const int tx = box.getRight() + 8;
+            const auto tw = width - tx - 8;
             g.setColour (d.isInstrument ? colours::muted : colours::ink);
             g.setFont (juce::FontOptions (13.5f, juce::Font::bold));
-            g.drawText (d.name + (d.isInstrument ? "  (instrument: makes sound, can't process audio)" : ""), 8, 2, text, height / 2, juce::Justification::centredLeft, true);
+            g.drawText (d.name + (d.isInstrument ? "  (instrument: makes sound, can't process audio)" : ""), tx, 6, tw, height / 2 - 6, juce::Justification::centredLeft, true);
             g.setColour (colours::muted);
             g.setFont (11.5f);
-            g.drawText (d.manufacturerName + "  " + d.version + "  " + d.fileOrIdentifier, 8, height / 2, text, height / 2 - 2, juce::Justification::centredLeft, true);
+            g.drawText (d.manufacturerName + "  " + d.version, tx, height / 2, tw, height / 2 - 6, juce::Justification::centredLeft, true);
             return;
         }
 
@@ -1312,6 +1420,8 @@ private:
                                        + ". Install a plug-in with its installer or copy it to one of these folders, then Rescan.",
                         juce::dontSendNotification);
         rescan.setEnabled (! scanning);
+        makeThumbs.setEnabled (! scanning && ! descriptions.isEmpty()
+                               && (thumbJob == nullptr || ! thumbJob->isThreadRunning()));
         updateButtons();
     }
 
@@ -1331,14 +1441,138 @@ private:
             callbacks.use (descriptions.getReference (row));
     }
 
+    // The editor snapshot shown at the left of a row. Loaded from disk once and
+    // kept in memory; a missing file caches as an invalid image so paint() does
+    // not keep hitting the disk. Cleared when a new batch of previews is made.
+    juce::Image getThumb (const juce::PluginDescription& d)
+    {
+        const auto key = d.createIdentifierString();
+
+        if (thumbMem.contains (key))
+            return thumbMem[key];
+
+        juce::Image img;
+        if (const auto f = thumbnailFileFor (d); f.existsAsFile())
+            img = juce::ImageFileFormat::loadFrom (f);
+
+        thumbMem.set (key, img);
+        return img;
+    }
+
+    // Opens every plug-in once, each in its own process, to save a preview of its
+    // interface. Runs off the UI thread; a hung or crashing plug-in is killed
+    // after a timeout and only loses its own preview.
+    class ThumbJob final : public juce::Thread
+    {
+    public:
+        ThumbJob (juce::Array<juce::PluginDescription> list, juce::Component::SafePointer<ManagerPanel> ownerIn)
+            : juce::Thread ("Plug-in previews"), plugins (std::move (list)), owner (ownerIn) {}
+
+        void run() override
+        {
+            const auto program = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getFullPathName();
+
+            for (int i = 0; i < plugins.size() && ! threadShouldExit(); ++i)
+            {
+                const auto& d = plugins.getReference (i);
+                post ("Preview " + juce::String (i + 1) + " of " + juce::String (plugins.size()) + ": " + d.name);
+
+                const auto out = thumbnailFileFor (d);
+
+                if (! out.existsAsFile())
+                {
+                    juce::ChildProcess child;
+
+                    if (child.start (juce::StringArray { program, "--thumbnail-plugin", d.fileOrIdentifier,
+                                                         out.getFullPathName(), d.name }, 0))
+                    {
+                        const auto started = juce::Time::getMillisecondCounter();
+
+                        while (child.isRunning() && ! threadShouldExit())
+                        {
+                            if (juce::Time::getMillisecondCounter() - started > (juce::uint32) thumbnailLimitMs)
+                                break;
+
+                            wait (50);
+                        }
+
+                        if (child.isRunning())
+                            child.kill();
+                    }
+                }
+
+                postReady();
+            }
+
+            post (threadShouldExit() ? juce::String() : "Previews done.");
+            postDone();
+        }
+
+    private:
+        void post (juce::String text)
+        {
+            juce::MessageManager::callAsync ([owner = this->owner, text]
+            {
+                if (auto* self = owner.getComponent())
+                    if (text.isNotEmpty())
+                        self->status.setText (text, juce::dontSendNotification);
+            });
+        }
+
+        void postReady()
+        {
+            juce::MessageManager::callAsync ([owner = this->owner]
+            {
+                if (auto* self = owner.getComponent())
+                {
+                    self->thumbMem.clear();
+                    self->plugins.repaint();
+                }
+            });
+        }
+
+        void postDone()
+        {
+            juce::MessageManager::callAsync ([owner = this->owner]
+            {
+                if (auto* self = owner.getComponent())
+                    self->makeThumbs.setEnabled (true);
+            });
+        }
+
+        juce::Array<juce::PluginDescription> plugins;
+        juce::Component::SafePointer<ManagerPanel> owner;
+    };
+
+    void startThumbs()
+    {
+        if (thumbJob != nullptr)
+        {
+            if (thumbJob->isThreadRunning())
+                return;
+
+            thumbJob.reset();
+        }
+
+        if (descriptions.isEmpty())
+            return;
+
+        makeThumbs.setEnabled (false);
+        thumbMem.clear();
+        thumbJob = std::make_unique<ThumbJob> (descriptions, this);
+        thumbJob->startThread();
+    }
+
     Library& library;
     ManagerCallbacks callbacks;
     FolderModel folderModel;
     juce::ListBox plugins, folders;
     juce::Label pluginsLabel, foldersLabel, status;
-    juce::TextButton use, rescan, addFolder, removeFolder, close;
+    juce::TextButton use, rescan, addFolder, removeFolder, makeThumbs, close;
     juce::Array<juce::PluginDescription> descriptions;
     juce::StringArray failures, allFolders;
+    juce::HashMap<juce::String, juce::Image> thumbMem;
+    std::unique_ptr<ThumbJob> thumbJob;
 };
 
 class ManagerWindow final : public juce::DocumentWindow
@@ -1413,6 +1647,98 @@ bool runScanChild (const juce::StringArray& args)
     }
 
     report.finish();
+    return true;
+}
+
+bool runThumbnailChild (const juce::StringArray& args)
+{
+    if (args.size() < 3 || args[0] != "--thumbnail-plugin")
+        return false;
+
+    const auto file = args[1].unquoted();
+    const juce::File out (args[2].unquoted());
+    const auto wantName = args.size() >= 4 ? args[3].unquoted() : juce::String();
+
+    juce::AudioPluginFormatManager manager;
+    juce::addDefaultFormatsToManager (manager);
+
+    // Pick the plug-in in the file whose name was asked for (a shell holds many),
+    // or the first one if no name matched.
+    std::unique_ptr<juce::PluginDescription> chosen;
+
+    for (auto* format : manager.getFormats())
+    {
+        if (! format->fileMightContainThisPluginType (file))
+            continue;
+
+        juce::OwnedArray<juce::PluginDescription> found;
+        format->findAllTypesForFile (found, file);
+
+        for (auto* d : found)
+        {
+            if (chosen == nullptr)
+                chosen = std::make_unique<juce::PluginDescription> (*d);
+
+            if (wantName.isNotEmpty() && d->name == wantName)
+            {
+                chosen = std::make_unique<juce::PluginDescription> (*d);
+                break;
+            }
+        }
+    }
+
+    if (chosen == nullptr)
+        return true;   // handled: nothing to render, but this was our job
+
+    juce::String error;
+    auto instance = manager.createPluginInstance (*chosen, 44100.0, renderBlock, error);
+
+    if (instance == nullptr)
+        return true;
+
+    instance->prepareToPlay (44100.0, renderBlock);
+
+    std::unique_ptr<juce::AudioProcessorEditor> editor (instance->createEditorAndMakeActive());
+
+    if (editor == nullptr)
+    {
+        editor = std::make_unique<juce::GenericAudioProcessorEditor> (*instance);
+        editor->setSize (480, 360);
+    }
+
+    if (editor->getWidth() <= 0 || editor->getHeight() <= 0)
+        editor->setSize (480, 360);
+
+    editor->setTopLeftPosition (0, 0);
+
+    // createComponentSnapshot paints the editor straight into an off-screen image,
+    // so no message loop is needed. A native window that only draws once embedded
+    // in a desktop stays blank here and is dropped by imageHasContent.
+    auto image = editor->createComponentSnapshot (editor->getLocalBounds(), false);
+
+    editor.reset();
+    instance->releaseResources();
+    instance.reset();
+
+    if (imageHasContent (image))
+    {
+        constexpr int maxW = 240;
+
+        if (image.getWidth() > maxW)
+        {
+            const auto h = juce::roundToInt ((double) image.getHeight() * maxW / image.getWidth());
+            image = image.rescaled (maxW, juce::jmax (1, h), juce::Graphics::highResamplingQuality);
+        }
+
+        out.deleteFile();
+
+        if (auto stream = out.createOutputStream())
+        {
+            juce::PNGImageFormat png;
+            png.writeImageToStream (image, *stream);
+        }
+    }
+
     return true;
 }
 
