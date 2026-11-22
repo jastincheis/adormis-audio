@@ -2,21 +2,19 @@
 
 [![Buy me a coffee](https://img.shields.io/badge/Buy_me_a_coffee-fbbf24?style=for-the-badge&logo=paypal&logoColor=1e1b2e)](https://www.paypal.biz/PetreUrda)
 
-## Download version 0.1.80
+## Download version 0.2.34
 
-[![Download for Windows](https://img.shields.io/badge/Windows-2563eb?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDMuNCA5LjggMnY5LjVIMHpNMTEgMS45IDI0IDB2MTEuNUgxMXpNMCAxMi41aDkuOFYyMkwwIDIwLjZ6TTExIDEyLjVoMTNWMjRsLTEzLTEuOXoiLz48L3N2Zz4%3D)](https://github.com/jastincheis/adormis-audio/releases/download/v0.1.80/AdormisAudio-0.1.80-Windows.zip)
-[![Download for macOS](https://img.shields.io/badge/macOS-111827?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/jastincheis/adormis-audio/releases/download/v0.1.80/AdormisAudio-0.1.80-macOS.zip)
-[![Download for Linux x86_64](https://img.shields.io/badge/Linux_x86__64-d97706?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/jastincheis/adormis-audio/releases/download/v0.1.80/AdormisAudio-0.1.80-Linux-x86_64.tar.gz)
-[![Download for Linux ARM64](https://img.shields.io/badge/Linux_ARM64-d97706?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/jastincheis/adormis-audio/releases/download/v0.1.80/AdormisAudio-0.1.80-Linux-arm64.tar.gz)
+[![Download for Windows](https://img.shields.io/badge/Windows-2563eb?style=for-the-badge&logo=data:image/svg%2bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDMuNCA5LjggMnY5LjVIMHpNMTEgMS45IDI0IDB2MTEuNUgxMXpNMCAxMi41aDkuOFYyMkwwIDIwLjZ6TTExIDEyLjVoMTNWMjRsLTEzLTEuOXoiLz48L3N2Zz4%3D)](https://github.com/jastincheis/adormis-audio/releases/download/v0.2.34/AdormisAudio-0.2.34-Windows.zip)
+[![Download for macOS](https://img.shields.io/badge/macOS-111827?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/jastincheis/adormis-audio/releases/download/v0.2.34/AdormisAudio-0.2.34-macOS.zip)
+[![Download for Linux x86_64](https://img.shields.io/badge/Linux_x86__64-d97706?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/jastincheis/adormis-audio/releases/download/v0.2.34/AdormisAudio-0.2.34-Linux-x86_64.tar.gz)
+[![Download for Linux ARM64](https://img.shields.io/badge/Linux_ARM64-d97706?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/jastincheis/adormis-audio/releases/download/v0.2.34/AdormisAudio-0.2.34-Linux-arm64.tar.gz)
 
 Preview version, free and open source. The apps are not signed yet, so your system asks you to confirm the first time: see [Install](#install).
-
-**Test version with VST3 plug-ins: [0.2.34, not tested](https://github.com/jastincheis/adormis-audio/releases/tag/v0.2.34).** For everyday work use 0.1.80 above.
 
 ## About
 
 A destructive audio editor running natively on **macOS** (Apple Silicon and Intel),
-**Linux** and **Windows**, with VST3 plug-ins in the test version 0.2.34.
+**Linux** and **Windows**, with VST3 plug-ins.
 
 Adormis Audio (formerly WaveForge) is an independent project. It is not affiliated with, endorsed by or
 derived from Sound Forge or its owners; it only follows the publicly documented
@@ -89,7 +87,7 @@ menu structure and default shortcuts so the workflow feels familiar.
 
 **Keyboard:** the classic default shortcuts (F1 lists them); change any of them in **Options > Customize Keyboard** (saved).
 
-**VST3 plug-ins (test version 0.2.34, not tested yet):** FX Favorites > Plug-In Manager finds the plug-ins in the standard folders and in folders you add. Each one is opened in a separate process first, so a broken plug-in is reported and left out instead of taking the program down. Run one on the selection or the whole file with its own window, a live Preview (Space) and an undoable Apply; its delay is compensated, its tail rings on, and its settings are remembered. Instruments are listed but can't process audio. FX Favorites > Plug-In Chain runs several plug-ins one after the other: add, remove, reorder and turn them off one by one; the chain and its settings are remembered.
+**VST3 plug-ins:** FX Favorites > Plug-In Manager finds the plug-ins in the standard folders and in folders you add. Each one is opened in a separate process first, so a broken plug-in is reported and left out instead of taking the program down. Run one on the selection or the whole file with its own window, a live Preview (Space) and an undoable Apply; its delay is compensated, its tail rings on, and its settings are remembered. Instruments are listed but can't process audio. FX Favorites > Plug-In Chain runs several plug-ins one after the other: add, remove, reorder and turn them off one by one; the chain and its settings are remembered.
 
 On macOS, `Ctrl` shortcuts use `Cmd` and `Alt` uses `Option`.
 
