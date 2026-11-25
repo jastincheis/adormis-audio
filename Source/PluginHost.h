@@ -16,7 +16,9 @@ bool runScanChild (const juce::StringArray& args);
 // Adormis Audio --thumbnail-plugin <plug-in> <out.png> [name]: the child process
 // of a preview. Opens the plug-in, saves a picture of its editor, returns true
 // when these are its arguments (so a crash takes only this process).
-bool runThumbnailChild (const juce::StringArray& args);
+enum class ChildRun { notMine, done, running };
+ChildRun runThumbnailChild (const juce::StringArray& args);   // running = it quits by itself
+void shutdownThumbnailChild();                                 // call from shutdown()
 
 // The known plug-ins and the folders searched for them, remembered between starts.
 class Library final : public juce::ChangeBroadcaster,

@@ -42,6 +42,9 @@ juce::String effectName (EffectKind kind)
         case EffectKind::eq:         return "Parametric EQ";
         case EffectKind::graphicEq:  return "Graphic EQ";
         case EffectKind::envelope:   return "Volume Envelope";
+        case EffectKind::pitchBend:  return "Pitch Bend";
+        case EffectKind::panExpand:  return "Pan/Expand";
+        case EffectKind::smoothEnhance: return "Smooth/Enhance";
         case EffectKind::compressor: return "Compressor";
         case EffectKind::delay:      return "Delay / Echo";
         case EffectKind::reverb:     return "Reverb";
@@ -1603,10 +1606,16 @@ private:
 // Volume Envelope / Graphic Fade: the selection's waveform with a volume line
 // over it. The line is drawn like a path in a drawing program: points joined
 // by curves, each point with a handle on each side that shapes the curve.
+// Volume Envelope, Pitch Bend and Pan/Expand: the same curve editor. For
+// Pitch Bend the curve's value 1 means unchanged and the scale runs from
+// -range to +range semitones (fx::PitchBendParams); for Pan/Expand 0..2 is
+// left..right, or the stereo width 0..200 % (fx::PanParams).
 class EnvelopeEditor final : public Editor
 {
 public:
-    explicit EnvelopeEditor (Shared& s) : Editor (s)
+    enum class Curve { volume, pitch, pan };
+
+    explicit EnvelopeEditor (Shared& s, Curve curve = Curve::volume) : Editor (s), pitch (curve == Curve::pitch), pan (curve == Curve::pan)
     {
         params.length = std::max (1, shared.audio->getNumSamples());
         setPreset (0);
@@ -1614,22 +1623,39 @@ public:
         presetsButton.onClick = [this] { setPreset (-1); };
         addAndMakeVisible (presetsButton);
 
-        for (int i = 0; i < 2; ++i)
+        for (int i = 0; pan && i < 3; ++i)
         {
-            auto* b = rangeButtons.add (new juce::TextButton (i == 0 ? "Up to +6 dB" : "Up to +12 dB"));
+            auto* b = rangeButtons.add (new juce::TextButton (i == 0 ? "Pan" : i == 1 ? "Pan (mix to mono first)" : "Stereo width"));
             styleToggle (*b);
             b->setRadioGroupId (601);
-            b->onClick = [this, i] { setTop (i == 0 ? 2.0 : 4.0); };
+            b->onClick = [this, i] { setPanMode (i); };
             addAndMakeVisible (b);
         }
 
-        rangeButtons[0]->setToggleState (true, juce::dontSendNotification);
+        for (int i = 0; ! pan && i < 2; ++i)
+        {
+            auto* b = rangeButtons.add (new juce::TextButton (pitch ? (i == 0 ? juce::String (juce::CharPointer_UTF8 ("\xc2\xb1" "2 semitones"))
+                                                                              : juce::String (juce::CharPointer_UTF8 ("\xc2\xb1" "12 (an octave)")))
+                                                                    : (i == 0 ? "Up to +6 dB" : "Up to +12 dB")));
+            styleToggle (*b);
+            b->setRadioGroupId (601);
+            b->onClick = [this, i] { if (pitch) setRange (i == 0 ? 2.0 : 12.0); else setTop (i == 0 ? 2.0 : 4.0); };
+            addAndMakeVisible (b);
+        }
+
+        rangeButtons[pitch ? 1 : 0]->setToggleState (true, juce::dontSendNotification);
         styleLabel (readout, 13.0f, true);
         readout.setJustificationType (juce::Justification::centredRight);
         styleLabel (hint, 11.5f, false, colours::muted);
         hint.setJustificationType (juce::Justification::topLeft);
-        hint.setText ("Double-click: new point; double-click a point: remove it.  Click a point to show its two handles, then drag a handle "
-                      "to bend the curve on both sides (Alt or Ctrl: one side only, for a corner).  Right-click a point: straight lines again, 100 %, 0 %.",
+        hint.setText (pan ? "Pan: the balance moves left or right (the stereo picture stays).  Pan (mix to mono first): both channels "
+                            "become one, placed anywhere from left to right.  Stereo width: from mono (0 %) to twice as wide (200 %).  "
+                            "Double-click: new point; double-click a point: remove it; right-click a point for exact places."
+                    : pitch ? "The pitch along the selection; the length stays the same.  Double-click: new point; double-click a point: remove it.  "
+                              "Drag a point up or down (it catches whole semitones); click a point to show its handles and bend the curve.  "
+                              "Right-click a point: unchanged, an octave up or down."
+                            : "Double-click: new point; double-click a point: remove it.  Click a point to show its two handles, then drag a handle "
+                              "to bend the curve on both sides (Alt or Ctrl: one side only, for a corner).  Right-click a point: straight lines again, 100 %, 0 %.",
                       juce::dontSendNotification);
 
         for (auto* l : { &readout, &hint })
@@ -1638,10 +1664,29 @@ public:
         push();
     }
 
-    void push() override   { fx::setParams (*shared.processor, params); }
+    void push() override
+    {
+        if (pitch)    fx::setParams (*shared.processor, pitchParams());
+        else if (pan) fx::setParams (*shared.processor, panParams());
+        else          fx::setParams (*shared.processor, params);
+    }
 
     std::shared_ptr<fx::Processor> makeForApply() override
     {
+        if (pan)
+        {
+            auto p = fx::makePan();
+            fx::setParams (*p, panParams());
+            return p;
+        }
+
+        if (pitch)
+        {
+            auto p = fx::makePitchBend();
+            fx::setParams (*p, pitchParams());
+            return p;
+        }
+
         auto p = fx::makeEnvelope();
         fx::setParams (*p, params);
         return p;
@@ -1666,6 +1711,13 @@ public:
         juce::DynamicObject::Ptr state = new juce::DynamicObject();
         state->setProperty ("points", list);
         state->setProperty ("top", top);
+
+        if (pitch)
+            state->setProperty ("range", range);
+
+        if (pan)
+            state->setProperty ("panMode", panMode);
+
         return juce::var (state.get());
     }
 
@@ -1698,7 +1750,26 @@ public:
             params.points[(size_t) params.count - 1].time = 1.0;
         }
 
-        setTop ((double) state.getProperty ("top", 2.0) > 3.0 ? 4.0 : 2.0);
+        if (pan)
+        {
+            top = 2.0;
+            panMode = juce::jlimit (0, 2, (int) state.getProperty ("panMode", 0));
+
+            for (int i = 0; i < rangeButtons.size(); ++i)
+                rangeButtons[i]->setToggleState (i == panMode, juce::dontSendNotification);
+        }
+        else if (pitch)
+        {
+            range = (double) state.getProperty ("range", 12.0) < 5.0 ? 2.0 : 12.0;
+            rangeButtons[0]->setToggleState (range < 5.0, juce::dontSendNotification);
+            rangeButtons[1]->setToggleState (range >= 5.0, juce::dontSendNotification);
+            top = 2.0;
+        }
+        else
+        {
+            setTop ((double) state.getProperty ("top", 2.0) > 3.0 ? 4.0 : 2.0);
+        }
+
         selected = -1;
         changed();
     }
@@ -1726,11 +1797,42 @@ public:
         g.fillRoundedRectangle (graph.toFloat(), 8.0f);
         const auto a = plot();
 
-        // gain lines: 0 %, 50 %, 100 % (0 dB), and above
+        // gain lines: 0 %, 50 %, 100 % (0 dB), and above; for Pitch Bend semitones
         g.setFont (juce::FontOptions (10.5f));
+
+        if (pan)
+        {
+            for (double v : { 0.0, 0.5, 1.0, 1.5, 2.0 })
+            {
+                const auto y = yFor (v);
+                g.setColour (std::abs (v - 1.0) < 1.0e-9 ? colours::muted.withAlpha (0.8f) : colours::line);
+                g.fillRect (a.getX(), y, a.getWidth(), 1.0f);
+                g.setColour (colours::muted);
+                g.drawText (panLabel (v), juce::Rectangle<float> (graph.getX() + 2.0f, y - 7.0f, 46.0f, 14.0f), juce::Justification::centredRight);
+            }
+        }
+
+        if (pitch)
+        {
+            const auto steps = range > 5.0 ? std::vector<double> { -12, -7, -5, 0, 5, 7, 12 } : std::vector<double> { -2, -1, 0, 1, 2 };
+
+            for (auto s : steps)
+            {
+                const auto y = yFor (1.0 + s / range);
+                g.setColour (std::abs (s) < 1.0e-9 ? colours::muted.withAlpha (0.8f) : colours::line);
+                g.fillRect (a.getX(), y, a.getWidth(), 1.0f);
+                g.setColour (colours::muted);
+                g.drawText (formatSemitones (s, 0), juce::Rectangle<float> (graph.getX() + 2.0f, y - 7.0f, 46.0f, 14.0f), juce::Justification::centredRight);
+                g.drawText (std::abs (s) == 12.0 ? "octave" : std::abs (s) == 7.0 ? "fifth" : std::abs (s) == 5.0 ? "fourth" : "",
+                            juce::Rectangle<float> (a.getRight() + 4.0f, y - 7.0f, 52.0f, 14.0f), juce::Justification::centredLeft);
+            }
+        }
 
         for (double gain : { 0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0 })
         {
+            if (pitch || pan)
+                break;
+
             if (gain > top + 1.0e-9)
                 continue;
 
@@ -1762,8 +1864,9 @@ public:
         if (overview.size() != (size_t) a.getWidth())
             buildOverview ((int) a.getWidth());
 
-        const auto mid = yFor (0.5);
-        const auto scale = (yFor (0.0) - yFor (1.0)) * 0.5f;
+        // Pitch Bend: centred on the "unchanged" line, filling the scale
+        const auto mid = yFor (pitch || pan ? 1.0 : 0.5);
+        const auto scale = (yFor (0.0) - yFor (1.0)) * (pitch || pan ? 0.9f : 0.5f);
         std::vector<double> gains (overview.size() + 1);
 
         for (size_t x = 0; x <= overview.size(); ++x)
@@ -1775,6 +1878,9 @@ public:
             const auto gain = (float) gains[(size_t) x];
             g.setColour (colours::muted.withAlpha (0.25f));
             g.fillRect (a.getX() + (float) x, mid - peak * scale, 1.0f, std::max (1.0f, 2.0f * peak * scale));
+            if (pitch || pan)
+                continue;   // the pitch doesn't change the level; pan is drawn by the curve
+
             g.setColour (colours::accent.withAlpha (0.75f));
             const auto shaped = std::min (peak * gain, 2.0f);   // as loud as it gets on the scale
             g.fillRect (a.getX() + (float) x, mid - shaped * scale, 1.0f, std::max (1.0f, 2.0f * shaped * scale));
@@ -1834,7 +1940,7 @@ public:
         // where the preview is
         if (shared.previewing)
         {
-            const auto pos = (double) fx::envelopePosition (*shared.processor) / (double) params.length;
+            const auto pos = (double) (pitch ? fx::pitchBendPosition (*shared.processor) : pan ? fx::panPosition (*shared.processor) : fx::envelopePosition (*shared.processor)) / (double) params.length;
             g.setColour (colours::warn);
             g.fillRect (a.getX() + a.getWidth() * (float) pos, a.getY(), 1.5f, a.getHeight());
         }
@@ -1943,6 +2049,18 @@ private:
             return gain;
 
         gain = juce::jlimit (0.0, top, gain);
+
+        if (pitch)
+        {
+            // whole semitones catch the point; else hundredths of a semitone
+            auto s = (gain - 1.0) * range;
+            const auto whole = std::round (s);
+
+            if (std::abs (s - whole) < (range > 5.0 ? 0.2 : 0.06))
+                s = whole;
+
+            return 1.0 + std::round (s * 100.0) / 100.0 / range;
+        }
 
         if (std::abs (gain - 1.0) < 0.025)   // 100 % catches the point
             gain = 1.0;
@@ -2107,6 +2225,68 @@ private:
         return (db > 0.05 ? "+" : "") + juce::String (db, 1) + " dB";
     }
 
+    static juce::String formatSemitones (double s, int decimals)
+    {
+        if (std::abs (s) < 0.005)
+            return "0";
+
+        return (s > 0 ? "+" : juce::String (juce::CharPointer_UTF8 ("\xe2\x88\x92"))) + juce::String (std::abs (s), decimals);
+    }
+
+    juce::String panLabel (double v) const
+    {
+        if (panMode == fx::PanParams::width)
+            return v <= 0.0 ? "mono" : juce::String (juce::roundToInt (v * 100.0)) + " %";
+
+        if (std::abs (v - 1.0) < 0.005)
+            return "centre";
+
+        return (v < 1.0 ? "L " : "R ") + juce::String (juce::roundToInt (std::abs (v - 1.0) * 100.0));
+    }
+
+    fx::PanParams panParams() const
+    {
+        fx::PanParams p;
+        p.curve = params;
+        p.mode = panMode;
+        return p;
+    }
+
+    void setPanMode (int m)
+    {
+        panMode = juce::jlimit (0, 2, m);
+
+        for (int i = 0; i < rangeButtons.size(); ++i)
+            rangeButtons[i]->setToggleState (i == panMode, juce::dontSendNotification);
+
+        changed();
+    }
+
+    fx::PitchBendParams pitchParams() const
+    {
+        fx::PitchBendParams p;
+        p.curve = params;
+        p.range = range;
+        return p;
+    }
+
+    // Pitch Bend's scale: the points keep their semitones where they fit.
+    void setRange (double newRange)
+    {
+        for (int i = 0; i < params.count; ++i)
+        {
+            auto& p = params.points[(size_t) i];
+            p.gain = juce::jlimit (0.0, 2.0, 1.0 + (p.gain - 1.0) * range / newRange);
+            p.inGain *= range / newRange;
+            p.outGain *= range / newRange;
+        }
+
+        range = newRange;
+        rangeButtons[0]->setToggleState (range < 5.0, juce::dontSendNotification);
+        rangeButtons[1]->setToggleState (range >= 5.0, juce::dontSendNotification);
+        changed();
+    }
+
     static double niceStep (double raw)
     {
         for (double s : { 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0 })
@@ -2126,6 +2306,21 @@ private:
 
         const auto t = timeAt (pos.x);
         const auto gain = dragging >= 0 ? params.points[(size_t) dragging].gain : fx::envelopeGainAt (params, t);
+
+        if (pan)
+        {
+            readout.setText (juce::String (t * (double) params.length / shared.rate(), 3) + " s    " + panLabel (gain), juce::dontSendNotification);
+            return;
+        }
+
+        if (pitch)
+        {
+            readout.setText (juce::String (t * (double) params.length / shared.rate(), 3) + " s    "
+                                 + formatSemitones ((gain - 1.0) * range, 2) + " semitones",
+                             juce::dontSendNotification);
+            return;
+        }
+
         readout.setText (juce::String (t * (double) params.length / shared.rate(), 3) + " s    " + juce::String (juce::roundToInt (gain * 100.0)) + " %   "
                              + (gain <= 0.0 ? juce::String (juce::CharPointer_UTF8 ("\xe2\x88\x92\xe2\x88\x9e dB")) : formatDb (gain)),
                          juce::dontSendNotification);
@@ -2205,8 +2400,27 @@ private:
             changed();
         });
         menu.addSeparator();
-        menu.addItem ("100 % (unchanged)", [this, index] { params.points[(size_t) index].gain = 1.0; changed(); });
-        menu.addItem ("0 % (silence)", [this, index] { params.points[(size_t) index].gain = 0.0; changed(); });
+        if (pan)
+        {
+            const auto widthMode = panMode == fx::PanParams::width;
+            menu.addItem (widthMode ? "As it is (100 %)" : "Centre", [this, index] { params.points[(size_t) index].gain = 1.0; changed(); });
+            menu.addItem (widthMode ? "Mono (0 %)" : "Full left", [this, index] { params.points[(size_t) index].gain = 0.0; changed(); });
+            menu.addItem (widthMode ? "Twice as wide (200 %)" : "Full right", [this, index] { params.points[(size_t) index].gain = 2.0; changed(); });
+        }
+        else if (pitch)
+        {
+            menu.addItem ("Unchanged (0)", [this, index] { params.points[(size_t) index].gain = 1.0; changed(); });
+
+            for (double s : { 12.0, 7.0, 5.0, 2.0, 1.0, -1.0, -2.0, -5.0, -7.0, -12.0 })
+                if (std::abs (s) <= range)
+                    menu.addItem (formatSemitones (s, 0) + " semitones" + (std::abs (s) == 12.0 ? (s > 0 ? " (an octave up)" : " (an octave down)") : ""),
+                                  [this, index, s] { params.points[(size_t) index].gain = 1.0 + s / range; changed(); });
+        }
+        else
+        {
+            menu.addItem ("100 % (unchanged)", [this, index] { params.points[(size_t) index].gain = 1.0; changed(); });
+            menu.addItem ("0 % (silence)", [this, index] { params.points[(size_t) index].gain = 0.0; changed(); });
+        }
 
         if (index > 0 && index < params.count - 1)
         {
@@ -2240,18 +2454,65 @@ private:
                                                 { 1.0, 1.0, true, true, -0.2, 0, 0, 0 } } },
         };
 
+        // Pitch Bend's, in semitones on the octave scale (value = 1 + semitones / 12;
+        // handle heights in the same units).
+        static const std::vector<Def> pitchPresets {
+            { "Flat (unchanged)",                    { { 0.0, 1.0 }, { 1.0, 1.0 } } },
+            { "Rise one octave",                     { { 0.0, 1.0 }, { 1.0, 2.0 } } },
+            { "Drop one octave",                     { { 0.0, 1.0 }, { 1.0, 0.0 } } },
+            { "Tape stop (falls at the end)",        { { 0.0, 1.0 }, { 0.6, 1.0, true, true, 0, 0, 0.3, 0 }, { 1.0, 0.0, true, true, -0.05, 0.4, 0, 0 } } },
+            { "Spin-up (comes up at the start)",     { { 0.0, 0.0, true, true, 0, 0, 0.05, 0.4 }, { 0.4, 1.0, true, true, -0.3, 0, 0, 0 }, { 1.0, 1.0 } } },
+            { "Up a whole step, smoothly (+2)",      { { 0.0, 1.0, true, true, 0, 0, 0.4, 0 }, { 1.0, 1.0 + 2.0 / 12.0, true, true, -0.4, 0, 0, 0 } } },
+            { "Dip and back (-2 in the middle)",     { { 0.0, 1.0, true, true, 0, 0, 0.2, 0 }, { 0.5, 1.0 - 2.0 / 12.0, true, true, -0.15, 0, 0.15, 0 },
+                                                       { 1.0, 1.0, true, true, -0.2, 0, 0, 0 } } },
+            { "Siren (+5 up and down)",              { { 0.0, 1.0, true, true, 0, 0, 0.1, 0 }, { 0.25, 1.0 + 5.0 / 12.0, true, true, -0.1, 0, 0.1, 0 },
+                                                       { 0.5, 1.0, true, true, -0.1, 0, 0.1, 0 }, { 0.75, 1.0 + 5.0 / 12.0, true, true, -0.1, 0, 0.1, 0 },
+                                                       { 1.0, 1.0, true, true, -0.1, 0, 0, 0 } } },
+        };
+
+        // Pan/Expand's (0 = left / mono, 1 = centre / as it is, 2 = right / 200 %).
+        static const std::vector<Def> panPresets {
+            { "Flat (centre / as it is)",           { { 0.0, 1.0 }, { 1.0, 1.0 } } },
+            { "Left to right",                      { { 0.0, 0.0 }, { 1.0, 2.0 } } },
+            { "Right to left",                      { { 0.0, 2.0 }, { 1.0, 0.0 } } },
+            { "Ping-pong (left, right, left...)",   { { 0.0, 0.0, true, true, 0, 0, 0.08, 0 }, { 0.25, 2.0, true, true, -0.08, 0, 0.08, 0 },
+                                                      { 0.5, 0.0, true, true, -0.08, 0, 0.08, 0 }, { 0.75, 2.0, true, true, -0.08, 0, 0.08, 0 },
+                                                      { 1.0, 0.0, true, true, -0.08, 0, 0, 0 } } },
+            { "Narrow to wide (width mode)",        { { 0.0, 0.0 }, { 1.0, 1.5 } } },
+            { "Mono (width mode)",                  { { 0.0, 0.0 }, { 1.0, 0.0 } } },
+            { "Wider (150 %, width mode)",          { { 0.0, 1.5 }, { 1.0, 1.5 } } },
+        };
+
+        const auto& list = pan ? panPresets : pitch ? pitchPresets : presets;
+
         if (which < 0)
         {
             juce::PopupMenu menu;
 
-            for (size_t i = 0; i < presets.size(); ++i)
-                menu.addItem (presets[i].name, [this, i] { setPreset ((int) i); });
+            for (size_t i = 0; i < list.size(); ++i)
+                menu.addItem (list[i].name, [this, i] { setPreset ((int) i); });
 
             menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetsButton).withParentComponent (getTopLevelComponent()));
             return;
         }
 
-        const auto& def = presets[(size_t) juce::jlimit (0, (int) presets.size() - 1, which)];
+        const auto& def = list[(size_t) juce::jlimit (0, (int) list.size() - 1, which)];
+
+        if (pan && juce::String (def.name).contains ("width mode"))
+            panMode = fx::PanParams::width;
+        else if (pan && which > 0 && panMode == fx::PanParams::width)
+            panMode = fx::PanParams::panKeep;
+
+        for (int i = 0; pan && i < rangeButtons.size(); ++i)
+            rangeButtons[i]->setToggleState (i == panMode, juce::dontSendNotification);
+
+        if (pitch && range < 5.0)    // the presets are drawn on the octave scale
+        {
+            range = 12.0;
+            rangeButtons[0]->setToggleState (false, juce::dontSendNotification);
+            rangeButtons[1]->setToggleState (true, juce::dontSendNotification);
+        }
+
         params.count = 0;
 
         for (const auto& p : def.points)
@@ -2261,8 +2522,11 @@ private:
         changed();
     }
 
+    const bool pitch, pan;
+    int panMode = fx::PanParams::panKeep;
     fx::EnvelopeParams params;
-    double top = 2.0;   // the top of the scale: 200 % (+6 dB) or 400 % (+12 dB)
+    double top = 2.0;   // the top of the scale: 200 % (+6 dB) or 400 % (+12 dB); 2 for Pitch Bend
+    double range = 12.0;   // Pitch Bend: semitones at the top and bottom
     int dragging = -1, hovered = -1, selected = -1, draggingHandle = -1, hoveredHandle = -1;
     std::vector<float> overview;
     juce::Rectangle<int> graph;
@@ -3341,6 +3605,109 @@ private:
 
 //==============================================================================
 // Distortion: the shaping curve drawn as in -> out, with the drive applied.
+// Smooth/Enhance: one slider, smooth on the left, enhance on the right, with
+// the response drawn above it.
+class SmoothEnhanceEditor final : public Editor
+{
+public:
+    explicit SmoothEnhanceEditor (Shared& s) : Editor (s)
+    {
+        for (auto* c : { &amount, &corner })
+            addAndMakeVisible (c);
+
+        styleLabel (note, 11.5f, false, colours::muted);
+        note.setText ("Left: smoother (the highs softened: hiss, harsh edges).  Right: enhanced (the highs brought out: clarity, air).  "
+                      "Corner: where the change starts.", juce::dontSendNotification);
+        addAndMakeVisible (note);
+        push();
+    }
+
+    fx::SmoothEnhanceParams params() const
+    {
+        fx::SmoothEnhanceParams p;
+        p.amount = amount.value();
+        p.cornerHz = corner.value();
+        return p;
+    }
+
+    void push() override   { fx::setParams (*shared.processor, params()); repaint(); }
+
+    std::shared_ptr<fx::Processor> makeForApply() override
+    {
+        auto p = fx::makeSmoothEnhance();
+        fx::setParams (*p, params());
+        return p;
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto a = graphArea.toFloat();
+        g.setColour (colours::bg);
+        g.fillRoundedRectangle (a, 8.0f);
+        const auto inner = a.reduced (40.0f, 16.0f);
+        const auto rate = shared.rate();
+        const auto top = std::min (20000.0, rate * 0.49);
+        auto X = [&] (double hz) { return inner.getX() + inner.getWidth() * (float) (std::log (hz / 20.0) / std::log (top / 20.0)); };
+        auto Y = [&] (double db) { return inner.getCentreY() - inner.getHeight() * 0.5f * (float) (juce::jlimit (-15.0, 15.0, db) / 15.0); };
+
+        g.setFont (juce::FontOptions (10.0f));
+
+        for (double db : { -12.0, -6.0, 0.0, 6.0, 12.0 })
+        {
+            g.setColour (db == 0.0 ? colours::muted.withAlpha (0.8f) : colours::line);
+            g.fillRect (inner.getX(), Y (db), inner.getWidth(), 1.0f);
+            g.setColour (colours::muted);
+            g.drawText ((db > 0 ? "+" : "") + juce::String ((int) db) + " dB", juce::Rectangle<float> (a.getX() + 2.0f, Y (db) - 7.0f, 36.0f, 14.0f),
+                        juce::Justification::centredRight);
+        }
+
+        for (double hz : { 100.0, 1000.0, 10000.0 })
+        {
+            g.setColour (colours::line.withAlpha (0.6f));
+            g.fillRect (X (hz), inner.getY(), 1.0f, inner.getHeight());
+            g.setColour (colours::muted);
+            g.drawText (hz >= 1000.0 ? juce::String ((int) (hz / 1000.0)) + " kHz" : juce::String ((int) hz) + " Hz",
+                        juce::Rectangle<float> (X (hz) - 30.0f, inner.getBottom() + 2.0f, 60.0f, 12.0f), juce::Justification::centred);
+        }
+
+        juce::Path curve;
+        const auto p = params();
+
+        for (int i = 0; i <= 300; ++i)
+        {
+            const auto hz = 20.0 * std::pow (top / 20.0, i / 300.0);
+            const juce::Point<float> pt (X (hz), Y (fx::smoothEnhanceGainDb (p, hz, rate)));
+
+            if (i == 0) curve.startNewSubPath (pt);
+            else        curve.lineTo (pt);
+        }
+
+        g.setColour (colours::accent);
+        g.strokePath (curve, juce::PathStrokeType (2.4f));
+    }
+
+    void resized() override
+    {
+        auto r = getLocalBounds();
+        graphArea = r.removeFromTop (std::max (120, r.getHeight() - 160));
+        r.removeFromTop (10);
+
+        for (auto* c : { &amount, &corner })
+        {
+            c->setBounds (r.removeFromTop (46));
+            r.removeFromTop (4);
+        }
+
+        note.setBounds (r);
+    }
+
+private:
+    LabelledSlider amount { "Smooth  <->  Enhance", -100.0, 100.0, 1.0, "", 0.0, [this] { push(); } };
+    LabelledSlider corner { "Corner", 500.0, 12000.0, 10.0, " Hz", 3000.0, [this] { push(); }, 3000.0 };
+    juce::Label note;
+    juce::Rectangle<int> graphArea;
+};
+
 class DistortionEditor final : public Editor
 {
 public:
@@ -4083,6 +4450,9 @@ public:
             case EffectKind::eq:          shared.processor = fx::makeEq();         editor = std::make_unique<EqEditor> (shared); name = "Parametric EQ"; break;
             case EffectKind::graphicEq:   shared.processor = fx::makeEq();         editor = std::make_unique<GraphicEqEditor> (shared); break;
             case EffectKind::envelope:    shared.processor = fx::makeEnvelope();   editor = std::make_unique<EnvelopeEditor> (shared); break;
+            case EffectKind::pitchBend:   shared.processor = fx::makePitchBend();  editor = std::make_unique<EnvelopeEditor> (shared, EnvelopeEditor::Curve::pitch); break;
+            case EffectKind::smoothEnhance: shared.processor = fx::makeSmoothEnhance(); editor = std::make_unique<SmoothEnhanceEditor> (shared); break;
+            case EffectKind::panExpand:   shared.processor = fx::makePan();        editor = std::make_unique<EnvelopeEditor> (shared, EnvelopeEditor::Curve::pan); break;
             case EffectKind::compressor:  shared.processor = fx::makeCompressor(); editor = std::make_unique<CompressorEditor> (shared); name = "Compressor"; break;
             case EffectKind::delay:       shared.processor = fx::makeDelay();      editor = std::make_unique<DelayEditor> (shared); name = "Delay / Echo"; break;
             case EffectKind::reverb:      shared.processor = fx::makeReverb();     editor = std::make_unique<ReverbEditor> (shared); name = "Reverb"; break;
@@ -4160,7 +4530,7 @@ public:
                 addAndMakeVisible (c);
         }
 
-        const auto big = kind == EffectKind::eq || kind == EffectKind::graphicEq || kind == EffectKind::envelope;
+        const auto big = kind == EffectKind::eq || kind == EffectKind::graphicEq || kind == EffectKind::envelope || kind == EffectKind::pitchBend || kind == EffectKind::panExpand;
         const auto height = big ? 700
                           : kind == EffectKind::compressor || kind == EffectKind::gate ? 480
                           : kind == EffectKind::limiter ? 520
@@ -4170,6 +4540,7 @@ public:
                           : kind == EffectKind::clipRestore ? 370
                           : kind == EffectKind::chorus || kind == EffectKind::flanger ? 480
                           : kind == EffectKind::distortion ? 440
+                          : kind == EffectKind::smoothEnhance ? 480
                           : kind == EffectKind::vibrato ? 420
                           : kind == EffectKind::mp3Restore ? 640 : 560;
         setSize (big ? 1080 : 820, height);

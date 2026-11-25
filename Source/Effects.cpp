@@ -1,5 +1,6 @@
 #include "Effects.h"
 #include <juce_dsp/juce_dsp.h>
+#include <rubberband/RubberBandStretcher.h>
 
 namespace wf::fx
 {
@@ -262,6 +263,296 @@ public:
 private:
     ParamHandoff<EnvelopeParams> handoff;
     EnvelopeParams params;
+};
+
+//==============================================================================
+// Smooth/Enhance: a high shelf whose gain follows the slider.
+juce::dsp::IIR::Coefficients<float>::Ptr smoothEnhanceShelf (const SmoothEnhanceParams& p, double rate)
+{
+    const auto db = juce::jlimit (-100.0, 100.0, p.amount) * 0.12;
+    const auto hz = juce::jlimit (200.0, rate * 0.45, p.cornerHz);
+    return juce::dsp::IIR::Coefficients<float>::makeHighShelf (rate, (float) hz, 0.6f, juce::Decibels::decibelsToGain ((float) db));
+}
+
+class SmoothEnhanceProcessor final : public Processor
+{
+public:
+    void set (const SmoothEnhanceParams& p)   { handoff.set (p); }
+
+    void prepare (double r, int ch, int) override
+    {
+        rate = r;
+        filters.clear();
+
+        for (int c = 0; c < std::max (1, ch); ++c)
+            filters.emplace_back();
+
+        handoff.fetch (params);
+        update();
+        reset();
+    }
+
+    void reset() override
+    {
+        for (auto& f : filters)
+            f.reset();
+    }
+
+    void process (juce::AudioBuffer<float>& audio, int start, int numSamples) override
+    {
+        if (handoff.fetch (params))
+            update();
+
+        for (int c = 0; c < audio.getNumChannels() && c < (int) filters.size(); ++c)
+        {
+            auto* d = audio.getWritePointer (c, start);
+
+            for (int i = 0; i < numSamples; ++i)
+                d[i] = filters[(size_t) c].processSample (d[i]);
+        }
+    }
+
+private:
+    void update()
+    {
+        const auto coeffs = smoothEnhanceShelf (params, rate);
+
+        for (auto& f : filters)
+            *f.coefficients = *coeffs;   // keeps the filter's state: no click when the slider moves
+    }
+
+    ParamHandoff<SmoothEnhanceParams> handoff;
+    SmoothEnhanceParams params;
+    double rate = 44100.0;
+    std::vector<juce::dsp::IIR::Filter<float>> filters;
+};
+
+//==============================================================================
+// Pan/Expand: the curve worked out every 32 samples, straight in between.
+class PanProcessor final : public Processor
+{
+public:
+    void set (const PanParams& p)   { handoff.set (p); }
+
+    void prepare (double, int, int) override   { handoff.fetch (params); reset(); }
+    void reset() override                      { position = 0; }
+
+    void process (juce::AudioBuffer<float>& audio, int start, int numSamples) override
+    {
+        handoff.fetch (params);
+
+        if (audio.getNumChannels() < 2)
+            return;
+
+        const auto length = std::max ((juce::int64) 1, params.curve.length);
+        auto pos = position.load() % length;
+        auto* l = audio.getWritePointer (0, start);
+        auto* r = audio.getWritePointer (1, start);
+
+        for (int i = 0; i < numSamples;)
+        {
+            const auto n = (int) std::min ({ (juce::int64) 32, (juce::int64) (numSamples - i), length - pos });
+            const auto v0 = juce::jlimit (0.0, 2.0, envelopeGainAt (params.curve, (double) pos / (double) length));
+            const auto v1 = juce::jlimit (0.0, 2.0, envelopeGainAt (params.curve, (double) (pos + n) / (double) length));
+
+            for (int k = 0; k < n; ++k)
+            {
+                const auto v = v0 + (v1 - v0) * k / n;
+                auto& a = l[i + k];
+                auto& b = r[i + k];
+
+                if (params.mode == PanParams::width)
+                {
+                    const auto mid = 0.5 * (a + b), side = 0.5 * (a - b) * v;
+                    a = (float) (mid + side);
+                    b = (float) (mid - side);
+                }
+                else if (params.mode == PanParams::panMix)
+                {
+                    // constant power, so the centre keeps the loudness of the mix
+                    const auto mono = 0.5 * (a + b);
+                    const auto angle = v * 0.25 * juce::MathConstants<double>::pi;
+                    a = (float) (mono * std::cos (angle) * juce::MathConstants<double>::sqrt2);
+                    b = (float) (mono * std::sin (angle) * juce::MathConstants<double>::sqrt2);
+                }
+                else
+                {
+                    if (v < 1.0) b *= (float) v;            // towards the left: the right fades
+                    else         a *= (float) (2.0 - v);    // towards the right: the left fades
+                }
+            }
+
+            i += n;
+            pos = (pos + n) % length;
+        }
+
+        position = pos;
+    }
+
+    std::atomic<juce::int64> position { 0 };
+
+private:
+    ParamHandoff<PanParams> handoff;
+    PanParams params;
+};
+
+//==============================================================================
+// Pitch Bend: Rubber Band's real-time engine, its pitch set from the curve
+// every 256 samples; the length stays. Its own delay is dropped at the start;
+// the output then comes out a fixed `delay` late (reported as latency, so
+// render() lines it up), which keeps the hand-over smooth.
+class PitchBendProcessor final : public Processor
+{
+public:
+    using RB = RubberBand::RubberBandStretcher;
+
+    void set (const PitchBendParams& p)   { handoff.set (p); }
+
+    void prepare (double r, int ch, int maxBlock) override
+    {
+        rate = r;
+        channels = std::max (1, ch);
+        handoff.fetch (params);
+        delay = (int) (8192.0 * std::max (1.0, rate / 48000.0));
+        stretcher = std::make_unique<RB> ((size_t) rate, (size_t) channels,
+                                          RB::OptionProcessRealTime | RB::OptionEngineFiner | RB::OptionChannelsTogether
+                                              | RB::OptionFormantShifted | RB::OptionPitchHighConsistency);
+        fifo.setSize (channels, fifoSize);
+        scratch.setSize (channels, std::max (maxBlock, 4096));
+        reset();
+    }
+
+    void reset() override
+    {
+        position = 0;
+
+        if (stretcher == nullptr)
+            return;
+
+        stretcher->reset();
+        currentScale = 1.0;
+        stretcher->setPitchScale (1.0);
+
+        // Rubber Band's own start: pad with silence, drop what it holds back.
+        const auto pad = (int) stretcher->getPreferredStartPad();
+        juce::AudioBuffer<float> zeros (channels, std::max (1, pad));
+        zeros.clear();
+
+        if (pad > 0)
+            stretcher->process (zeros.getArrayOfReadPointers(), (size_t) pad, false);
+
+        discard = (int) stretcher->getStartDelay();
+        lag = discard;
+
+        fifo.clear();
+        readPos = 0;
+        filled = delay;     // the fixed delay: silence first
+        writePos = delay;
+        pull();
+    }
+
+    int latencySamples() const override   { return delay; }
+
+    void process (juce::AudioBuffer<float>& audio, int start, int numSamples) override
+    {
+        if (stretcher == nullptr)
+            return;
+
+        handoff.fetch (params);
+        const auto length = std::max ((juce::int64) 1, params.curve.length);
+        auto pos = position.load() % length;
+        const auto ch = std::min (channels, audio.getNumChannels());
+
+        // In: the audio, in pieces, each at the pitch the curve has there.
+        for (int i = 0; i < numSamples;)
+        {
+            const auto n = (int) std::min ({ (juce::int64) 256, (juce::int64) (numSamples - i), length - pos });
+            // Rubber Band works on audio from `lag` samples back: aim the
+            // pitch at that, so the bend lands where the curve has it.
+            const auto at = std::max ((juce::int64) 0, pos - lag);
+            const auto semis = pitchBendSemitonesAt (params, (double) at / (double) length);
+            const auto scale = std::pow (2.0, semis / 12.0);
+
+            if (std::abs (scale - currentScale) > 1.0e-6)
+            {
+                stretcher->setPitchScale (scale);
+                currentScale = scale;
+            }
+
+            const float* in[8] {};
+
+            for (int c = 0; c < channels && c < 8; ++c)
+                in[c] = audio.getReadPointer (std::min (c, ch - 1), start + i);
+
+            stretcher->process (in, (size_t) n, false);
+            pull();
+            i += n;
+            pos = (pos + n) % length;
+        }
+
+        position = pos;
+
+        // Out: as much as came in, from the queue (silence if it ran dry).
+        for (int i = 0; i < numSamples; ++i)
+        {
+            for (int c = 0; c < audio.getNumChannels(); ++c)
+                audio.setSample (c, start + i, filled > 0 ? fifo.getSample (std::min (c, channels - 1), readPos) : 0.0f);
+
+            if (filled > 0)
+            {
+                readPos = (readPos + 1) % fifoSize;
+                --filled;
+            }
+        }
+    }
+
+    std::atomic<juce::int64> position { 0 };
+
+private:
+    // Moves what Rubber Band has ready into the queue.
+    void pull()
+    {
+        for (;;)
+        {
+            const auto ready = (int) stretcher->available();
+
+            if (ready <= 0)
+                return;
+
+            const auto n = std::min (ready, scratch.getNumSamples());
+            float* out[8] {};
+
+            for (int c = 0; c < channels && c < 8; ++c)
+                out[c] = scratch.getWritePointer (c);
+
+            stretcher->retrieve (out, (size_t) n);
+            int from = 0;
+
+            if (discard > 0)
+            {
+                from = std::min (discard, n);
+                discard -= from;
+            }
+
+            for (int k = from; k < n && filled < fifoSize; ++k)
+            {
+                for (int c = 0; c < channels; ++c)
+                    fifo.setSample (c, writePos, scratch.getSample (c, k));
+
+                writePos = (writePos + 1) % fifoSize;
+                ++filled;
+            }
+        }
+    }
+
+    static constexpr int fifoSize = 1 << 17;
+    ParamHandoff<PitchBendParams> handoff;
+    PitchBendParams params;
+    std::unique_ptr<RB> stretcher;
+    juce::AudioBuffer<float> fifo, scratch;
+    int readPos = 0, writePos = 0, filled = 0, discard = 0, delay = 8192, channels = 2;
+    juce::int64 lag = 0;
+    double rate = 44100.0, currentScale = 1.0;
 };
 
 //==============================================================================
@@ -815,6 +1106,37 @@ double suggestedTailSeconds (const ReverbParams& p)
 std::shared_ptr<Processor> makeEq()          { return std::make_shared<EqProcessor>(); }
 std::shared_ptr<Processor> makeEnvelope()    { return std::make_shared<EnvelopeProcessor>(); }
 
+std::shared_ptr<Processor> makePitchBend()   { return std::make_shared<PitchBendProcessor>(); }
+std::shared_ptr<Processor> makePan()         { return std::make_shared<PanProcessor>(); }
+std::shared_ptr<Processor> makeSmoothEnhance() { return std::make_shared<SmoothEnhanceProcessor>(); }
+
+double smoothEnhanceGainDb (const SmoothEnhanceParams& p, double hz, double rate)
+{
+    return juce::Decibels::gainToDecibels (smoothEnhanceShelf (p, rate)->getMagnitudeForFrequency (hz, rate), -100.0);
+}
+
+
+juce::int64 panPosition (const Processor& p)
+{
+    if (const auto* e = dynamic_cast<const PanProcessor*> (&p))
+        return e->position.load();
+
+    return 0;
+}
+
+juce::int64 pitchBendPosition (const Processor& p)
+{
+    if (const auto* e = dynamic_cast<const PitchBendProcessor*> (&p))
+        return e->position.load();
+
+    return 0;
+}
+
+double pitchBendSemitonesAt (const PitchBendParams& p, double time)
+{
+    return juce::jlimit (-p.range, p.range, (envelopeGainAt (p.curve, time) - 1.0) * p.range);
+}
+
 juce::int64 envelopePosition (const Processor& p)
 {
     if (const auto* e = dynamic_cast<const EnvelopeProcessor*> (&p))
@@ -828,6 +1150,9 @@ std::shared_ptr<Processor> makeReverb()      { return std::make_shared<ReverbPro
 
 void setParams (Processor& p, const EqParams& v)          { if (auto* x = dynamic_cast<EqProcessor*> (&p)) x->set (v); }
 void setParams (Processor& p, const EnvelopeParams& v)    { if (auto* x = dynamic_cast<EnvelopeProcessor*> (&p)) x->set (v); }
+void setParams (Processor& p, const PitchBendParams& v)   { if (auto* x = dynamic_cast<PitchBendProcessor*> (&p)) x->set (v); }
+void setParams (Processor& p, const PanParams& v)         { if (auto* x = dynamic_cast<PanProcessor*> (&p)) x->set (v); }
+void setParams (Processor& p, const SmoothEnhanceParams& v) { if (auto* x = dynamic_cast<SmoothEnhanceProcessor*> (&p)) x->set (v); }
 void setParams (Processor& p, const CompressorParams& v)  { if (auto* x = dynamic_cast<CompressorProcessor*> (&p)) x->set (v); }
 void setParams (Processor& p, const DelayParams& v)       { if (auto* x = dynamic_cast<DelayProcessor*> (&p)) x->set (v); }
 void setParams (Processor& p, const ReverbParams& v)      { if (auto* x = dynamic_cast<ReverbProcessor*> (&p)) x->set (v); }

@@ -163,6 +163,7 @@ private:
     void showBassFinder();
     void showDeEsser();
     void showDrumRebuilder();
+    void showCdjExport();
 
     // Get Stems: the song in `doc` split by the AI into drums, bass, vocals
     // and the rest, added to its window as tabs.
@@ -347,6 +348,7 @@ private:
     std::unique_ptr<juce::DocumentWindow> bassFinderWindow;
     std::unique_ptr<juce::DocumentWindow> deEsserWindow;
     std::unique_ptr<juce::DocumentWindow> drumRebuilderWindow;   // not a tool window: it works on its own copy
+    std::unique_ptr<juce::DocumentWindow> cdjExportWindow;       // works on files on disk, never on the open audio
     std::unique_ptr<juce::DocumentWindow> effectWindow;   // EQ, compressor, delay, reverb or a VST3 plug-in
     std::unique_ptr<juce::DocumentWindow> pluginManagerWindow;
     std::unique_ptr<wf::plugins::Library> pluginLibrary;

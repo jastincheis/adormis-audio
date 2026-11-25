@@ -2,6 +2,7 @@
 #include "DarkTheme.h"
 #include "SpaceKey.h"
 #include "StartupLog.h"
+#include "WindowCapture.h"
 #include <juce_audio_processors/format/juce_AudioPluginFormatManagerHelpers.h>
 #include <juce_cryptography/juce_cryptography.h>
 
@@ -50,6 +51,41 @@ bool imageHasContent (const juce::Image& img)
 
     return false;
 }
+
+// Shrinks a preview to the width shown in the Manager and writes it as PNG.
+void writeThumbnail (juce::Image image, const juce::File& out)
+{
+    if (! imageHasContent (image))
+        return;
+
+    constexpr int maxW = 240;
+
+    if (image.getWidth() > maxW)
+    {
+        const auto h = juce::roundToInt ((double) image.getHeight() * maxW / image.getWidth());
+        image = image.rescaled (maxW, juce::jmax (1, h), juce::Graphics::highResamplingQuality);
+    }
+
+    out.deleteFile();
+
+    if (auto stream = out.createOutputStream())
+    {
+        juce::PNGImageFormat png;
+        png.writeImageToStream (image, *stream);
+    }
+}
+
+// Picture of an editor that is on screen: the real pixels first (a plug-in's
+// editor is normally its own native window, invisible to
+// createComponentSnapshot), the JUCE-drawn snapshot as a fallback.
+juce::Image captureEditor (juce::Component& editor)
+{
+    if (auto shot = captureOnScreen (editor); imageHasContent (shot))
+        return shot;
+
+    return editor.createComponentSnapshot (editor.getLocalBounds(), false);
+}
+
 
 // What a scan's child process has found so far. Rewritten after every plug-in,
 // so the parent sees it moving and keeps what came before a crash or a hang.
@@ -559,30 +595,8 @@ private:
 
     void saveEditorThumbnail()
     {
-        if (editor == nullptr)
-            return;
-
-        auto image = editor->createComponentSnapshot (editor->getLocalBounds(), false);
-
-        if (! imageHasContent (image))
-            return;
-
-        constexpr int maxW = 240;
-
-        if (image.getWidth() > maxW)
-        {
-            const auto h = juce::roundToInt ((double) image.getHeight() * maxW / image.getWidth());
-            image = image.rescaled (maxW, juce::jmax (1, h), juce::Graphics::highResamplingQuality);
-        }
-
-        const auto out = thumbnailFileFor (description);
-        out.deleteFile();
-
-        if (auto stream = out.createOutputStream())
-        {
-            juce::PNGImageFormat png;
-            png.writeImageToStream (image, *stream);
-        }
+        if (editor != nullptr && editor->isShowing())
+            writeThumbnail (captureEditor (*editor), thumbnailFileFor (description));
     }
 
     void applyToFile()
@@ -1650,23 +1664,98 @@ bool runScanChild (const juce::StringArray& args)
     return true;
 }
 
-bool runThumbnailChild (const juce::StringArray& args)
+namespace
+{
+// The preview child: shows the plug-in's editor in a real window for a moment,
+// so the plug-in actually draws, captures it, then quits the process.
+class ThumbnailShot final : private juce::Timer
+{
+public:
+    ThumbnailShot (std::unique_ptr<juce::AudioPluginInstance> p, juce::File o)
+        : instance (std::move (p)), out (std::move (o))
+    {
+        editor.reset (instance->createEditorAndMakeActive());
+
+        if (editor == nullptr)
+        {
+            editor = std::make_unique<juce::GenericAudioProcessorEditor> (*instance);
+            editor->setSize (480, 360);
+        }
+
+        if (editor->getWidth() <= 0 || editor->getHeight() <= 0)
+            editor->setSize (480, 360);
+
+        // A plain borderless window at the top left of the main screen, above
+        // everything and kept out of the taskbar. It is on screen for about two
+        // seconds; native capture needs real, unobscured pixels.
+        const auto area = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr
+                              ? juce::Desktop::getInstance().getDisplays().getPrimaryDisplay()->userArea
+                              : juce::Rectangle<int> (0, 0, 1280, 800);
+        editor->setTopLeftPosition (area.getX() + 40, area.getY() + 40);
+        editor->setAlwaysOnTop (true);
+        editor->addToDesktop (juce::ComponentPeer::windowIsTemporary | juce::ComponentPeer::windowIgnoresKeyPresses);
+        editor->setVisible (true);
+        editor->toFront (false);
+
+        startTimer (150);
+    }
+
+    ~ThumbnailShot() override
+    {
+        stopTimer();
+        editor.reset();
+
+        if (instance != nullptr)
+            instance->releaseResources();
+    }
+
+private:
+    void timerCallback() override
+    {
+        // Wait at least 1.2 s for the plug-in to draw; then try every 150 ms
+        // until something shows, giving up after ~6 s.
+        ticks++;
+
+        if (ticks < 8)
+            return;
+
+        auto image = captureEditor (*editor);
+
+        if (imageHasContent (image) || ticks >= 40)
+        {
+            stopTimer();
+            writeThumbnail (image, out);
+            juce::MessageManager::callAsync ([] { juce::JUCEApplicationBase::quit(); });
+        }
+    }
+
+    std::unique_ptr<juce::AudioPluginInstance> instance;
+    std::unique_ptr<juce::AudioProcessorEditor> editor;
+    juce::File out;
+    int ticks = 0;
+};
+
+std::unique_ptr<juce::AudioPluginFormatManager> thumbManager;
+std::unique_ptr<ThumbnailShot> thumbShot;
+}
+
+ChildRun runThumbnailChild (const juce::StringArray& args)
 {
     if (args.size() < 3 || args[0] != "--thumbnail-plugin")
-        return false;
+        return ChildRun::notMine;
 
     const auto file = args[1].unquoted();
     const juce::File out (args[2].unquoted());
     const auto wantName = args.size() >= 4 ? args[3].unquoted() : juce::String();
 
-    juce::AudioPluginFormatManager manager;
-    juce::addDefaultFormatsToManager (manager);
+    thumbManager = std::make_unique<juce::AudioPluginFormatManager>();
+    juce::addDefaultFormatsToManager (*thumbManager);
 
     // Pick the plug-in in the file whose name was asked for (a shell holds many),
     // or the first one if no name matched.
     std::unique_ptr<juce::PluginDescription> chosen;
 
-    for (auto* format : manager.getFormats())
+    for (auto* format : thumbManager->getFormats())
     {
         if (! format->fileMightContainThisPluginType (file))
             continue;
@@ -1688,58 +1777,23 @@ bool runThumbnailChild (const juce::StringArray& args)
     }
 
     if (chosen == nullptr)
-        return true;   // handled: nothing to render, but this was our job
+        return ChildRun::done;   // handled: nothing to render, but this was our job
 
     juce::String error;
-    auto instance = manager.createPluginInstance (*chosen, 44100.0, renderBlock, error);
+    auto instance = thumbManager->createPluginInstance (*chosen, 44100.0, renderBlock, error);
 
     if (instance == nullptr)
-        return true;
+        return ChildRun::done;
 
     instance->prepareToPlay (44100.0, renderBlock);
+    thumbShot = std::make_unique<ThumbnailShot> (std::move (instance), out);
+    return ChildRun::running;
+}
 
-    std::unique_ptr<juce::AudioProcessorEditor> editor (instance->createEditorAndMakeActive());
-
-    if (editor == nullptr)
-    {
-        editor = std::make_unique<juce::GenericAudioProcessorEditor> (*instance);
-        editor->setSize (480, 360);
-    }
-
-    if (editor->getWidth() <= 0 || editor->getHeight() <= 0)
-        editor->setSize (480, 360);
-
-    editor->setTopLeftPosition (0, 0);
-
-    // createComponentSnapshot paints the editor straight into an off-screen image,
-    // so no message loop is needed. A native window that only draws once embedded
-    // in a desktop stays blank here and is dropped by imageHasContent.
-    auto image = editor->createComponentSnapshot (editor->getLocalBounds(), false);
-
-    editor.reset();
-    instance->releaseResources();
-    instance.reset();
-
-    if (imageHasContent (image))
-    {
-        constexpr int maxW = 240;
-
-        if (image.getWidth() > maxW)
-        {
-            const auto h = juce::roundToInt ((double) image.getHeight() * maxW / image.getWidth());
-            image = image.rescaled (maxW, juce::jmax (1, h), juce::Graphics::highResamplingQuality);
-        }
-
-        out.deleteFile();
-
-        if (auto stream = out.createOutputStream())
-        {
-            juce::PNGImageFormat png;
-            png.writeImageToStream (image, *stream);
-        }
-    }
-
-    return true;
+void shutdownThumbnailChild()
+{
+    thumbShot.reset();
+    thumbManager.reset();
 }
 
 //==============================================================================

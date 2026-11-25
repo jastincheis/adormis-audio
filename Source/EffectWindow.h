@@ -10,7 +10,7 @@ namespace wf
 // into the file (undoable), with the tail of a delay or reverb ringing on
 // after the selection.
 enum class EffectKind { eq, graphicEq, envelope, compressor, delay, reverb, mp3Restore, limiter, gate, chorus, flanger, vibrato, distortion,
-                        noiseReduction, humRemoval, declick, clipRestore };
+                        noiseReduction, humRemoval, declick, clipRestore, pitchBend, panExpand, smoothEnhance };
 
 std::unique_ptr<juce::DocumentWindow> createEffectWindow (EffectKind kind, BassFinderSource source, BassFinderHost host,
                                                           std::function<void()> onClose);

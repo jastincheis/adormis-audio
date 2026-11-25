@@ -9,6 +9,7 @@
 #include "MixDialog.h"
 #include "ShortcutsWindow.h"
 #include "DrumRebuilderWindow.h"
+#include "CdjExportWindow.h"
 #include "StemSeparator.h"
 #include "WaveColourPicker.h"
 #include "Appearance.h"
@@ -706,6 +707,7 @@ MainComponent::~MainComponent()
     bassFinderWindow.reset();
     deEsserWindow.reset();
     drumRebuilderWindow.reset();   // takes its player off the audio device
+    cdjExportWindow.reset();       // the same
     effectWindow.reset();
     pluginManagerWindow.reset();
     pluginLibrary.reset();
@@ -1425,16 +1427,25 @@ void MainComponent::requestQuit (std::function<void()> quit)
         if (auto* doc = dynamic_cast<DataWindow*> (workspace->getDocument (i)); doc != nullptr && ! doc->unsavedPages().isEmpty())
             ++unsaved;
 
-    if (unsaved == 0)
+    const auto cdjMarkers = cdjExportWindow != nullptr && wf::cdjExportHasUnsavedMarkers (*cdjExportWindow);
+
+    if (unsaved == 0 && ! cdjMarkers)
     {
         quit();
         return;
     }
 
+    juce::String message;
+
+    if (unsaved > 0)
+        message << unsaved << (unsaved == 1 ? " file has" : " files have") << " unsaved changes.";
+
+    if (cdjMarkers)
+        message << (message.isEmpty() ? "" : " ") << "Markers edited in CDJ Export are not saved into their files.";
+
     auto options = juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::WarningIcon)
                                             .withTitle ("Adormis Audio")
-                                            .withMessage (juce::String (unsaved) + (unsaved == 1 ? " file has" : " files have")
-                                                          + " unsaved changes. Quit and lose them?")
+                                            .withMessage (message + " Quit and lose them?")
                                             .withButton ("Quit")
                                             .withButton ("Cancel");
 
@@ -3556,6 +3567,63 @@ void MainComponent::showDrumRebuilder()
     drumRebuilderWindow->toFront (true);
 }
 
+// Tools > CDJ Export: opens the CDJ Export window and puts the active file in
+// its playlist. The stick gets the file as it is on disk, with the markers
+// saved in it, so unsaved changes are pointed out first.
+void MainComponent::showCdjExport()
+{
+    if (cdjExportWindow == nullptr)
+    {
+        wf::CdjExportHost host;
+        host.devices = &deviceManager;
+        host.onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+        {
+            juce::MessageManager::callAsync ([safeThis]
+            {
+                if (auto* main = safeThis.getComponent())
+                {
+                    main->cdjExportWindow.reset();
+                    main->commandManager.commandStatusChanged();
+                }
+            });
+        };
+        cdjExportWindow = wf::createCdjExportWindow (std::move (host));
+    }
+
+    stopPlayback (false);
+    cdjExportWindow->setVisible (true);
+    cdjExportWindow->toFront (true);
+
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->isEmpty() || doc->isStem() || ! doc->getFile().existsAsFile())
+        return;
+
+    const auto file = doc->getFile();
+
+    if (! doc->isModified())
+    {
+        wf::addToCdjExport (*cdjExportWindow, { file.getFullPathName() });
+        return;
+    }
+
+    juce::Component::SafePointer<juce::DocumentWindow> window (cdjExportWindow.get());
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions()
+                                      .withIconType (juce::MessageBoxIconType::QuestionIcon)
+                                      .withTitle ("CDJ Export")
+                                      .withMessage ("\"" + file.getFileName() + "\" has changes that are not saved yet. "
+                                                    "CDJ Export uses the file as it is on disk (with its saved markers).\n\n"
+                                                    "Save it first (Ctrl+S) to take the changes along.")
+                                      .withButton ("Add it as saved")
+                                      .withButton ("Don't add it")
+                                      .withAssociatedComponent (cdjExportWindow.get()),
+                                  [window, file] (int result)
+                                  {
+                                      if (result == 1 && window != nullptr)
+                                          wf::addToCdjExport (*window, { file.getFullPathName() });
+                                  });
+}
+
 // At every start GitHub is asked; when it can't be reached, the last answer
 // (kept in the settings) still shows the button and the message.
 void MainComponent::checkForUpdates (bool askedByUser)
@@ -4808,6 +4876,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case wf::favPluginManager: case wf::favRescan:
         case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice: case wf::optKeyboard: case wf::toolsBatch:
         case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord: case wf::optRecordComputer: case wf::helpCheckUpdates:
+        case wf::toolsCdjExport:   // works without a file too: its own playlist
             break;
 
         case wf::favPluginChain:
@@ -4925,10 +4994,14 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case wf::toolsGetStems:      available = available && doc != nullptr && ! doc->hasStemPages() && ! doc->isStem() && job == nullptr; break;
         case wf::toolsDeEsser:    available = available && doc != nullptr && (deEsserWindow != nullptr || ! toolWindowOpen()) && job == nullptr; break;
 
-        case wf::procEqParametric: case wf::procEqGraphic: case wf::procFadeGraphic: case wf::insertVolumeEnv: case wf::fxCompressor: case wf::fxDelay: case wf::fxReverb: case wf::toolsMp3Restore:
+        case wf::procEqParametric: case wf::procEqGraphic: case wf::procFadeGraphic: case wf::insertVolumeEnv: case wf::fxPitchBend: case wf::procSmooth: case wf::fxCompressor: case wf::fxDelay: case wf::fxReverb: case wf::toolsMp3Restore:
         case wf::fxLimiter: case wf::fxGate: case wf::fxChorus: case wf::fxFlange: case wf::fxVibrato: case wf::fxDistortion:
         case wf::toolsNoiseReduction: case wf::toolsHumRemoval: case wf::toolsDeclick: case wf::toolsClipRestore:
             available = available && doc != nullptr && (effectWindow != nullptr || ! toolWindowOpen()) && job == nullptr;
+            break;
+        case wf::procPan: case wf::insertPanEnv:   // stereo files only
+            available = available && doc != nullptr && doc->getBuffer().getNumChannels() == 2
+                        && (effectWindow != nullptr || ! toolWindowOpen()) && job == nullptr;
             break;
 
         case wf::winCascade: case wf::winTile:
@@ -4954,7 +5027,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
 
     if (editsOrPlays && id != wf::optRecord && id != wf::viewChannelMeters && id != wf::viewLoudnessMeters && id != wf::viewRegionsList
         && id != wf::viewSpectrum && id != wf::viewUndoHistory && id != wf::editSnapZero && id != wf::viewPlaybackScroll && id != wf::viewSmoothScroll
-        && id != wf::editPaste && id != wf::editMix
+        && id != wf::editPaste && id != wf::editMix && id != wf::toolsCdjExport
         && doc != nullptr && doc->isEmpty())
         available = false;
 
@@ -5160,6 +5233,7 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::procTimeStretch:   showStretchDialog(); return true;
         case wf::toolsBassFinder:   showBassFinder(); return true;
         case wf::toolsDrumRebuilder: showDrumRebuilder(); return true;
+        case wf::toolsCdjExport:    showCdjExport(); return true;
         case wf::toolsGetStems:     getStems (activeDocument()); return true;
         case wf::toolsDeEsser:      showDeEsser(); return true;
         case wf::favPluginManager:  showPluginManager (false); return true;
@@ -5168,6 +5242,9 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::procEqParametric:  showEffect (wf::EffectKind::eq); return true;
         case wf::procEqGraphic:     showEffect (wf::EffectKind::graphicEq); return true;
         case wf::procFadeGraphic: case wf::insertVolumeEnv: showEffect (wf::EffectKind::envelope); return true;
+        case wf::fxPitchBend:       showEffect (wf::EffectKind::pitchBend); return true;
+        case wf::procPan: case wf::insertPanEnv: showEffect (wf::EffectKind::panExpand); return true;
+        case wf::procSmooth:        showEffect (wf::EffectKind::smoothEnhance); return true;
         case wf::fxCompressor:      showEffect (wf::EffectKind::compressor); return true;
         case wf::fxDelay:           showEffect (wf::EffectKind::delay); return true;
         case wf::fxReverb:          showEffect (wf::EffectKind::reverb); return true;

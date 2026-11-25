@@ -22,9 +22,10 @@ public:
 
         // The child process of a plug-in preview: opens one plug-in, saves a
         // picture of its editor, then quits. A crash takes only this process.
-        if (wf::plugins::runThumbnailChild (getCommandLineParameterArray()))
+        if (const auto r = wf::plugins::runThumbnailChild (getCommandLineParameterArray()); r != wf::plugins::ChildRun::notMine)
         {
-            quit();
+            if (r == wf::plugins::ChildRun::done)
+                quit();
             return;
         }
 
@@ -119,6 +120,7 @@ public:
     void shutdown() override
     {
         mainWindow = nullptr;
+        wf::plugins::shutdownThumbnailChild();
         juce::LookAndFeel::setDefaultLookAndFeel (nullptr);
         wf::startup::endLog();
     }

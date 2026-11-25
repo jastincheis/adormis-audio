@@ -140,6 +140,7 @@ std::vector<CommandDef> makeCommands()
         { toolsSynthFm,           "FM Synthesis...",          "Tools", {} },
         { toolsBassFinder,        "Bass Creator...",          "Tools", {} },
         { toolsDrumRebuilder,     "Drum Rebuilder...",        "Tools", {} },
+        { toolsCdjExport,         "CDJ Export (USB stick)...", "Tools", {} },
         { toolsGetStems,          "Get Stems",                "Tools", {} },
         { toolsDeEsser,           "De-esser...",              "Tools", {} },
         { toolsMp3Restore,        "MP3 Restore...",           "Tools", {} },
@@ -261,7 +262,7 @@ const std::vector<TopMenu>& menuBar()
                      sub ("Noise Reduction", { C (toolsNoiseReduction), C (toolsCaptureNoise), sep(),
                                                C (toolsHumRemoval), C (toolsDeclick), C (toolsClipRestore) }),
                      sub ("Repair", { C (toolsRepairInterpolate), C (toolsRepairReplace), C (toolsRepairCopyChannel) }),
-                     sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsGetStems), sep(), C (toolsBassFinder), C (toolsDrumRebuilder), C (toolsDeEsser), C (toolsMp3Restore), sep(), C (toolsBatch) } },
+                     sub ("Synthesis", { C (toolsSynthSimple), C (toolsSynthFm) }), sep(), C (toolsGetStems), sep(), C (toolsBassFinder), C (toolsDrumRebuilder), C (toolsCdjExport), C (toolsDeEsser), C (toolsMp3Restore), sep(), C (toolsBatch) } },
 
         { "FX Favorites", { C (favPluginManager), C (favPluginChain), sep(), C (favRescan) } },
 
@@ -331,7 +332,7 @@ const std::vector<CommandDef>& allCommands()
         fxLimiter, fxGate, fxChorus, fxFlange, fxVibrato, fxDistortion, fxPitchShift,
         toolsNoiseReduction, toolsCaptureNoise, toolsHumRemoval, toolsDeclick, toolsClipRestore,
         insertRegion, viewRegionsList, toolsAutoRegion, toolsExtractRegions, toolsBatch,
-        procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDrumRebuilder, toolsGetStems, toolsDeEsser, toolsMp3Restore, optRecord, optRecordComputer,
+        procFadeIn, procFadeOut, procMute, procNormalize, procReverse, procInvert, procDcOffset, procVolume, procTimeStretch, toolsBassFinder, toolsDrumRebuilder, toolsCdjExport, fxPitchBend, procPan, insertPanEnv, procSmooth, toolsGetStems, toolsDeEsser, toolsMp3Restore, optRecord, optRecordComputer,
         procEqParametric, procEqGraphic, procFadeGraphic, insertVolumeEnv, fxCompressor, fxDelay, fxReverb,
         winCascade, winTile, winNext, winPrev,
         viewZoomIn, viewZoomOut, viewZoomSelection, viewZoomNormal,

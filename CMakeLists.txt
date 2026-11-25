@@ -56,6 +56,22 @@ else()
     FetchContent_MakeAvailable(drum_rebuilder)
 endif()
 
+# Adormis CDJ Export (Tools > CDJ Export), same author, AGPLv3: writes USB
+# sticks for Pioneer CDJs / rekordbox and Serato. Its core and whole window
+# (cdj_ui), pinned by commit.
+# -DADORMIS_CDJ_DIR=/path/to/cdj-export skips the download.
+set(ADORMIS_CDJ_DIR "" CACHE PATH "Local cdj-export checkout (optional)")
+
+if(ADORMIS_CDJ_DIR)
+    add_subdirectory(${ADORMIS_CDJ_DIR} cdj-export EXCLUDE_FROM_ALL)
+else()
+    include(FetchContent)
+    FetchContent_Declare(cdj_export
+        GIT_REPOSITORY https://github.com/jastincheis/cdj-export.git
+        GIT_TAG        3865ff7b73ac0d46e6e0b4144ae7ece7b639f64e)
+    FetchContent_MakeAvailable(cdj_export)
+endif()
+
 # Get Stems: Demucs (the htdemucs model by Meta, MIT) run on the CPU by
 # demucs.cpp (MIT), which needs Eigen (MPL 2.0); pinned by commit.
 # -DADORMIS_DEMUCS_DIR=/path/to/demucs.cpp (with vendor/eigen checked out)
@@ -134,6 +150,7 @@ target_sources(AdormisAudio PRIVATE
     Source/EffectWindow.cpp
     Source/FilePicker.cpp
     Source/PluginHost.cpp
+    Source/CdjExportWindow.cpp
     Source/Processes.cpp
     Source/SaveAsDialog.cpp
     Source/VolumeDialog.cpp
@@ -168,13 +185,14 @@ target_sources(AdormisAudio PRIVATE
 
 # Recording what the computer plays: one backend per system.
 if(WIN32)
-    target_sources(AdormisAudio PRIVATE Source/SystemAudioWindows.cpp)
+    target_sources(AdormisAudio PRIVATE Source/SystemAudioWindows.cpp Source/WindowCaptureWindows.cpp)
 elseif(APPLE)
-    target_sources(AdormisAudio PRIVATE Source/SystemAudioMac.mm)
+    target_sources(AdormisAudio PRIVATE Source/SystemAudioMac.mm Source/WindowCaptureMac.mm)
+    set_source_files_properties(Source/WindowCaptureMac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     set_source_files_properties(Source/SystemAudioMac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     target_link_libraries(AdormisAudio PRIVATE "-weak_framework ScreenCaptureKit" "-framework CoreMedia" "-framework CoreGraphics")
 else()
-    target_sources(AdormisAudio PRIVATE Source/SystemAudioLinux.cpp)
+    target_sources(AdormisAudio PRIVATE Source/SystemAudioLinux.cpp Source/WindowCaptureLinux.cpp)
 endif()
 
 target_compile_definitions(AdormisAudio PRIVATE
@@ -228,6 +246,7 @@ target_link_libraries(AdormisAudio
         juce::juce_cryptography
         rubberband_single
         drb_ui
+        cdj_ui
         demucs_engine
     PUBLIC
         juce::juce_recommended_config_flags

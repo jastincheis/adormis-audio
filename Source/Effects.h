@@ -73,6 +73,40 @@ double envelopeGainAt (const EnvelopeParams&, double time);   // time 0..1
 // point lie on the lines to its neighbours, a third of the way.
 void envelopeHandles (const EnvelopeParams&, int i, double& inTime, double& inGain, double& outTime, double& outGain);
 
+// Pitch Bend: the pitch follows a curve over the selection, the length stays.
+// The curve is an envelope whose value 1 means unchanged, 0 = -range and
+// 2 = +range semitones (so the envelope editor draws it as it is).
+struct PitchBendParams
+{
+    EnvelopeParams curve;
+    double range = 12.0;   // semitones at the top / bottom of the scale
+};
+
+double pitchBendSemitonesAt (const PitchBendParams&, double time);   // time 0..1
+
+// Pan/Expand (stereo only): a curve over the selection, its value 0..2.
+//   panKeep:  balance, 0 = left only, 1 = as it is, 2 = right only (the stereo
+//             picture moves, nothing is mixed);
+//   panMix:   both channels mixed to mono first, then placed: 0 left, 1 centre,
+//             2 right (constant power);
+//   width:    stereo width, 0 = mono, 1 = as it is, 2 = twice as wide.
+struct PanParams
+{
+    enum Mode { panKeep, panMix, width };
+    EnvelopeParams curve;
+    int mode = panKeep;
+};
+
+// Smooth/Enhance: one slider from smooth (highs softened) to enhance (highs
+// brought out): a gentle high shelf, -12..+12 dB above `cornerHz`.
+struct SmoothEnhanceParams
+{
+    double amount = 0.0;        // -100 (smoothest) .. +100 (most enhanced)
+    double cornerHz = 3000.0;
+};
+
+double smoothEnhanceGainDb (const SmoothEnhanceParams&, double hz, double sampleRate);   // its response
+
 struct CompressorParams
 {
     double thresholdDb = -18.0, ratio = 4.0, kneeDb = 6.0;
@@ -134,6 +168,11 @@ public:
 std::shared_ptr<Processor> makeEq();
 std::shared_ptr<Processor> makeEnvelope();
 juce::int64 envelopePosition (const Processor&);   // where the preview is (samples into the selection)
+std::shared_ptr<Processor> makePitchBend();         // Rubber Band, real-time engine
+juce::int64 pitchBendPosition (const Processor&);   // as envelopePosition
+std::shared_ptr<Processor> makePan();
+std::shared_ptr<Processor> makeSmoothEnhance();
+juce::int64 panPosition (const Processor&);
 std::shared_ptr<Processor> makeCompressor();
 std::shared_ptr<Processor> makeDelay();
 std::shared_ptr<Processor> makeReverb();
@@ -141,6 +180,9 @@ std::shared_ptr<Processor> makeReverb();
 // Parameters for a processor made above (the type must match).
 void setParams (Processor&, const EqParams&);
 void setParams (Processor&, const EnvelopeParams&);
+void setParams (Processor&, const PitchBendParams&);
+void setParams (Processor&, const PanParams&);
+void setParams (Processor&, const SmoothEnhanceParams&);
 void setParams (Processor&, const CompressorParams&);
 void setParams (Processor&, const DelayParams&);
 void setParams (Processor&, const ReverbParams&);
