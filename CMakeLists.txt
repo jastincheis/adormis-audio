@@ -176,6 +176,8 @@ target_sources(AdormisAudio PRIVATE
     Source/WaveColourPicker.cpp
     Source/Appearance.cpp
     Source/StretchDialog.cpp
+    Source/Synthesis.cpp
+    Source/EditTools.cpp
     Source/TemplateDialog.cpp
     Source/TimeStretch.cpp
     Source/UndoHistoryWindow.cpp

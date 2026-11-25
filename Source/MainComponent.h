@@ -164,6 +164,16 @@ private:
     void showDeEsser();
     void showDrumRebuilder();
     void showCdjExport();
+    void showSynthesis (bool fm);
+    void insertSampleLoop();
+    void repairSelection (bool interpolate);
+    void showFind();
+    void showGapper();
+    void showFileProperties();
+    void toggleDocks (bool bottom, bool sides);
+    void maximizeWidth();
+    void showPreferences();
+    bool showBottomDock = true, showSideDock = true;   // View > Docked Windows
 
     // Get Stems: the song in `doc` split by the AI into drums, bass, vocals
     // and the rest, added to its window as tabs.

@@ -1511,6 +1511,23 @@ std::unordered_map<juce::String, juce::String> DataWindow::cueMetadata (double r
     v["NumCuePoints"] = juce::String (cue);
     v["NumCueLabels"] = juce::String (label);
     v["NumCueRegions"] = juce::String ((int) regions.size());
+
+    // Insert > Sample Loop: the region named "Sample loop" is also written as
+    // the file's loop (the smpl chunk samplers read); its end is the last
+    // sample played, so one before the region's end.
+    for (const auto& r : regions)
+        if (r.name == sampleLoopName && r.end > r.start)
+        {
+            v["NumSampleLoops"] = "1";
+            v["Loop0Identifier"] = "0";
+            v["Loop0Type"] = "0";   // forward
+            v["Loop0Start"] = at (r.start);
+            v["Loop0End"] = juce::String ((juce::int64) std::llround ((double) r.end * ratio) - 1);
+            v["Loop0Fraction"] = "0";
+            v["Loop0PlayCount"] = "0";   // endless
+            break;
+        }
+
     return v;
 }
 
@@ -1567,6 +1584,18 @@ void DataWindow::readCues (const juce::StringPairArray& meta)
             if (label.isNotEmpty() && ! plain)
                 markerNames.emplace (position, label);
         }
+
+    // A loop in the smpl chunk (from Adormis Audio or a sampler) shows as the
+    // "Sample loop" region, unless one is there already.
+    if (meta["NumSampleLoops"].getIntValue() > 0
+        && std::none_of (regions.begin(), regions.end(), [] (const auto& r) { return r.name == sampleLoopName; }))
+    {
+        const auto start = juce::jlimit ((juce::int64) 0, total, meta["Loop0Start"].getLargeIntValue());
+        const auto end = juce::jlimit ((juce::int64) 0, total, meta["Loop0End"].getLargeIntValue() + 1);
+
+        if (end > start)
+            regions.push_back ({ start, end, sampleLoopName });
+    }
 
     std::sort (markers.begin(), markers.end());
     markers.erase (std::unique (markers.begin(), markers.end()), markers.end());

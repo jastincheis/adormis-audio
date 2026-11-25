@@ -10,6 +10,8 @@
 #include "ShortcutsWindow.h"
 #include "DrumRebuilderWindow.h"
 #include "CdjExportWindow.h"
+#include "Synthesis.h"
+#include "EditTools.h"
 #include "StemSeparator.h"
 #include "WaveColourPicker.h"
 #include "Appearance.h"
@@ -576,6 +578,11 @@ MainComponent::MainComponent()
 
     // Remembered from last time.
     WaveformView::snapToZeroCrossings = (bool) wf::settings::get ("edit.snapZero");
+    WaveformView::snapEnabled = (bool) wf::settings::get ("edit.snap");
+    showBottomDock = ! wf::settings::get ("view.dockBottom").isBool() || (bool) wf::settings::get ("view.dockBottom");
+    showSideDock = ! wf::settings::get ("view.dockSides").isBool() || (bool) wf::settings::get ("view.dockSides");
+    WaveformView::snapToGrid = (bool) wf::settings::get ("edit.snapGrid");
+    WaveformView::snapToMarkers = ! wf::settings::get ("edit.snapMarkers").isBool() || (bool) wf::settings::get ("edit.snapMarkers");
 
     if (const auto v = wf::settings::get ("view.beatLines"); ! v.isVoid())
         WaveformView::showBeatLines = (bool) v;
@@ -776,13 +783,17 @@ void MainComponent::resized()
         linkBox.toFront (false);
         linkButton.toFront (false);
     }
-    toolbar->setBounds (area.removeFromBottom (ProcessToolbar::preferredHeight));
+    // View > Docked Windows: the toolbar (bottom) and the meters (side) can be hidden.
+    toolbar->setVisible (showBottomDock);
+
+    if (showBottomDock)
+        toolbar->setBounds (area.removeFromBottom (ProcessToolbar::preferredHeight));
 
     if (meters != nullptr)
     {
-        meters->setVisible (meters->showsAnything());
+        meters->setVisible (showSideDock && meters->showsAnything());
 
-        if (meters->showsAnything())
+        if (showSideDock && meters->showsAnything())
             meters->setBounds (area.removeFromRight (wf::MeterPanel::preferredWidth));
     }
 
@@ -1688,7 +1699,7 @@ void MainComponent::showForm (const juce::String& title, const juce::String& inf
     // These windows start from the values used last time (the others start
     // from the file: its rate, its selection, the cursor).
     static const juce::StringArray remembered { "Insert Silence", "Bit-Depth Converter", "Channel Converter", "Auto Trim/Crop",
-                                                "Detect Clipping", "Normalize", "Pitch Shift", "Auto Region" };
+                                                "Detect Clipping", "Normalize", "Pitch Shift", "Auto Region", "Find", "Gapper/Snipper" };
     const auto key = "form." + title;
 
     if (remembered.contains (title))
@@ -1772,6 +1783,386 @@ void MainComponent::showInsertSilence()
                                                             : d.getView().getCursor();
                   d.insertSilence (where, *wf::parseTime (v[0]));
               });
+}
+
+// Tools > Synthesis > Simple / FM: a tone made from nothing, as a new file or
+// into the active one (at the cursor, or in place of the selection). The
+// window starts from the values used last time.
+void MainComponent::showSynthesis (bool fm)
+{
+    const auto title = juce::String (fm ? "FM Synthesis" : "Simple Synthesis");
+    auto* doc = activeDocument();
+    const auto intoFile = doc != nullptr && ! doc->isEmpty();
+    const juce::StringArray where = intoFile ? juce::StringArray { "A new file", "Into " + doc->getTitle() + " (cursor / selection)" }
+                                             : juce::StringArray { "A new file" };
+    auto isHz = [] (const juce::String& t) { const auto v = wf::parseNumber (t); return v.has_value() && *v >= 1.0 && *v <= 24000.0; };
+    auto isLength = [] (const juce::String& t) { const auto v = wf::parseTime (t); return v.has_value() && *v > 0.0 && *v <= 600.0; };
+    auto isDb = [] (const juce::String& t) { const auto v = wf::parseNumber (t); return v.has_value() && *v >= -60.0 && *v <= 0.0; };
+    auto inRange = [] (double lo, double hi) { return [lo, hi] (const juce::String& t) { const auto v = wf::parseNumber (t); return v.has_value() && *v >= lo && *v <= hi; }; };
+
+    std::vector<wf::FormField> fields;
+
+    if (fm)
+        fields = { { "Base frequency:", "220", {}, "Hz", isHz },
+                   { "Modulator ratio:", "2", {}, "x base", inRange (0.01, 32.0) },
+                   { "Brightness at start:", "5", {}, "(0 = pure)", inRange (0.0, 50.0) },
+                   { "Brightness at end:", "1", {}, "", inRange (0.0, 50.0) },
+                   { "Attack:", "10", {}, "ms", inRange (0.0, 5000.0) },
+                   { "Sustain level:", "40", {}, "%", inRange (0.0, 100.0) },
+                   { "Length:", "2", {}, "seconds", isLength },
+                   { "Peak level:", "-6", {}, "dB", isDb },
+                   { "Channels:", "Stereo", { "Mono", "Stereo" }, {}, {} },
+                   { "Put it in:", where[0], where, {}, {} } };
+    else
+        fields = { { "Waveform:", "Sine", wf::synth::waveNames(), {}, {} },
+                   { "Frequency at start:", "440", {}, "Hz", isHz },
+                   { "Frequency at end:", "440", {}, "Hz", isHz },
+                   { "Length:", "1", {}, "seconds", isLength },
+                   { "Peak level:", "-6", {}, "dB", isDb },
+                   { "Channels:", "Stereo", { "Mono", "Stereo" }, {}, {} },
+                   { "Put it in:", where[0], where, {}, {} } };
+
+    const auto key = "form." + title;
+    const auto stored = wf::settings::get (key);
+
+    if (const auto* saved = stored.getArray(); saved != nullptr && saved->size() == (int) fields.size())
+        for (size_t i = 0; i + 1 < fields.size(); ++i)   // not "Put it in": the file names change
+        {
+            const auto value = (*saved)[(int) i].toString();
+            auto& f = fields[i];
+
+            if (f.choices.isEmpty() ? (f.isValid == nullptr || f.isValid (value)) : f.choices.contains (value))
+                f.value = value;
+        }
+
+    auto apply = [this, fm, title, key, safeDoc = juce::Component::SafePointer<DataWindow> (doc)] (const juce::StringArray& v)
+    {
+        juce::Array<juce::var> list;
+        for (const auto& s : v)
+            list.add (s);
+        wf::settings::set (key, list);
+
+        auto* target = v[v.size() - 1] == "A new file" ? nullptr : safeDoc.getComponent();
+        const auto rate = target != nullptr ? target->getSampleRate() : 44100.0;
+        juce::AudioBuffer<float> audio;
+        juce::String name;
+
+        if (fm)
+        {
+            wf::synth::FmSettings s;
+            s.carrierHz = *wf::parseNumber (v[0]);
+            s.ratio = *wf::parseNumber (v[1]);
+            s.indexStart = *wf::parseNumber (v[2]);
+            s.indexEnd = *wf::parseNumber (v[3]);
+            s.attackMs = *wf::parseNumber (v[4]);
+            s.sustain = *wf::parseNumber (v[5]) / 100.0;
+            s.seconds = *wf::parseTime (v[6]);
+            s.amplitudeDb = *wf::parseNumber (v[7]);
+            s.channels = v[8] == "Mono" ? 1 : 2;
+            audio = wf::synth::fm (s, rate);
+            name = "FM " + juce::String (s.carrierHz, 0) + " Hz";
+        }
+        else
+        {
+            wf::synth::SimpleSettings s;
+            s.wave = (wf::synth::Wave) juce::jmax (0, wf::synth::waveNames().indexOf (v[0]));
+            s.startHz = *wf::parseNumber (v[1]);
+            s.endHz = *wf::parseNumber (v[2]);
+            s.seconds = *wf::parseTime (v[3]);
+            s.amplitudeDb = *wf::parseNumber (v[4]);
+            s.channels = v[5] == "Mono" ? 1 : 2;
+            audio = wf::synth::simple (s, rate);
+            name = v[0] + (s.wave == wf::synth::Wave::whiteNoise || s.wave == wf::synth::Wave::pinkNoise ? juce::String()
+                           : " " + juce::String (s.startHz, 0) + (s.endHz != s.startHz ? "-" + juce::String (s.endHz, 0) : juce::String()) + " Hz");
+        }
+
+        if (target == nullptr)
+        {
+            addDocument (DataWindow::fromAudio (name, rate, std::move (audio), {}));
+            return;
+        }
+
+        releasePlaybackSource();
+        target->setUndoName (title);
+        target->pasteAudio (audio, rate);
+        target->setUndoName ({});
+        updateStatus();
+        updateTitle();
+        commandManager.commandStatusChanged();
+    };
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->formWindow.reset();
+        });
+    };
+
+    formWindow = wf::createFormWindow (title, fm ? "A tone with a second oscillator bending its pitch: bells, basses, metallic sounds."
+                                                 : "A plain waveform, steady or sliding from one frequency to another.",
+                                       std::move (fields),
+                                       fm ? "Ratio 1 or 2: warm and harmonic; 1.41 or 3.5: bell-like. Brightness falling = a plucked or struck sound."
+                                          : "Into a file: it goes in at the cursor, or replaces the selection (converted to that file's rate and channels).",
+                                       std::move (apply), std::move (onClose));
+    formWindow->setVisible (true);
+    formWindow->toFront (true);
+}
+
+// Tools > Repair > Interpolate / Replace: the selection repaired in place
+// (only the picked channel when one is picked).
+void MainComponent::repairSelection (bool interpolate)
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->getView().getSelection().isEmpty())
+        return;
+
+    const auto sel = doc->getView().getSelection();
+    const juce::Range<int> range ((int) sel.getStart(), (int) sel.getEnd());
+
+    if (interpolate && range.getLength() > (int) (doc->getSampleRate() * 0.1))
+    {
+        statusBar.setText ("  Interpolate is for clicks: select 100 ms or less (Replace suits longer bits).", juce::dontSendNotification);
+        return;
+    }
+
+    auto fixed = interpolate ? wf::edittools::interpolate (doc->getBuffer(), range)
+                             : wf::edittools::replaceWithNeighbour (doc->getBuffer(), range, doc->getSampleRate());
+
+    if (const auto picked = doc->getView().getSelectedChannel(); picked >= 0)
+        for (int c = 0; c < fixed.getNumChannels(); ++c)
+            if (c != picked)
+                fixed.copyFrom (c, 0, doc->getBuffer(), c, range.getStart(), range.getLength());
+
+    releasePlaybackSource();
+    doc->setUndoName (interpolate ? "Interpolate" : "Replace");
+    doc->applyEffect (range, fixed);
+    doc->setUndoName ({});
+    updateStatus();
+    commandManager.commandStatusChanged();
+}
+
+// Tools > Find: selects the next glitch, silence or loud spot after the cursor.
+void MainComponent::showFind()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    auto isNumber = [] (double lo, double hi) { return [lo, hi] (const juce::String& t) { const auto v = wf::parseNumber (t); return v.has_value() && *v >= lo && *v <= hi; }; };
+
+    showForm ("Find", "Looks in " + doc->getTitle() + " from the cursor on, and selects what it finds.",
+              { { "Look for:", "A click or glitch", { "A click or glitch", "Silence", "Something louder than the level" }, {}, {} },
+                { "Glitch: a jump of", "20", {}, "% of full scale", isNumber (1.0, 200.0) },
+                { "Level:", "-50", {}, "dB (silence below it, loud above it)", isNumber (-120.0, 0.0) },
+                { "Silence at least:", "0.2", {}, "seconds", isNumber (0.01, 600.0) } },
+              "For the next one, open Find again: it keeps these values and starts after what it found.",
+              [this] (DataWindow& d, const juce::StringArray& v)
+              {
+                  wf::edittools::FindSettings s;
+                  s.what = v[0] == "Silence" ? wf::edittools::FindWhat::silence
+                         : v[0].startsWith ("Something") ? wf::edittools::FindWhat::loud : wf::edittools::FindWhat::glitch;
+                  s.jump = *wf::parseNumber (v[1]) / 100.0;
+                  s.levelDb = *wf::parseNumber (v[2]);
+                  s.minSeconds = *wf::parseNumber (v[3]);
+
+                  auto& view = d.getView();
+                  const auto from = view.getSelection().isEmpty() ? view.getCursor() : view.getSelection().getEnd();
+
+                  if (const auto found = wf::edittools::find (d.getBuffer(), d.getSampleRate(), from, s))
+                  {
+                      view.setSelection (*found);
+                      view.ensureVisible (found->getStart());
+                      statusBar.setText ("  Found at " + WaveformView::formatTime ((double) found->getStart() / d.getSampleRate()) + ".",
+                                         juce::dontSendNotification);
+                  }
+                  else
+                  {
+                      statusBar.setText ("  Nothing found after the cursor.", juce::dontSendNotification);
+                  }
+              });
+}
+
+// Effects > Gapper/Snipper: gaps put in, or pieces cut out, at a steady rate.
+void MainComponent::showGapper()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    auto isMs = [] (const juce::String& t) { const auto v = wf::parseNumber (t); return v.has_value() && *v >= 1.0 && *v <= 10000.0; };
+
+    showForm ("Gapper/Snipper", "Applies to: " + doc->describeProcessTarget(),
+              { { "Do:", "Gapper: put in gaps of silence", { "Gapper: put in gaps of silence", "Snipper: cut out pieces" }, {}, {} },
+                { "Every:", "125", {}, "ms", isMs },
+                { "Gap / piece length:", "25", {}, "ms", isMs } },
+              "The gapper makes the audio longer (a stutter); the snipper makes it shorter (a choppy, faster feel). "
+              "125 ms = a sixteenth note at 120 BPM.",
+              [this] (DataWindow& d, const juce::StringArray& v)
+              {
+                  const auto range = d.processRange();
+                  const auto snip = v[0].startsWith ("Snipper");
+                  const auto every = *wf::parseNumber (v[1]) / 1000.0, length = *wf::parseNumber (v[2]) / 1000.0;
+
+                  if (snip && length >= every)
+                  {
+                      statusBar.setText ("  Snipper: the piece cut out must be shorter than the \"Every\" time.", juce::dontSendNotification);
+                      return;
+                  }
+
+                  juce::AudioBuffer<float> part (d.getBuffer().getNumChannels(), range.getLength());
+                  for (int c = 0; c < part.getNumChannels(); ++c)
+                      part.copyFrom (c, 0, d.getBuffer(), c, range.getStart(), range.getLength());
+
+                  const auto out = wf::edittools::gapperSnipper (part, d.getSampleRate(), snip, every, length);
+                  d.replaceRange (range, out, (double) out.getNumSamples() / std::max (1, range.getLength()));
+              });
+}
+
+// File > Properties (View > File Properties): what the active file is.
+void MainComponent::showFileProperties()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    const auto file = doc->getFile();
+    const auto rate = doc->getSampleRate();
+    const auto samples = (juce::int64) doc->getBuffer().getNumSamples();
+    int loops = 0;
+
+    for (const auto& r : doc->getRegions())
+        if (r.name == sampleLoopName)
+            ++loops;
+
+    juce::String text;
+    text << "Format:  " << doc->describeFormat() << "\n"
+         << "Sample rate:  " << juce::String (juce::roundToInt (rate)) << " Hz\n"
+         << "Channels:  " << doc->getBuffer().getNumChannels() << (doc->getBuffer().getNumChannels() == 2 ? " (stereo)" : doc->getBuffer().getNumChannels() == 1 ? " (mono)" : "") << "\n";
+
+    const auto lossy = doc->describeFormat().containsIgnoreCase ("MP3") || doc->describeFormat().containsIgnoreCase ("OGG");
+
+    if (doc->getBitDepth() > 0 && ! lossy)   // an MP3 / Ogg has no bit depth of its own
+        text << "Bit depth:  " << doc->getBitDepth() << "-bit" << (doc->getResolution() != doc->getBitDepth() ? " (" + juce::String (doc->getResolution()) + "-bit used)" : juce::String()) << "\n";
+
+    text << "Length:  " << WaveformView::formatTime ((double) samples / rate) << "  (" << samples << " samples)\n"
+         << "Markers:  " << (int) doc->getMarkers().size() << "    Regions:  " << (int) doc->getRegions().size() - loops
+         << (loops > 0 ? "    Sample loop: yes" : "") << "\n\n";
+
+    if (file.existsAsFile())
+        text << "File:  " << file.getFullPathName() << "\n"
+             << "Size on disk:  " << juce::File::descriptionOfSizeInBytes (file.getSize()) << "\n"
+             << "Last changed:  " << file.getLastModificationTime().toString (true, true, false, true) << "\n"
+             << (doc->isModified() ? "\nThe window has changes that are not saved yet." : "");
+    else
+        text << "Not saved to a file yet.";
+
+    juce::AlertWindow::showAsync (juce::MessageBoxOptions().withIconType (juce::MessageBoxIconType::InfoIcon)
+                                                           .withTitle ("Properties: " + doc->getTitle())
+                                                           .withMessage (text)
+                                                           .withButton ("OK")
+                                                           .withAssociatedComponent (this),
+                                  nullptr);
+}
+
+// View > Docked Windows: bottom = the toolbar, sides = the meters.
+void MainComponent::toggleDocks (bool bottom, bool sides)
+{
+    if (bottom && sides)
+    {
+        const auto anyShown = showBottomDock || showSideDock;
+        showBottomDock = showSideDock = ! anyShown;
+    }
+    else if (bottom)
+    {
+        showBottomDock = ! showBottomDock;
+    }
+    else
+    {
+        showSideDock = ! showSideDock;
+    }
+
+    wf::settings::set ("view.dockBottom", showBottomDock);
+    wf::settings::set ("view.dockSides", showSideDock);
+    resized();
+    commandManager.commandStatusChanged();
+}
+
+// View > Maximize Width: the active file's window as wide as the workspace
+// (its height and place up and down stay).
+void MainComponent::maximizeWidth()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr)
+        return;
+
+    if (workspace->isMaximised())
+        return;   // already filling everything
+
+    if (auto* window = workspace->getWindowFor (doc))
+    {
+        const auto area = workspace->areaAboveBars();
+        window->setBounds (area.getX(), window->getY(), area.getWidth(), window->getHeight());
+    }
+}
+
+// Options > Preferences: the on/off options from the menus in one place.
+// Each is the menu command itself, so both always agree.
+void MainComponent::showPreferences()
+{
+    static const std::vector<std::pair<juce::CommandID, juce::String>> options {
+        { wf::helpUpdatesAtStart,  "Check for updates at start:" },
+        { wf::viewPlaybackScroll,  "Scroll while playing:" },
+        { wf::viewSmoothScroll,    "Smooth scrolling:" },
+        { wf::editSnapZero,        "Snap to zero crossings:" },
+        { wf::editSnapEnable,      "Snapping (F8):" },
+        { wf::editSnapMarkers,     "  Snap to markers and regions:" },
+        { wf::editSnapGrid,        "  Snap to the ruler's ticks:" },
+        { wf::optLoop,             "Loop playback:" },
+        { wf::viewDockBottom,      "Toolbar (bottom):" },
+        { wf::viewDockSides,       "Meters (side):" },
+    };
+
+    auto ticked = [this] (juce::CommandID id)
+    {
+        juce::ApplicationCommandInfo info (id);
+        getCommandInfo (id, info);
+        return (info.flags & juce::ApplicationCommandInfo::isTicked) != 0;
+    };
+
+    std::vector<wf::FormField> fields;
+
+    for (const auto& [id, label] : options)
+        fields.push_back ({ label, ticked (id) ? "On" : "Off", { "On", "Off" }, {}, {} });
+
+    auto apply = [this, ticked] (const juce::StringArray& v)
+    {
+        for (size_t i = 0; i < options.size() && (int) i < v.size(); ++i)
+            if ((v[(int) i] == "On") != ticked (options[i].first))
+                commandManager.invokeDirectly (options[i].first, false);
+    };
+
+    auto onClose = [safeThis = juce::Component::SafePointer<MainComponent> (this)]
+    {
+        juce::MessageManager::callAsync ([safeThis]
+        {
+            if (auto* main = safeThis.getComponent())
+                main->formWindow.reset();
+        });
+    };
+
+    formWindow = wf::createFormWindow ("Preferences", "Adormis Audio's options (the same as in the menus).", std::move (fields),
+                                       "Sound card: Options > Audio Device.  Shortcuts: Options > Keyboard.  "
+                                       "Colours and background: right-click a waveform.",
+                                       std::move (apply), std::move (onClose));
+    formWindow->setVisible (true);
+    formWindow->toFront (true);
 }
 
 void MainComponent::showResample()
@@ -2055,6 +2446,28 @@ void MainComponent::insertRegion()
     }
 
     doc->addRegion (doc->getView().getSelection(), doc->nextRegionName());
+}
+
+// Insert > Sample Loop: the selection becomes the file's loop for samplers,
+// shown as a region named "Sample loop" (one per file: an old one moves).
+void MainComponent::insertSampleLoop()
+{
+    auto* doc = activeDocument();
+
+    if (doc == nullptr || doc->getView().getSelection().isEmpty())
+    {
+        statusBar.setText ("  Select the part that should loop, then Insert > Sample Loop.", juce::dontSendNotification);
+        return;
+    }
+
+    const auto& regions = doc->getRegions();
+
+    for (int i = (int) regions.size(); --i >= 0;)
+        if (regions[(size_t) i].name == sampleLoopName)
+            doc->removeRegion (i);
+
+    doc->addRegion (doc->getView().getSelection(), sampleLoopName);
+    statusBar.setText ("  Sample loop set. It is saved into WAV files (smpl chunk), for samplers.", juce::dontSendNotification);
 }
 
 void MainComponent::renameRegion (DataWindow* doc, int index)
@@ -4877,6 +5290,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case wf::fileNew: case wf::fileOpen: case wf::fileExit: case wf::optAudioDevice: case wf::optKeyboard: case wf::toolsBatch:
         case wf::helpShortcuts: case wf::helpAbout: case wf::optRecord: case wf::optRecordComputer: case wf::helpCheckUpdates:
         case wf::toolsCdjExport:   // works without a file too: its own playlist
+        case wf::toolsSynthSimple: case wf::toolsSynthFm:   // can make a new file
             break;
 
         case wf::favPluginChain:
@@ -4890,6 +5304,9 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
         case wf::editSnapZero:   // an option: always there
             info.setTicked (WaveformView::snapToZeroCrossings);
             break;
+        case wf::editSnapEnable:  info.setTicked (WaveformView::snapEnabled); break;
+        case wf::editSnapGrid:    info.setTicked (WaveformView::snapToGrid); break;
+        case wf::editSnapMarkers: info.setTicked (WaveformView::snapToMarkers); break;
 
         case wf::viewUndoHistory:
             info.setTicked (undoHistoryWindow != nullptr);
@@ -4945,6 +5362,18 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             available = true;   // the switch works with or without a file
             break;
 
+        case wf::optSwitchPlayMode:
+            info.shortName = loopPlayback ? "Switch Play Mode (now: looped)" : "Switch Play Mode (now: normal)";
+            available = true;
+            break;
+
+        case wf::viewDockBottom: info.setTicked (showBottomDock); available = true; break;
+        case wf::viewDockSides:  info.setTicked (showSideDock); available = true; break;
+        case wf::viewDockAll:    info.setTicked (showBottomDock && showSideDock); available = true; break;
+        case wf::winMaximizeAll: available = available && numDocuments > 0 && ! workspace->isMaximised(); break;
+        case wf::optArm:         available = true; break;
+        case wf::optPreferences: available = true; break;
+
         case wf::viewChannelMeters:
             info.setTicked (meters != nullptr && meters->showsChannels());
             break;
@@ -4957,7 +5386,7 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
             available = available && doc != nullptr && job == nullptr && ! doc->isEmpty();
             break;
 
-        case wf::toolsCaptureNoise: case wf::insertRegion:
+        case wf::toolsCaptureNoise: case wf::insertRegion: case wf::insertLoop: case wf::toolsRepairInterpolate: case wf::toolsRepairReplace:
             available = available && doc != nullptr && ! doc->getView().getSelection().isEmpty();
             break;
 
@@ -5026,8 +5455,8 @@ void MainComponent::getCommandInfo (juce::CommandID id, juce::ApplicationCommand
                                        || (id >= wf::winCascade && id <= wf::winPrev) || (id >= wf::viewZoomIn && id <= wf::viewZoomNormal);
 
     if (editsOrPlays && id != wf::optRecord && id != wf::viewChannelMeters && id != wf::viewLoudnessMeters && id != wf::viewRegionsList
-        && id != wf::viewSpectrum && id != wf::viewUndoHistory && id != wf::editSnapZero && id != wf::viewPlaybackScroll && id != wf::viewSmoothScroll
-        && id != wf::editPaste && id != wf::editMix && id != wf::toolsCdjExport
+        && id != wf::viewSpectrum && id != wf::viewUndoHistory && id != wf::editSnapZero && id != wf::editSnapEnable && id != wf::editSnapGrid && id != wf::editSnapMarkers && id != wf::viewPlaybackScroll && id != wf::viewSmoothScroll
+        && id != wf::editPaste && id != wf::editMix && id != wf::optArm && id != wf::optSwitchPlayMode && id != wf::toolsCdjExport && id != wf::toolsSynthSimple && id != wf::toolsSynthFm
         && doc != nullptr && doc->isEmpty())
         available = false;
 
@@ -5234,6 +5663,8 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::toolsBassFinder:   showBassFinder(); return true;
         case wf::toolsDrumRebuilder: showDrumRebuilder(); return true;
         case wf::toolsCdjExport:    showCdjExport(); return true;
+        case wf::toolsSynthSimple:  showSynthesis (false); return true;
+        case wf::toolsSynthFm:      showSynthesis (true); return true;
         case wf::toolsGetStems:     getStems (activeDocument()); return true;
         case wf::toolsDeEsser:      showDeEsser(); return true;
         case wf::favPluginManager:  showPluginManager (false); return true;
@@ -5262,6 +5693,36 @@ bool MainComponent::perform (const InvocationInfo& info)
         case wf::toolsClipRestore:  showEffect (wf::EffectKind::clipRestore); return true;
         case wf::toolsCaptureNoise: captureNoisePrint(); return true;
         case wf::insertRegion:      insertRegion(); return true;
+        case wf::insertLoop:        insertSampleLoop(); return true;
+        case wf::toolsRepairInterpolate: repairSelection (true); return true;
+        case wf::toolsRepairReplace:     repairSelection (false); return true;
+        case wf::toolsFind:         showFind(); return true;
+        case wf::fxGapper:          showGapper(); return true;
+        case wf::fileProperties: case wf::viewProperties: showFileProperties(); return true;
+        case wf::viewDockBottom:    toggleDocks (true, false); return true;
+        case wf::viewDockSides:     toggleDocks (false, true); return true;
+        case wf::viewDockAll:       toggleDocks (true, true); return true;
+        case wf::viewMaxWidth:      maximizeWidth(); return true;
+        case wf::optPreferences:    showPreferences(); return true;
+        case wf::winMaximizeAll:
+            if (workspace->getNumDocuments() > 0 && ! workspace->isMaximised())
+            {
+                workspace->setLayoutMode (juce::MultiDocumentPanel::MaximisedWindowsWithTabs);
+                workspace->updateMaximisedButtons();
+                resized();
+            }
+            return true;
+        case wf::optArm:            // Arm for Recording: the Record window open and ready, not recording yet
+            if (recordWindow == nullptr)
+                openRecorder();
+            if (recordWindow != nullptr)
+                recordWindow->toFront (true);
+            return true;
+        case wf::optSwitchPlayMode:
+            toggleLoop();
+            statusBar.setText (juce::String ("  Play mode: ") + (loopPlayback ? "looped (the selection, or the file, over and over)" : "normal (once)"),
+                               juce::dontSendNotification);
+            return true;
         case wf::viewRegionsList:   toggleRegionsList(); return true;
         case wf::viewSpectrum:      toggleSpectrum(); return true;
         case wf::viewUndoHistory:   toggleUndoHistory(); return true;
@@ -5284,6 +5745,30 @@ bool MainComponent::perform (const InvocationInfo& info)
 
             commandManager.commandStatusChanged();
             return true;
+
+        case wf::editSnapEnable: case wf::editSnapGrid: case wf::editSnapMarkers:
+        {
+            auto& flag = info.commandID == wf::editSnapEnable ? WaveformView::snapEnabled
+                       : info.commandID == wf::editSnapGrid   ? WaveformView::snapToGrid : WaveformView::snapToMarkers;
+            flag = ! flag;
+
+            // picking what to snap to also turns snapping on
+            if (info.commandID != wf::editSnapEnable && flag)
+                WaveformView::snapEnabled = true;
+
+            wf::settings::set ("edit.snap", WaveformView::snapEnabled);
+            wf::settings::set ("edit.snapGrid", WaveformView::snapToGrid);
+            wf::settings::set ("edit.snapMarkers", WaveformView::snapToMarkers);
+            statusBar.setText (juce::String ("  Snapping ") + (WaveformView::snapEnabled ? "on" : "off")
+                                   + (WaveformView::snapEnabled ? juce::String (": ") + (WaveformView::snapToMarkers ? "markers and regions" : "")
+                                                                  + (WaveformView::snapToMarkers && WaveformView::snapToGrid ? ", " : "")
+                                                                  + (WaveformView::snapToGrid ? "the ruler's ticks" : "")
+                                                                  + (! WaveformView::snapToMarkers && ! WaveformView::snapToGrid ? "nothing picked (Edit > Snapping)" : "")
+                                                                : juce::String()),
+                               juce::dontSendNotification);
+            commandManager.commandStatusChanged();
+            return true;
+        }
 
         case wf::editSnapZero:
             WaveformView::snapToZeroCrossings = ! WaveformView::snapToZeroCrossings;

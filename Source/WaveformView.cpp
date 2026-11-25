@@ -323,6 +323,62 @@ WaveformView::DragOptions WaveformView::dragOptions()
 }
 
 bool WaveformView::snapToZeroCrossings = false;
+bool WaveformView::snapEnabled = false;
+bool WaveformView::snapToGrid = false;
+bool WaveformView::snapToMarkers = true;
+
+double WaveformView::rulerStepSeconds() const
+{
+    // a tick spacing of at least ~90 px from a 1-2-5 sequence
+    const auto secondsPerPixel = samplesPerPixel / sampleRate;
+    const double steps[] = { 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600 };
+
+    for (auto s : steps)
+        if (s / secondsPerPixel >= 90.0)
+            return s;
+
+    return steps[std::size (steps) - 1];
+}
+
+juce::int64 WaveformView::snapSample (juce::int64 sample, int channel) const
+{
+    if (snapEnabled && snapToMarkers)
+    {
+        const auto reach = 8.0 * samplesPerPixel;
+        auto best = (juce::int64) -1;
+        auto bestDistance = reach;
+        auto consider = [&] (juce::int64 p)
+        {
+            if (const auto d = (double) std::abs (p - sample); d <= bestDistance)
+            {
+                best = p;
+                bestDistance = d;
+            }
+        };
+
+        if (markers != nullptr)
+            for (auto m : *markers)
+                consider (m);
+
+        if (regions != nullptr)
+            for (const auto& r : *regions)
+            {
+                consider (r.start);
+                consider (r.end);
+            }
+
+        if (best >= 0)
+            return best;
+    }
+
+    if (snapEnabled && snapToGrid)
+    {
+        const auto tick = rulerStepSeconds() / 5.0 * sampleRate;   // the small ticks
+        return juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) std::llround (std::round ((double) sample / tick) * tick));
+    }
+
+    return snapToZeroCrossings ? nearestZeroCrossing (sample, channel) : sample;
+}
 int WaveformView::selectionBeats = 4;
 bool WaveformView::showBeatLines = true;
 
@@ -779,13 +835,13 @@ void WaveformView::mouseDown (const juce::MouseEvent& e)
     if (e.mods.isShiftDown())
     {
         // Shift+click extends the existing selection or cursor to the click.
-        const auto to = snapToZeroCrossings ? nearestZeroCrossing (sample, selectedChannel) : sample;
+        const auto to = snapSample (sample, selectedChannel);
         setSelection (juce::Range<juce::int64>::between (dragAnchor, to), selectedChannel);
         return;
     }
 
     dragChannel = channelZoneAt (e.getPosition());
-    dragAnchor = snapToZeroCrossings ? nearestZeroCrossing (sample, dragChannel) : sample;
+    dragAnchor = snapSample (sample, dragChannel);
     cursor = sample;
     setSelection ({});
 }
@@ -845,9 +901,7 @@ void WaveformView::mouseDrag (const juce::MouseEvent& e)
 
     auto sample = juce::jlimit ((juce::int64) 0, totalSamples(), (juce::int64) xToSample ((float) e.x));
 
-    if (snapToZeroCrossings)
-        sample = nearestZeroCrossing (sample, dragChannel);
-
+    sample = snapSample (sample, dragChannel);
     cursor = sample;
     setSelection (juce::Range<juce::int64>::between (dragAnchor, sample), dragChannel);
 }
@@ -1326,13 +1380,8 @@ void WaveformView::paintRuler (juce::Graphics& g, juce::Rectangle<int> area)
     if (! hasAudio())
         return;
 
-    // Pick a tick spacing of at least ~90 px from a 1-2-5 sequence.
     const auto secondsPerPixel = samplesPerPixel / sampleRate;
-    const double steps[] = { 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600 };
-    auto step = steps[std::size (steps) - 1];
-
-    for (auto s : steps)
-        if (s / secondsPerPixel >= 90.0) { step = s; break; }
+    const auto step = rulerStepSeconds();
 
     const auto startSec = viewStart / sampleRate;
     const auto endSec = startSec + (double) area.getWidth() * secondsPerPixel;

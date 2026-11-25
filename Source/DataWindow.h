@@ -9,6 +9,10 @@
 
 // One open audio file: its samples, format details, waveform and undo history.
 // Lives inside a floating window of the workspace.
+// Insert > Sample Loop: the region with this name is also saved as the WAV's
+// sample loop (smpl chunk).
+inline constexpr const char* sampleLoopName = "Sample loop";
+
 class DataWindow final : public juce::Component,
                          private juce::Value::Listener
 {

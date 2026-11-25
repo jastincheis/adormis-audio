@@ -122,12 +122,18 @@ public:
     // zero, so cuts and pastes don't click.
     static bool snapToZeroCrossings;
 
+    // Edit > Snapping: with snapping on (F8), mouse-made selection edges catch
+    // markers and region ends (within 8 px) and/or the time ruler's small ticks.
+    static bool snapEnabled, snapToGrid, snapToMarkers;
+
     // How many beats a selection is (the tempo box, shared by all windows):
     // that many equal parts, with a line at the start, between the beats
     // and at the end. No selection = no lines.
     static int selectionBeats;
     static bool showBeatLines;   // the tempo box's "Beat lines in the selection", remembered
     juce::int64 nearestZeroCrossing (juce::int64 sample, int channel) const;
+    juce::int64 snapSample (juce::int64 sample, int channel) const;   // every snap that is on
+    double rulerStepSeconds() const;                                    // the ruler's numbered tick spacing
     juce::int64 arrowStep() const;   // the arrow-key step in samples at this zoom
 
     struct DragOptions
